@@ -20,6 +20,7 @@ import { InventoryService } from './inventory.service';
 
 @ApiTags('Inventory')
 @UseGuards(CondominiumAccessGuard, RolesGuard)
+@Controller()
 export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}
 

@@ -9,6 +9,7 @@ import { AuditQuery, AuditService } from './audit.service';
 
 @ApiTags('Audit')
 @UseGuards(RolesGuard)
+@Controller()
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 
