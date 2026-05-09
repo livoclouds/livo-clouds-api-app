@@ -1,0 +1,72 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtPayload, UserRole } from '../../common/types';
+import { CreateMovementDto } from './dto/create-movement.dto';
+import { PettyCashService } from './petty-cash.service';
+
+@ApiTags('Petty Cash')
+@Controller('condominiums/:condominiumSlug/petty-cash')
+@UseGuards(CondominiumAccessGuard, RolesGuard)
+export class PettyCashController {
+  constructor(private readonly pettyCashService: PettyCashService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'List petty cash movements' })
+  findAll(@Request() req: { condominiumId: string }) {
+    return this.pettyCashService.findAll(req.condominiumId);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get movement by id' })
+  findOne(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+  ) {
+    return this.pettyCashService.findOne(req.condominiumId, id);
+  }
+
+  @Post()
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Create petty cash movement' })
+  create(
+    @Request() req: { condominiumId: string },
+    @Body() dto: CreateMovementDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.pettyCashService.create(req.condominiumId, dto, user);
+  }
+
+  @Post(':id/approve')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Approve movement' })
+  approve(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.pettyCashService.approve(req.condominiumId, id, user.sub);
+  }
+
+  @Post(':id/reject')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Reject movement' })
+  reject(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.pettyCashService.reject(req.condominiumId, id, user.sub);
+  }
+}

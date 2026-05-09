@@ -1,0 +1,589 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ROOT
+  TENANT_ADMIN
+  READ_ONLY
+  GUARD
+  NEIGHBOR
+}
+
+enum ResidentType {
+  OWNER
+  CO_OWNER
+  RESIDENT
+  TENANT
+}
+
+enum PaymentStatus {
+  CURRENT
+  OVERDUE
+}
+
+enum PetType {
+  DOG
+  CAT
+  OTHER
+}
+
+enum MovementType {
+  ENTRY
+  EXIT
+  ADJUSTMENT
+  REIMBURSEMENT
+}
+
+enum MovementCategory {
+  CLEANING
+  STATIONERY
+  INTERNET
+  WATER
+  CAFETERIA
+  GATEHOUSE
+  GARDENING
+  MAINTENANCE
+  TOOLS
+  SERVICES
+  URGENT_PURCHASES
+  OTHER
+}
+
+enum MovementStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum DeliveryMethod {
+  CASH
+  TRANSFER
+  CHECK
+}
+
+enum CommonAreaStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  CLOSED
+}
+
+enum InventoryCategory {
+  FURNITURE
+  ELECTRONICS
+  APPLIANCES
+  TOOLS
+  SECURITY
+  COMMUNICATIONS
+  OFFICE
+  CLEANING
+  SAFETY
+  OTHER
+}
+
+enum InventoryCondition {
+  NEW
+  GOOD
+  FAIR
+  DAMAGED
+  REPAIR
+  OUT_OF_SERVICE
+  LOST
+  DISPOSED
+}
+
+enum FlowType {
+  INCOME
+  EXPENSE
+}
+
+enum ClassificationStatus {
+  AUTO
+  MANUAL_OVERRIDE
+  NEEDS_REVIEW
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum CollectionStatus {
+  PAID_ON_TIME
+  PAID_LATE
+  PARTIAL
+  UNPAID
+  PENDING
+  ADJUSTMENT
+  EXTRAORDINARY
+  AGREEMENT
+}
+
+enum UnitGeneralStatus {
+  CURRENT
+  IN_DEBT
+  DELINQUENT
+  PARTIAL
+  CREDIT_BALANCE
+  AGREEMENT
+  NO_ACTIVITY
+}
+
+enum AuditResult {
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+enum NotificationType {
+  NEGATIVE_BALANCE
+  FILE_IMPORTED
+  IMPORT_ERROR
+  NEW_USER
+  NEW_INCIDENT
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Condominium {
+  id           String   @id @default(uuid())
+  slug         String   @unique
+  name         String
+  legalName    String?
+  primaryColor String   @default("#6366f1")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  settings          CondominiumSettings?
+  users             User[]
+  residents         Resident[]
+  vehicles          Vehicle[]
+  pettyCashMovements PettyCashMovement[]
+  commonAreas       CommonArea[]
+  inventoryItems    InventoryItem[]
+  importBatches     ImportBatch[]
+  transactions      Transaction[]
+  collectionRecords CollectionRecord[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+
+  @@map("condominiums")
+}
+
+model CondominiumSettings {
+  id            String   @id @default(uuid())
+  condominiumId String   @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // General
+  logoUrl       String?
+  timezone      String  @default("America/Monterrey")
+  country       String  @default("MX")
+  currency      String  @default("MXN")
+  address       String?
+  adminPhone    String?
+  contactEmail  String?
+  businessHours Json    @default("{}")
+  defaultLocale String  @default("es")
+
+  // Fees
+  totalUnits              Int     @default(1)
+  ordinaryFeeAmount       Decimal @default(0) @db.Decimal(12, 2)
+  extraordinaryFeeAmount  Decimal @default(0) @db.Decimal(12, 2)
+  paymentFrequency        String  @default("monthly")
+  ordinaryPaymentDayStart Int     @default(1)
+  ordinaryPaymentDayEnd   Int     @default(10)
+  lateFeeAmount           Decimal @default(0) @db.Decimal(12, 2)
+  lateFeeStartDay         Int     @default(11)
+
+  // Financial / Import
+  maxFilesPerImport Int     @default(5)
+  allowedFilePdf    Boolean @default(true)
+  allowedFileExcel  Boolean @default(true)
+
+  // Notifications
+  notifyNegativeBalance Boolean @default(true)
+  notifyNewFileImported Boolean @default(true)
+  notifyImportError     Boolean @default(true)
+  notifyNewUser         Boolean @default(true)
+  notifyNewIncident     Boolean @default(true)
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+
+  @@map("condominium_settings")
+}
+
+model User {
+  id              String    @id @default(uuid())
+  condominiumId   String?
+  email           String    @unique
+  passwordHash    String
+  role            UserRole
+  firstName       String
+  lastName        String
+  phone           String?
+  avatarUrl       String?
+  sessionDuration Int       @default(8)
+  isActive        Boolean   @default(true)
+  lastLoginAt     DateTime?
+  deletedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  condominium        Condominium?        @relation(fields: [condominiumId], references: [id])
+  refreshTokens      RefreshToken[]
+  pettyCashRegistered PettyCashMovement[] @relation("RegisteredBy")
+  pettyCashUpdated   PettyCashMovement[] @relation("UpdatedBy")
+  importBatches      ImportBatch[]
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+
+  @@index([condominiumId])
+  @@index([email])
+  @@index([role])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  token     String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model Resident {
+  id              String        @id @default(uuid())
+  condominiumId   String
+  unitNumber      String
+  residentType    ResidentType  @default(OWNER)
+  firstName       String
+  lastName        String
+  phone           String?
+  secondaryPhone  String?
+  email           String?
+  paymentStatus   PaymentStatus @default(CURRENT)
+  debt            Decimal       @default(0) @db.Decimal(12, 2)
+  monthlyFee      Decimal       @default(0) @db.Decimal(12, 2)
+  parkingSpots    Int           @default(0)
+  documentation   Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
+  notes           String?
+  deletedAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  condominium       Condominium        @relation(fields: [condominiumId], references: [id])
+  vehicles          Vehicle[]
+  pets              Pet[]
+  additionalResidents AdditionalResident[]
+  transactions      Transaction[]
+  collectionRecords CollectionRecord[]
+
+  @@unique([condominiumId, unitNumber])
+  @@index([condominiumId])
+  @@index([paymentStatus])
+  @@index([deletedAt])
+  @@map("residents")
+}
+
+model AdditionalResident {
+  id             String       @id @default(uuid())
+  residentId     String
+  name           String
+  residentType   ResidentType @default(RESIDENT)
+  phone          String?
+  secondaryPhone String?
+  email          String?
+  relationship   String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  resident Resident @relation(fields: [residentId], references: [id], onDelete: Cascade)
+
+  @@index([residentId])
+  @@map("additional_residents")
+}
+
+model Vehicle {
+  id            String   @id @default(uuid())
+  residentId    String
+  condominiumId String
+  make          String
+  model         String
+  color         String?
+  plates        String
+  hasTag        Boolean  @default(false)
+  tagId         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  resident    Resident    @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+
+  @@index([residentId])
+  @@index([condominiumId])
+  @@index([plates])
+  @@map("vehicles")
+}
+
+model Pet {
+  id          String   @id @default(uuid())
+  residentId  String
+  name        String
+  petType     PetType  @default(OTHER)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  resident Resident @relation(fields: [residentId], references: [id], onDelete: Cascade)
+
+  @@index([residentId])
+  @@map("pets")
+}
+
+model PettyCashMovement {
+  id             String           @id @default(uuid())
+  condominiumId  String
+  folio          String
+  date           DateTime         @db.Date
+  movementType   MovementType
+  category       MovementCategory
+  concept        String
+  amount         Decimal          @db.Decimal(12, 2)
+  runningBalance Decimal          @db.Decimal(12, 2)
+  status         MovementStatus   @default(PENDING)
+  deliveryMethod DeliveryMethod   @default(CASH)
+  responsible    String
+  supplier       String?
+  hasReceipt     Boolean          @default(false)
+  receiptNumber  String?
+  authorizedBy   String?
+  notes          String?
+  registeredById String
+  updatedById    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  condominium    Condominium @relation(fields: [condominiumId], references: [id])
+  registeredBy   User        @relation("RegisteredBy", fields: [registeredById], references: [id])
+  updatedBy      User?       @relation("UpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([condominiumId, folio])
+  @@index([condominiumId])
+  @@index([status])
+  @@index([date])
+  @@map("petty_cash_movements")
+}
+
+model CommonArea {
+  id                String           @id @default(uuid())
+  condominiumId     String
+  name              String
+  nameKey           String?
+  description       String?
+  physicalLocation  String?
+  status            CommonAreaStatus @default(ACTIVE)
+  responsiblePerson String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  condominium    Condominium     @relation(fields: [condominiumId], references: [id])
+  inventoryItems InventoryItem[]
+
+  @@index([condominiumId])
+  @@index([status])
+  @@map("common_areas")
+}
+
+model InventoryItem {
+  id               String             @id @default(uuid())
+  condominiumId    String
+  commonAreaId     String
+  name             String
+  category         InventoryCategory  @default(OTHER)
+  brand            String?
+  model            String?
+  serialNumber     String?
+  quantity         Int                @default(1)
+  condition        InventoryCondition @default(GOOD)
+  purchaseDate     DateTime?          @db.Date
+  approximateCost  Decimal?           @db.Decimal(12, 2)
+  supplier         String?
+  hasInvoice       Boolean            @default(false)
+  invoiceNumber    String?
+  notes            String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  commonArea  CommonArea  @relation(fields: [commonAreaId], references: [id])
+
+  @@index([condominiumId])
+  @@index([commonAreaId])
+  @@index([condition])
+  @@map("inventory_items")
+}
+
+model ImportBatch {
+  id               String       @id @default(uuid())
+  condominiumId    String
+  importedById     String
+  fileName         String
+  fileType         String
+  fileSizeBytes    Int
+  fileHash         String
+  status           ImportStatus @default(PENDING)
+  totalRows        Int          @default(0)
+  totalIncome      Decimal      @default(0) @db.Decimal(15, 2)
+  totalExpenses    Decimal      @default(0) @db.Decimal(15, 2)
+  finalBalance     Decimal      @default(0) @db.Decimal(15, 2)
+  transactionCount Int          @default(0)
+  warnings         Json         @default("[]")
+  errorMessage     String?
+  startedAt        DateTime     @default(now())
+  completedAt      DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  condominium  Condominium   @relation(fields: [condominiumId], references: [id])
+  importedBy   User          @relation(fields: [importedById], references: [id])
+  transactions Transaction[]
+
+  @@index([condominiumId])
+  @@index([fileHash])
+  @@index([status])
+  @@index([createdAt])
+  @@map("import_batches")
+}
+
+model Transaction {
+  id                   String               @id @default(uuid())
+  condominiumId        String
+  importBatchId        String
+  residentId           String?
+  transactionDate      DateTime             @db.Date
+  description          String
+  charges              Decimal?             @db.Decimal(12, 2)
+  credits              Decimal?             @db.Decimal(12, 2)
+  balance              Decimal              @db.Decimal(12, 2)
+  flowType             FlowType
+  category             String?
+  reference            String?
+  payerName            String?
+  classificationStatus ClassificationStatus @default(AUTO)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id])
+  resident    Resident?   @relation(fields: [residentId], references: [id])
+
+  @@index([condominiumId])
+  @@index([importBatchId])
+  @@index([residentId])
+  @@index([transactionDate])
+  @@index([flowType])
+  @@map("transactions")
+}
+
+model CollectionRecord {
+  id              String            @id @default(uuid())
+  condominiumId   String
+  residentId      String
+  year            Int
+  month           Int
+  status          CollectionStatus  @default(PENDING)
+  generalStatus   UnitGeneralStatus @default(CURRENT)
+  amountPaid      Decimal           @default(0) @db.Decimal(12, 2)
+  amountExpected  Decimal           @default(0) @db.Decimal(12, 2)
+  paymentDate     DateTime?         @db.Date
+  flags           Json              @default("[]")
+  suggestedAction String?
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  resident    Resident    @relation(fields: [residentId], references: [id])
+
+  @@unique([condominiumId, residentId, year, month])
+  @@index([condominiumId])
+  @@index([residentId])
+  @@index([year, month])
+  @@index([status])
+  @@map("collection_records")
+}
+
+model AuditLog {
+  id             String      @id @default(uuid())
+  condominiumId  String?
+  userId         String
+  action         String
+  actionCategory String
+  module         String
+  entityType     String?
+  entityId       String?
+  beforeState    Json?
+  afterState     Json?
+  ipAddress      String?
+  userAgent      String?
+  result         AuditResult @default(SUCCESS)
+  description    String?
+  detail         String?
+  createdAt      DateTime    @default(now())
+
+  condominium Condominium? @relation(fields: [condominiumId], references: [id])
+  user        User         @relation(fields: [userId], references: [id])
+
+  @@index([condominiumId])
+  @@index([userId])
+  @@index([module])
+  @@index([action])
+  @@index([result])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id            String           @id @default(uuid())
+  condominiumId String
+  userId        String?
+  type          NotificationType
+  title         String
+  message       String
+  isRead        Boolean          @default(false)
+  metadata      Json?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  user        User?       @relation(fields: [userId], references: [id])
+
+  @@index([condominiumId])
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}

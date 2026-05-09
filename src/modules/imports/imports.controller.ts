@@ -1,0 +1,88 @@
+import {
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FastifyRequest } from 'fastify';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtPayload, UserRole } from '../../common/types';
+import { ImportsService } from './imports.service';
+
+interface MultipartFile {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+}
+
+@ApiTags('Imports')
+@Controller('condominiums/:condominiumSlug/imports')
+@UseGuards(CondominiumAccessGuard, RolesGuard)
+export class ImportsController {
+  constructor(private readonly importsService: ImportsService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'List import batches' })
+  findAll(@Request() req: { condominiumId: string }) {
+    return this.importsService.findAll(req.condominiumId);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get import batch with transactions' })
+  findOne(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+  ) {
+    return this.importsService.findOne(req.condominiumId, id);
+  }
+
+  @Post('upload')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload bank statement files (PDF or XLSX, max 5)' })
+  async upload(
+    @Request() req: FastifyRequest & { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const files: MultipartFile[] = [];
+
+    if (req.isMultipart()) {
+      const parts = req.parts();
+      for await (const part of parts) {
+        if (part.type === 'file') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            chunks.push(chunk as Buffer);
+          }
+          const buffer = Buffer.concat(chunks);
+          files.push({
+            buffer,
+            originalname: part.filename,
+            mimetype: part.mimetype,
+            size: buffer.length,
+          });
+        }
+      }
+    }
+
+    return this.importsService.upload(req.condominiumId, files, user);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Cancel/delete import batch' })
+  remove(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+  ) {
+    return this.importsService.remove(req.condominiumId, id);
+  }
+}
