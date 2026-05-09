@@ -29,6 +29,7 @@ import { UsersModule } from './modules/users/users.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      ignoreEnvFile: process.env.NODE_ENV === 'production',
       load: [appConfig, corsConfig, databaseConfig, jwtConfig],
     }),
     PrismaModule,
