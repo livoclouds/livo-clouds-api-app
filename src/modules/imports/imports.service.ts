@@ -6,6 +6,7 @@ import {
 import * as crypto from 'crypto';
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ConfirmImportDto } from './dto/confirm-import.dto';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -120,6 +121,123 @@ export class ImportsService {
     }
 
     return results;
+  }
+
+  async confirm(
+    condominiumId: string,
+    dto: ConfirmImportDto,
+    user: JwtPayload,
+  ) {
+    if (!dto.files || dto.files.length === 0) {
+      throw new BadRequestException('No files provided');
+    }
+
+    const results: {
+      fileName: string;
+      status: 'imported' | 'duplicate' | 'skipped';
+      batchId?: string;
+      imported: number;
+      duplicateFile: boolean;
+    }[] = [];
+
+    let totalImported = 0;
+
+    for (const file of dto.files) {
+      if (!file.transactions || file.transactions.length === 0) {
+        results.push({
+          fileName: file.fileName,
+          status: 'skipped',
+          imported: 0,
+          duplicateFile: false,
+        });
+        continue;
+      }
+
+      const existing = await this.prisma.importBatch.findFirst({
+        where: { condominiumId, fileHash: file.fileHash },
+      });
+
+      if (existing) {
+        results.push({
+          fileName: file.fileName,
+          status: 'duplicate',
+          batchId: existing.id,
+          imported: 0,
+          duplicateFile: true,
+        });
+        continue;
+      }
+
+      const totalIncome = file.transactions.reduce(
+        (sum, t) => sum + (t.credits ?? 0),
+        0,
+      );
+      const totalExpenses = file.transactions.reduce(
+        (sum, t) => sum + (t.charges ?? 0),
+        0,
+      );
+      const finalBalance =
+        file.transactions[file.transactions.length - 1]?.balance ?? 0;
+
+      const batch = await this.prisma.$transaction(async (tx) => {
+        const importBatch = await tx.importBatch.create({
+          data: {
+            condominiumId,
+            importedById: user.sub,
+            fileName: file.fileName,
+            fileType: file.fileType,
+            fileSizeBytes: file.fileSizeBytes,
+            fileHash: file.fileHash,
+            status: 'COMPLETED',
+            totalRows: file.transactions.length,
+            totalIncome,
+            totalExpenses,
+            finalBalance,
+            transactionCount: file.transactions.length,
+            warnings: file.warnings,
+            completedAt: new Date(),
+          },
+        });
+
+        const CHUNK = 500;
+        for (let i = 0; i < file.transactions.length; i += CHUNK) {
+          const chunk = file.transactions.slice(i, i + CHUNK);
+          await tx.transaction.createMany({
+            data: chunk.map((t) => ({
+              condominiumId,
+              importBatchId: importBatch.id,
+              transactionDate: new Date(t.date),
+              description: t.description,
+              charges: t.charges > 0 ? t.charges : null,
+              credits: t.credits > 0 ? t.credits : null,
+              balance: t.balance,
+              flowType: t.flowType === 'income' ? 'INCOME' : 'EXPENSE',
+              reference: t.receipt ?? null,
+              classificationStatus: 'AUTO',
+            })),
+          });
+        }
+
+        return importBatch;
+      });
+
+      results.push({
+        fileName: file.fileName,
+        status: 'imported',
+        batchId: batch.id,
+        imported: file.transactions.length,
+        duplicateFile: false,
+      });
+
+      totalImported += file.transactions.length;
+    }
+
+    return {
+      files: results,
+      totalImported,
+      totalSkipped: results.filter((r) => r.status !== 'imported').length,
+      totalFiles: dto.files.length,
+    };
   }
 
   async remove(condominiumId: string, id: string) {

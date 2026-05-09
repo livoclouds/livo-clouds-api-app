@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -15,6 +16,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { ImportsService } from './imports.service';
+import { ConfirmImportDto } from './dto/confirm-import.dto';
 
 interface MultipartFile {
   buffer: Buffer;
@@ -74,6 +76,17 @@ export class ImportsController {
     }
 
     return this.importsService.upload(req.condominiumId, files, user);
+  }
+
+  @Post('confirm')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Persist parsed bank statement transactions' })
+  confirm(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ConfirmImportDto,
+  ) {
+    return this.importsService.confirm(req.condominiumId, dto, user);
   }
 
   @Delete(':id')
