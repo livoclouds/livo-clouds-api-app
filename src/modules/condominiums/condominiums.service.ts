@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -69,8 +70,12 @@ export class CondominiumsService {
     });
   }
 
-  async update(id: string, dto: UpdateCondominiumDto) {
+  async update(id: string, dto: UpdateCondominiumDto, requester: JwtPayload) {
     await this.findById(id);
+
+    if (requester.role !== UserRole.ROOT && requester.condominiumId !== id) {
+      throw new ForbiddenException('You do not have access to update this condominium');
+    }
 
     if (dto.slug) {
       const slugConflict = await this.prisma.condominium.findFirst({

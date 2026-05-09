@@ -85,10 +85,12 @@ export class PettyCashService {
       throw new BadRequestException('Only PENDING movements can be approved');
     }
 
-    return this.prisma.pettyCashMovement.update({
-      where: { id },
+    const result = await this.prisma.pettyCashMovement.updateMany({
+      where: { id, condominiumId },
       data: { status: 'APPROVED', updatedById: userId },
     });
+    if (result.count === 0) throw new NotFoundException('Movement not found');
+    return this.findOne(condominiumId, id);
   }
 
   async reject(condominiumId: string, id: string, userId: string) {
@@ -98,9 +100,11 @@ export class PettyCashService {
       throw new BadRequestException('Only PENDING movements can be rejected');
     }
 
-    return this.prisma.pettyCashMovement.update({
-      where: { id },
+    const result = await this.prisma.pettyCashMovement.updateMany({
+      where: { id, condominiumId },
       data: { status: 'REJECTED', updatedById: userId },
     });
+    if (result.count === 0) throw new NotFoundException('Movement not found');
+    return this.findOne(condominiumId, id);
   }
 }

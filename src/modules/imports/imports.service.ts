@@ -125,9 +125,11 @@ export class ImportsService {
   async remove(condominiumId: string, id: string) {
     await this.findOne(condominiumId, id);
 
-    return this.prisma.importBatch.update({
-      where: { id },
+    const result = await this.prisma.importBatch.updateMany({
+      where: { id, condominiumId },
       data: { status: 'FAILED', errorMessage: 'Deleted by user' },
     });
+    if (result.count === 0) throw new NotFoundException('Import batch not found');
+    return this.findOne(condominiumId, id);
   }
 }

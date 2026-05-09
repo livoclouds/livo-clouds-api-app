@@ -42,10 +42,13 @@ export class UsersService {
       throw new ForbiddenException('Cannot create a ROOT user');
     }
 
-    const existing = await this.prisma.user.findFirst({
-      where: { email: dto.email, deletedAt: null },
-    });
+    // ROOT users require globally unique emails (condominiumId is null, DB constraint doesn't enforce it)
+    const emailWhere =
+      dto.role === UserRole.ROOT
+        ? { email: dto.email, deletedAt: null }
+        : { email: dto.email, condominiumId, deletedAt: null };
 
+    const existing = await this.prisma.user.findFirst({ where: emailWhere });
     if (existing) {
       throw new ConflictException('Email already in use');
     }
@@ -87,19 +90,25 @@ export class UsersService {
       delete updateData.password;
     }
 
-    return this.prisma.user.update({
-      where: { id },
+    const result = await this.prisma.user.updateMany({
+      where: { id, condominiumId, deletedAt: null },
       data: updateData,
+    });
+    if (result.count === 0) throw new NotFoundException('User not found');
+    return this.prisma.user.findFirst({
+      where: { id, condominiumId, deletedAt: null },
       select: this.safeSelect(),
     });
   }
 
   async remove(condominiumId: string, id: string) {
-    await this.findOne(condominiumId, id);
-
-    return this.prisma.user.update({
-      where: { id },
+    const result = await this.prisma.user.updateMany({
+      where: { id, condominiumId, deletedAt: null },
       data: { deletedAt: new Date(), isActive: false },
+    });
+    if (result.count === 0) throw new NotFoundException('User not found');
+    return this.prisma.user.findFirst({
+      where: { id, condominiumId },
       select: this.safeSelect(),
     });
   }

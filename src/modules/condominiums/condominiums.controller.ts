@@ -45,8 +45,12 @@ export class CondominiumsController {
   @Patch(':id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update condominium' })
-  update(@Param('id') id: string, @Body() dto: UpdateCondominiumDto) {
-    return this.condominiumsService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCondominiumDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.condominiumsService.update(id, dto, user);
   }
 
   @Delete(':id')

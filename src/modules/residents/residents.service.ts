@@ -72,22 +72,21 @@ export class ResidentsService {
   }
 
   async update(condominiumId: string, id: string, dto: Partial<CreateResidentDto>) {
-    await this.findOne(condominiumId, id);
-
-    return this.prisma.resident.update({
-      where: { id },
+    const result = await this.prisma.resident.updateMany({
+      where: { id, condominiumId, deletedAt: null },
       data: dto,
-      include: { vehicles: true, pets: true, additionalResidents: true },
     });
+    if (result.count === 0) throw new NotFoundException('Resident not found');
+    return this.findOne(condominiumId, id);
   }
 
   async remove(condominiumId: string, id: string) {
-    await this.findOne(condominiumId, id);
-
-    return this.prisma.resident.update({
-      where: { id },
+    const result = await this.prisma.resident.updateMany({
+      where: { id, condominiumId, deletedAt: null },
       data: { deletedAt: new Date() },
     });
+    if (result.count === 0) throw new NotFoundException('Resident not found');
+    return this.prisma.resident.findFirst({ where: { id } });
   }
 
   async addVehicle(condominiumId: string, residentId: string, dto: CreateVehicleDto) {
@@ -105,11 +104,19 @@ export class ResidentsService {
     dto: Partial<CreateVehicleDto>,
   ) {
     await this.findOne(condominiumId, residentId);
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where: { id: vehicleId, residentId, condominiumId },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
     return this.prisma.vehicle.update({ where: { id: vehicleId }, data: dto });
   }
 
   async removeVehicle(condominiumId: string, residentId: string, vehicleId: string) {
     await this.findOne(condominiumId, residentId);
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where: { id: vehicleId, residentId, condominiumId },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
     return this.prisma.vehicle.delete({ where: { id: vehicleId } });
   }
 
@@ -125,11 +132,15 @@ export class ResidentsService {
     dto: Partial<CreatePetDto>,
   ) {
     await this.findOne(condominiumId, residentId);
+    const pet = await this.prisma.pet.findFirst({ where: { id: petId, residentId } });
+    if (!pet) throw new NotFoundException('Pet not found');
     return this.prisma.pet.update({ where: { id: petId }, data: dto });
   }
 
   async removePet(condominiumId: string, residentId: string, petId: string) {
     await this.findOne(condominiumId, residentId);
+    const pet = await this.prisma.pet.findFirst({ where: { id: petId, residentId } });
+    if (!pet) throw new NotFoundException('Pet not found');
     return this.prisma.pet.delete({ where: { id: petId } });
   }
 }

@@ -119,20 +119,28 @@ async function main() {
   const createdUsers: Record<string, string> = {};
 
   for (const u of users) {
-    const passwordHash = await bcrypt.hash(u.password, SALT_ROUNDS);
-    const user = await prisma.user.upsert({
-      where: { email: u.email },
-      update: {},
-      create: {
-        email: u.email,
-        passwordHash,
-        role: u.role,
-        firstName: u.firstName,
-        lastName: u.lastName,
-        condominiumId: u.condominiumId,
-        isActive: true,
-      },
+    const existing = await prisma.user.findFirst({
+      where: { email: u.email, condominiumId: u.condominiumId ?? null },
     });
+
+    let user;
+    if (existing) {
+      user = existing;
+    } else {
+      const passwordHash = await bcrypt.hash(u.password, SALT_ROUNDS);
+      user = await prisma.user.create({
+        data: {
+          email: u.email,
+          passwordHash,
+          role: u.role,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          condominiumId: u.condominiumId,
+          isActive: true,
+        },
+      });
+    }
+
     createdUsers[u.email] = user.id;
   }
 

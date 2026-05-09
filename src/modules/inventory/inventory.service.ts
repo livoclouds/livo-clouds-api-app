@@ -24,8 +24,12 @@ export class InventoryService {
   }
 
   async updateArea(condominiumId: string, id: string, dto: Partial<CreateCommonAreaDto>) {
-    await this.findAreaOrFail(condominiumId, id);
-    return this.prisma.commonArea.update({ where: { id }, data: dto });
+    const result = await this.prisma.commonArea.updateMany({
+      where: { id, condominiumId },
+      data: dto,
+    });
+    if (result.count === 0) throw new NotFoundException('Common area not found');
+    return this.prisma.commonArea.findFirst({ where: { id, condominiumId }, include: { inventoryItems: true } });
   }
 
   async removeArea(condominiumId: string, id: string) {
@@ -75,7 +79,15 @@ export class InventoryService {
       data.purchaseDate = new Date(dto.purchaseDate);
     }
 
-    return this.prisma.inventoryItem.update({ where: { id }, data });
+    const result = await this.prisma.inventoryItem.updateMany({
+      where: { id, condominiumId },
+      data,
+    });
+    if (result.count === 0) throw new NotFoundException('Inventory item not found');
+    return this.prisma.inventoryItem.findFirst({
+      where: { id, condominiumId },
+      include: { commonArea: { select: { id: true, name: true } } },
+    });
   }
 
   async removeItem(condominiumId: string, id: string) {

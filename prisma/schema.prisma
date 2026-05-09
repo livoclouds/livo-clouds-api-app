@@ -230,7 +230,7 @@ model CondominiumSettings {
 model User {
   id              String    @id @default(uuid())
   condominiumId   String?
-  email           String    @unique
+  email           String
   passwordHash    String
   role            UserRole
   firstName       String
@@ -252,6 +252,7 @@ model User {
   auditLogs          AuditLog[]
   notifications      Notification[]
 
+  @@unique([condominiumId, email])
   @@index([condominiumId])
   @@index([email])
   @@index([role])
