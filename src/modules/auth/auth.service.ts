@@ -1,4 +1,6 @@
 import {
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -20,7 +22,7 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findFirst({
-      where: { email: dto.email, isActive: true, deletedAt: null },
+      where: { email: dto.email, deletedAt: null },
       include: { condominium: { select: { slug: true } } },
     });
 
@@ -31,6 +33,13 @@ export class AuthService {
     const passwordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!passwordValid) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.isActive) {
+      throw new HttpException(
+        { code: 'AUTH_ACCOUNT_INACTIVE', message: 'Account is inactive.' },
+        HttpStatus.UNAUTHORIZED,
+      );
     }
 
     await this.prisma.user.update({
