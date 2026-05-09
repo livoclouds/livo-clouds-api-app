@@ -1,6 +1,6 @@
 # LivoClouds API
 
-Multi-tenant SaaS REST API for condominium management. Each condominium is an isolated tenant; all data is scoped by `condominiumId`. Built with NestJS + Fastify, Prisma, and JWT authentication.
+Multi-tenant SaaS REST API for condominium management. Each condominium is an isolated tenant; all data is scoped by `condominiumId`. Built with NestJS + Fastify, Prisma, and JWT authentication. Designed to serve a web application and future mobile clients via Bearer Token.
 
 ---
 
@@ -8,24 +8,31 @@ Multi-tenant SaaS REST API for condominium management. Each condominium is an is
 
 1. [Project Description](#1-project-description)
 2. [Technologies](#2-technologies)
-3. [Project Structure](#3-project-structure)
-4. [Environment Variables](#4-environment-variables)
-5. [Quick Start](#5-quick-start)
-6. [Scripts](#6-scripts)
-7. [Environment Configuration](#7-environment-configuration)
-8. [Prisma](#8-prisma)
-9. [Database & Data Model](#9-database--data-model)
-10. [Authentication & Authorization](#10-authentication--authorization)
-11. [Test Accounts](#11-test-accounts)
-12. [API Endpoints](#12-api-endpoints)
-13. [Response Format](#13-response-format)
-14. [Error Handling](#14-error-handling)
-15. [Docker](#15-docker)
-16. [Onboarding Flow](#16-onboarding-flow)
-17. [Project Conventions](#17-project-conventions)
-18. [Known Gaps](#18-known-gaps)
-19. [Troubleshooting](#19-troubleshooting)
-20. [Notes for AI Assistants](#20-notes-for-ai-assistants)
+3. [Multi-tenant Architecture](#3-multi-tenant-architecture)
+4. [Project Structure](#4-project-structure)
+5. [Environment Variables](#5-environment-variables)
+6. [Quick Start](#6-quick-start)
+7. [Scripts](#7-scripts)
+8. [Environment Configuration](#8-environment-configuration)
+9. [Prisma](#9-prisma)
+10. [Database & Data Model](#10-database--data-model)
+11. [Seed & Dummy Data](#11-seed--dummy-data)
+12. [Authentication & Authorization](#12-authentication--authorization)
+13. [Test Accounts](#13-test-accounts)
+14. [API Endpoints](#14-api-endpoints)
+15. [Response Format](#15-response-format)
+16. [Error Handling](#16-error-handling)
+17. [Web Integration Guide](#17-web-integration-guide)
+18. [Frontend/Backend Contract](#18-frontendbackend-contract)
+19. [Conventions for New Endpoints](#19-conventions-for-new-endpoints)
+20. [Web & Mobile Considerations](#20-web--mobile-considerations)
+21. [Security](#21-security)
+22. [Docker](#22-docker)
+23. [Onboarding Flow](#23-onboarding-flow)
+24. [Project Conventions](#24-project-conventions)
+25. [Known Gaps](#25-known-gaps)
+26. [Troubleshooting](#26-troubleshooting)
+27. [Notes for AI Assistants](#27-notes-for-ai-assistants)
 
 ---
 
@@ -35,7 +42,9 @@ LivoClouds API is a multi-tenant condominium management platform backend. It man
 
 Each condominium operates as an independent tenant identified by a unique `slug`. The `CondominiumAccessGuard` enforces strict data isolation: every service query is filtered by `condominiumId`, and non-ROOT users can only access data belonging to their own condominium.
 
-The API exposes a RESTful interface documented via Swagger/OpenAPI at `/docs`. It is designed to serve a frontend SaaS application and is intended to run both locally and in containerized production environments.
+The API exposes a RESTful interface documented via Swagger/OpenAPI at `/docs`. It is designed to serve a frontend SaaS application and is intended to also serve future mobile clients — all via Bearer Token authentication, with no dependency on browser cookies or sessions.
+
+Data isolation is the responsibility of the server. Clients do not decide which tenant they belong to — the API resolves this from the authenticated user's JWT.
 
 ---
 
@@ -64,7 +73,51 @@ Module alias: `@/*` maps to `src/*` (configured in `tsconfig.json`).
 
 ---
 
-## 3. Project Structure
+## 3. Multi-tenant Architecture
+
+Each condominium is an isolated tenant identified by a unique `slug` in URLs and a UUID `condominiumId` in the database. All data isolation is enforced server-side — clients do not decide which tenant they belong to.
+
+### How isolation works
+
+1. The JWT payload includes `condominiumId` and `condominiumSlug`, set at login time and signed by the server.
+2. Tenant-scoped routes use `:condominiumSlug` as a path parameter (e.g. `/condominiums/cotoalameda/residents`).
+3. `CondominiumAccessGuard` (applied per-controller) resolves the slug to a database record, validates that the condominium `isActive = true`, and verifies the authenticated user belongs to it.
+4. It sets `request.condominiumId` — this is the authoritative tenant context for all downstream service calls.
+5. Every service query filters by `condominiumId` at the Prisma level.
+6. Write operations use `updateMany({ where: { id, condominiumId } })` to prevent IDOR attacks — a write cannot affect records from another tenant even if the ID is guessed.
+
+ROOT users bypass the ownership check and can access any active condominium.
+
+### What the web is responsible for
+
+- Read `user.condominiumSlug` from the login response to build all tenant-scoped URLs.
+- Send the correct `:condominiumSlug` in the URL — the API resolves the `condominiumId` internally.
+- Do **not** send `condominiumId` in request bodies as a source of authorization — the API ignores it and uses only the guard-resolved value.
+
+### What the API guarantees
+
+- A user cannot read or write data from a condominium they do not belong to (403 if attempted).
+- All queries are filtered by the server-resolved `condominiumId`, not a client-provided value.
+- The `CondominiumAccessGuard` rejects requests if the condominium slug is invalid or the condominium is inactive.
+- Write operations are IDOR-safe: the `condominiumId` guard prevents cross-tenant mutations even if an attacker guesses a foreign resource ID.
+
+### Roles and access levels
+
+| Role | Scope | Write access |
+|---|---|---|
+| `ROOT` | All condominiums (platform-wide) | Full |
+| `TENANT_ADMIN` | Own condominium only | Full within condominium |
+| `READ_ONLY` | Own condominium only | None |
+| `GUARD` | Own condominium only | Limited (specific endpoints) |
+| `NEIGHBOR` | Own condominium only | None (read own data only) |
+
+### Email uniqueness
+
+`User` has a compound unique constraint `@@unique([condominiumId, email])`. Email must be unique within a condominium, not globally. ROOT users (`condominiumId = null`) are subject to a global email uniqueness check enforced at the service layer.
+
+---
+
+## 4. Project Structure
 
 ```
 livo-clouds-api-app/
@@ -85,7 +138,7 @@ livo-clouds-api-app/
 ├── node_modules/
 ├── prisma/
 │   ├── schema.prisma             # Database schema (16 models, 19 enums)
-│   ├── seed.ts                   # Seed script — test condominiums, users, data
+│   ├── seed.ts                   # Seed script — 10 condominiums, realistic multi-tenant data
 │   └── migrations/               # Applied migration files
 │       └── 20260509080015_initial_migration/
 │           └── migration.sql
@@ -198,7 +251,7 @@ livo-clouds-api-app/
 
 ---
 
-## 4. Environment Variables
+## 5. Environment Variables
 
 Copy `.env.example` to `.env` and fill in real values. Never commit `.env` to version control.
 
@@ -206,7 +259,7 @@ Copy `.env.example` to `.env` and fill in real values. Never commit `.env` to ve
 |---|---|---|---|
 | `PORT` | `3001` | No (default: 3001) | Port the API listens on |
 | `NODE_ENV` | `development` | No | Environment label (`development`, `staging`, `production`) |
-| `DATABASE_URL` | `postgresql://user:pass@host/db?sslmode=require&pgbouncer=true&connect_timeout=15` | Yes | Pooled connection via PgBouncer — used at runtime |
+| `DATABASE_URL` | `postgresql://user:pass@host/db?sslmode=require&pgbouncer=true` | Yes | Pooled connection via PgBouncer — used at runtime |
 | `DIRECT_URL` | `postgresql://user:pass@host/db?sslmode=require` | Yes | Direct (unpooled) connection — used only by `prisma migrate` |
 | `JWT_SECRET` | `replace-with-a-secure-random-secret-minimum-32-chars` | Yes | Signs access tokens (minimum 32 characters) |
 | `JWT_REFRESH_SECRET` | `replace-with-a-different-secure-random-secret-minimum-32-chars` | Yes | Signs refresh tokens (must differ from `JWT_SECRET`, minimum 32 characters) |
@@ -218,7 +271,7 @@ Copy `.env.example` to `.env` and fill in real values. Never commit `.env` to ve
 
 ---
 
-## 5. Quick Start
+## 6. Quick Start
 
 ### Step 1 — Install dependencies
 
@@ -232,7 +285,7 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env` with your Neon connection strings, JWT secrets, and CORS origins.
+Edit `.env` with your Neon connection strings, JWT secrets, and CORS origins. Get connection strings from Neon Dashboard → Branch: **Development**.
 
 ### Step 3 — Generate Prisma client
 
@@ -256,7 +309,7 @@ Creates and applies the database schema in your development database.
 npm run prisma:seed
 ```
 
-Creates 2 test condominiums, 6 test users, and sample residents, inventory, and petty cash data.
+Creates 10 test condominiums, 23 test users across all condominiums, 50 residents, 70 common areas, 120+ inventory items, 8 petty cash movements, and 4 audit log entries. The seed is idempotent — it deletes all existing data before re-creating it. **Never run against production.**
 
 ### Step 6 — Start the API
 
@@ -285,7 +338,7 @@ curl http://localhost:3001/health
 
 ---
 
-## 6. Scripts
+## 7. Scripts
 
 | Script | Command | Description |
 |---|---|---|
@@ -303,15 +356,17 @@ curl http://localhost:3001/health
 
 ---
 
-## 7. Environment Configuration
+## 8. Environment Configuration
 
 ### Local / Development
+
+This project uses Neon for all environments, including local development. Obtain connection strings from Neon Dashboard → Branch: **Development**.
 
 ```env
 PORT=3001
 NODE_ENV=development
-DATABASE_URL=postgresql://user:password@localhost:5432/livoclouds_dev
-DIRECT_URL=postgresql://user:password@localhost:5432/livoclouds_dev
+DATABASE_URL=postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/livoclouds?sslmode=require&pgbouncer=true&connect_timeout=15
+DIRECT_URL=postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/livoclouds?sslmode=require
 JWT_SECRET=local-dev-secret-at-least-32-characters-long
 JWT_REFRESH_SECRET=local-dev-refresh-secret-at-least-32-chars
 JWT_EXPIRES_IN=15m
@@ -322,6 +377,8 @@ CORS_ORIGIN=http://localhost:3000
 - Use `npm run prisma:migrate` to create and apply migrations.
 - Use `npm run prisma:seed` to populate test data.
 - Use `npm run start:dev` for watch mode.
+
+> **Important**: The Neon Development branch is a sandboxed copy of the schema. Never run `prisma:seed` or `prisma:reset` against any branch other than Development.
 
 ### Staging
 
@@ -356,10 +413,11 @@ CORS_ORIGIN=https://app.livoclouds.com
 - Never use `prisma:reset` or `prisma:migrate` in production.
 - CORS_ORIGIN must list only trusted frontend domains.
 - Store secrets in environment management tools (Vercel env vars, AWS Secrets Manager, etc.) — never in version control.
+- When `NODE_ENV=production`, the app ignores `.env` files and reads only from the actual environment — set all variables on your deployment platform.
 
 ---
 
-## 8. Prisma
+## 9. Prisma
 
 ### Schema location
 
@@ -387,7 +445,7 @@ npm run prisma:migrate
 # or: npx prisma migrate dev
 ```
 
-Creates a new migration file under `prisma/migrations/`, applies it to the development database, and regenerates the Prisma Client. Use only in local/development environments.
+Creates a new migration file under `prisma/migrations/`, applies it to the development database, and regenerates the Prisma Client. Use only in local/development environments with the Neon Development branch.
 
 #### Deploy migrations (production/staging)
 
@@ -414,7 +472,7 @@ npm run prisma:seed
 # or: npx prisma db seed
 ```
 
-Executes `prisma/seed.ts` using `ts-node`. Creates test condominiums, users, residents, inventory items, petty cash movements, and audit logs.
+Executes `prisma/seed.ts` using `ts-node`. Creates test condominiums, users, residents, inventory items, petty cash movements, and audit logs. See [§11 Seed & Dummy Data](#11-seed--dummy-data) for details.
 
 #### Reset (development only)
 
@@ -450,7 +508,7 @@ Both are referenced in `prisma/schema.prisma` under the `datasource db` block.
 
 ---
 
-## 9. Database & Data Model
+## 10. Database & Data Model
 
 **Database**: PostgreSQL hosted on [Neon](https://neon.tech) (serverless, connection pooling via PgBouncer).
 
@@ -461,17 +519,17 @@ Both are referenced in `prisma/schema.prisma` under the `datasource db` block.
 | Model | Description |
 |---|---|
 | `Condominium` | Tenant root. `slug` is unique and used in all routes. `isActive` gates access. |
-| `CondominiumSettings` | 1-to-1 with `Condominium`. Stores timezone, currency, fee amounts, payment days. |
-| `User` | Platform users. Has a `role` (enum), `passwordHash`, optional `condominiumId`. Soft-deleted via `deletedAt`. |
+| `CondominiumSettings` | 1-to-1 with `Condominium`. Stores timezone, currency, fee amounts, payment days, business hours, and contact info. |
+| `User` | Platform users. Has a `role` (enum), `passwordHash`, optional `condominiumId`. Soft-deleted via `deletedAt`. Email is unique per condominium (`@@unique([condominiumId, email])`). ROOT users have `condominiumId = null` and global email uniqueness enforced at the service layer. |
 | `RefreshToken` | Stores issued refresh tokens. Revoked via `revokedAt` field (token rotation). |
 | `Resident` | A unit within a condominium. `unitNumber` is unique per condominium. Tracks `paymentStatus`, `debt`, `monthlyFee`. Soft-deleted via `deletedAt`. |
-| `Vehicle` | Belongs to a `Resident`. |
+| `Vehicle` | Belongs to a `Resident`. Also scoped by `condominiumId` for IDOR-safe writes. |
 | `Pet` | Belongs to a `Resident`. |
 | `AdditionalResident` | Extra occupants under a `Resident`. |
-| `CollectionRecord` | Monthly fee record per resident. Tracks payment status per month/year. |
+| `CollectionRecord` | Monthly fee record per resident. Tracks payment status per month/year. Unique on `[condominiumId, residentId, year, month]`. |
 | `PettyCashMovement` | Cash movement (income/expense). `folio` is unique per condominium. Status workflow: `PENDING → APPROVED / REJECTED`. |
-| `CommonArea` | A shared physical space in a condominium (gym, pool, etc.). |
-| `InventoryItem` | An item tracked within a `CommonArea`. Has category, condition, and cost. |
+| `CommonArea` | A shared physical space in a condominium (gym, pool, security booth, etc.). |
+| `InventoryItem` | An item tracked within a `CommonArea`. Has category, condition, cost, serial number, and supplier. |
 | `ImportBatch` | A bank statement file upload. Contains multiple `Transaction` records. |
 | `Transaction` | A parsed line from a bank statement. Linked to an `ImportBatch`. |
 | `AuditLog` | Immutable action log (user, action, module, result, timestamp). |
@@ -487,12 +545,83 @@ Both are referenced in `prisma/schema.prisma` under the `datasource db` block.
 
 ---
 
-## 10. Authentication & Authorization
+## 11. Seed & Dummy Data
+
+The seed populates realistic multi-tenant development data across 10 condominiums. Run with:
+
+```bash
+npm run prisma:seed
+```
+
+**The seed is idempotent**: it deletes all existing data in FK-safe order (`deleteMany`) before re-creating everything. Safe to run multiple times — but all manual changes to the database will be reset.
+
+> **WARNING**: Never run the seed against the production database. Verify your `DATABASE_URL` points to the Development branch before running.
+
+### Condominiums (10)
+
+| Slug | Name | Units | Monthly Fee |
+|---|---|---|---|
+| `cotoalameda` | Coto La Alameda 1511 | 50 | $2,400 MXN |
+| `cotolospatos` | Coto Los Patos | 30 | $1,800 MXN |
+| `cotoencinos` | Coto Los Encinos | 40 | $2,200 MXN |
+| `bosquesdellago` | Residencial Bosques del Lago | 60 | $3,000 MXN |
+| `cotovalledorado` | Coto Valle Dorado | 45 | $2,800 MXN |
+| `vistaroble` | Residencial Vista Roble | 25 | $1,500 MXN |
+| `puertadelsol` | Coto Puerta del Sol | 80 | $3,500 MXN |
+| `jardinesdelvalley` | Condominio Jardines del Valle | 55 | $2,600 MXN |
+| `altosdelparque` | Residencial Altos del Parque | 35 | $2,000 MXN |
+| `senderosdelsbosque` | Coto Senderos del Bosque | 28 | $1,900 MXN |
+
+Each condominium has a fully populated `CondominiumSettings` record with address, adminPhone, contactEmail, businessHours, fees, and payment days.
+
+### Users (23 total)
+
+- 1 ROOT user (platform-wide access, active)
+- 2–3 users per condominium (TENANT_ADMIN + READ_ONLY + optional GUARD)
+- 13 active, 10 inactive (`isActive: false`) — see [§13 Test Accounts](#13-test-accounts) for the complete list
+
+### Residents (50 total) — 5 per condominium
+
+- Unit numbers "1" through "5" (string format)
+- Mix of `OWNER` (3×), `TENANT` (1×), `CO_OWNER` (1×) per condominium
+- Mix of `CURRENT` (3×) and `OVERDUE` (2×) payment status per condominium
+- OVERDUE residents have `debt = monthlyFee × 2`
+- Parking spots: 0, 1, or 2
+
+### Common Areas (70 total) — 7 per condominium
+
+Common area sets alternate by condominium index:
+
+- **Even-index condominiums** (cotoalameda, cotoencinos, cotovalledorado, puertadelsol, altosdelparque): security-focused areas — Caseta de Seguridad, Oficina de Administración, Estacionamiento de Visitas, Bodega General, Área de Contenedores, plus 2 more
+- **Odd-index condominiums** (cotolospatos, bosquesdellago, vistaroble, jardinesdelvalley, senderosdelsbosque): amenities-focused areas — Salón de Eventos, Alberca, Gimnasio, Jardines Comunes, Área de Asadores, plus 2 more
+
+### Inventory Items (120 total) — 12 per condominium
+
+Items follow the same security/amenities split as common areas:
+
+- **Security-type**: IP cameras, Motorola radios, access control panels, laptops, printers, traffic signs, cones, lawn mowers, fire extinguishers, pressure washers, UPS units
+- **Amenities-type**: professional sound systems, folding tables, folding chairs, pool pumps, pool cleaning robots, treadmills, exercise bikes, dumbbells, garden benches, solar LED lights, gas grills, CO₂ extinguishers
+
+All items have: `brand`, `model`, `serialNumber`, `approximateCost`, `supplier`, `purchaseDate`, `condition`, `hasInvoice`, and `notes` populated.
+
+### Petty Cash (8 movements) — first 3 condominiums only
+
+- `cotoalameda`: 3 movements (APPROVED opening balance ENTRY, APPROVED cleaning EXIT, PENDING maintenance EXIT)
+- `cotolospatos`: 2 movements (APPROVED opening balance ENTRY, APPROVED gardening EXIT)
+- `cotoencinos`: 3 movements (APPROVED opening balance ENTRY, APPROVED stationery EXIT, REJECTED services EXIT)
+
+### Audit Logs (4 entries) — cotoalameda only
+
+Four log entries covering: user login, settings update, resident creation, and root user login.
+
+---
+
+## 12. Authentication & Authorization
 
 ### Token flow
 
 1. Client sends `POST /auth/login` with `{ email, password }`.
-2. API returns `{ accessToken, refreshToken }`.
+2. API returns `{ accessToken, refreshToken, user }`.
 3. Client uses `Authorization: Bearer <accessToken>` on all protected requests.
 4. When the access token expires, client sends `POST /auth/refresh` with `{ refreshToken }`.
 5. API returns a new `{ accessToken, refreshToken }` pair and revokes the old refresh token.
@@ -534,8 +663,8 @@ Authorization: Bearer <accessToken>
 | `ROOT` | Platform super-admin. Access to all condominiums and platform-level resources. Bypasses tenant isolation. |
 | `TENANT_ADMIN` | Condominium admin. Full access within their own condominium. |
 | `READ_ONLY` | Read access only within their condominium. |
-| `GUARD` | Security guard role. Limited write access. |
-| `NEIGHBOR` | Resident/owner user. Restricted access. |
+| `GUARD` | Security guard role. Limited write access on specific endpoints. |
+| `NEIGHBOR` | Resident/owner user. Restricted access to own data. |
 
 ### Guards and decorators
 
@@ -562,22 +691,41 @@ Incoming request
 
 ---
 
-## 11. Test Accounts
+## 13. Test Accounts
 
 Created by `prisma/seed.ts`. Use these credentials for local development and testing.
 
-| Email | Password | Role | Condominium |
-|---|---|---|---|
-| `root@demo.com` | `Root1234!` | `ROOT` | All (platform-wide access) |
-| `admin@cotoalameda.com` | `Admin1234!` | `TENANT_ADMIN` | `cotoalameda` |
-| `view@cotoalameda.com` | `View1234!` | `READ_ONLY` | `cotoalameda` |
-| `guard@cotoalameda.com` | `Guard1234!` | `GUARD` | `cotoalameda` |
-| `admin@cotolospatos.com` | `Admin1234!` | `TENANT_ADMIN` | `cotolospatos` |
-| `view@cotolospatos.com` | `View1234!` | `READ_ONLY` | `cotolospatos` |
+Inactive accounts (`isActive: false`) cannot log in — they exist to test the inactive-state behavior.
+
+| Email | Password | Role | Condominium | Active |
+|---|---|---|---|---|
+| `root@demo.com` | `Root1234!` | `ROOT` | All | Yes |
+| `admin@cotoalameda.com` | `Admin1234!` | `TENANT_ADMIN` | `cotoalameda` | Yes |
+| `view@cotoalameda.com` | `View1234!` | `READ_ONLY` | `cotoalameda` | Yes |
+| `guard@cotoalameda.com` | `Guard1234!` | `GUARD` | `cotoalameda` | **No** |
+| `admin@cotolospatos.com` | `Admin1234!` | `TENANT_ADMIN` | `cotolospatos` | Yes |
+| `view@cotolospatos.com` | `View1234!` | `READ_ONLY` | `cotolospatos` | **No** |
+| `admin@cotoencinos.com` | `Admin1234!` | `TENANT_ADMIN` | `cotoencinos` | Yes |
+| `view@cotoencinos.com` | `View1234!` | `READ_ONLY` | `cotoencinos` | **No** |
+| `admin@bosquesdellago.com` | `Admin1234!` | `TENANT_ADMIN` | `bosquesdellago` | Yes |
+| `guard@bosquesdellago.com` | `Guard1234!` | `GUARD` | `bosquesdellago` | **No** |
+| `admin@cotovalledorado.com` | `Admin1234!` | `TENANT_ADMIN` | `cotovalledorado` | **No** |
+| `view@cotovalledorado.com` | `View1234!` | `READ_ONLY` | `cotovalledorado` | Yes |
+| `admin@vistaroble.com` | `Admin1234!` | `TENANT_ADMIN` | `vistaroble` | Yes |
+| `view@vistaroble.com` | `View1234!` | `READ_ONLY` | `vistaroble` | **No** |
+| `admin@puertadelsol.com` | `Admin1234!` | `TENANT_ADMIN` | `puertadelsol` | **No** |
+| `guard@puertadelsol.com` | `Guard1234!` | `GUARD` | `puertadelsol` | Yes |
+| `admin@jardinesdelvalley.com` | `Admin1234!` | `TENANT_ADMIN` | `jardinesdelvalley` | Yes |
+| `view@jardinesdelvalley.com` | `View1234!` | `READ_ONLY` | `jardinesdelvalley` | **No** |
+| `guard@jardinesdelvalley.com` | `Guard1234!` | `GUARD` | `jardinesdelvalley` | Yes |
+| `admin@altosdelparque.com` | `Admin1234!` | `TENANT_ADMIN` | `altosdelparque` | Yes |
+| `view@altosdelparque.com` | `View1234!` | `READ_ONLY` | `altosdelparque` | **No** |
+| `admin@senderosdelsbosque.com` | `Admin1234!` | `TENANT_ADMIN` | `senderosdelsbosque` | **No** |
+| `view@senderosdelsbosque.com` | `View1234!` | `READ_ONLY` | `senderosdelsbosque` | Yes |
 
 ---
 
-## 12. API Endpoints
+## 14. API Endpoints
 
 All protected endpoints require `Authorization: Bearer <accessToken>`. Public endpoints are marked explicitly.
 
@@ -727,7 +875,7 @@ All routes are scoped to `/condominiums/:condominiumSlug/residents`.
 
 ---
 
-## 13. Response Format
+## 15. Response Format
 
 All responses go through the global `ResponseInterceptor` (success) or `GlobalExceptionFilter` (errors).
 
@@ -777,7 +925,7 @@ The `data` field contains the payload — an object, array, or scalar depending 
 
 ---
 
-## 14. Error Handling
+## 16. Error Handling
 
 Error handling is centralized in `src/common/filters/http-exception.filter.ts` (the `GlobalExceptionFilter`), registered globally in `app.module.ts` as `APP_FILTER`.
 
@@ -799,7 +947,335 @@ Validation failures return HTTP 400 with a `BAD_REQUEST` code. The `reason` fiel
 
 ---
 
-## 15. Docker
+## 17. Web Integration Guide
+
+This section documents how the frontend application must consume this API. It is intended for developers and AI agents working on the web frontend.
+
+### Configure the API base URL
+
+The frontend must never hardcode the API URL. Use an environment variable:
+
+```env
+# .env.local (Next.js) or equivalent
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+In production, set this to the deployed API URL via your hosting platform (Vercel, Railway, etc.). The web application must never hardcode `http://localhost:3001` in production code.
+
+### Login
+
+```http
+POST /auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@cotoalameda.com",
+  "password": "Admin1234!"
+}
+```
+
+Successful response:
+
+```json
+{
+  "data": {
+    "accessToken": "<jwt>",
+    "refreshToken": "<jwt>",
+    "user": {
+      "id": "<uuid>",
+      "email": "admin@cotoalameda.com",
+      "firstName": "Carlos",
+      "lastName": "Mendoza",
+      "role": "TENANT_ADMIN",
+      "condominiumId": "<uuid>",
+      "condominiumSlug": "cotoalameda",
+      "avatarUrl": null
+    }
+  }
+}
+```
+
+After login, store:
+- `accessToken` — used in the `Authorization` header for every protected request
+- `refreshToken` — used to obtain a new access token when the current one expires
+- The full `user` object — `condominiumSlug` is required to build all tenant-scoped URLs
+
+Do not store `passwordHash` or other sensitive fields. The login response does not include them.
+
+### Making authenticated requests
+
+Include the access token in every protected request:
+
+```http
+GET /condominiums/cotoalameda/residents
+Authorization: Bearer <accessToken>
+```
+
+Build tenant-scoped URLs dynamically using the stored `user.condominiumSlug`:
+
+```ts
+const url = `${process.env.NEXT_PUBLIC_API_URL}/condominiums/${user.condominiumSlug}/residents`;
+```
+
+Do not hardcode the slug. Read it from the stored user object after login.
+
+### Refreshing the access token
+
+The access token expires after 15 minutes (configurable). When the API returns HTTP 401, attempt a token refresh before redirecting to login:
+
+```http
+POST /auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "<storedRefreshToken>"
+}
+```
+
+On success, replace the stored tokens with the new pair returned in `data`, then retry the failed request. On failure (refresh token expired or revoked), clear all stored tokens and redirect to the login page.
+
+### Logout
+
+```http
+POST /auth/logout
+Authorization: Bearer <accessToken>
+```
+
+On success (or on any error during logout), clear all stored tokens and the `user` object from client storage, then redirect to login.
+
+### Validating the session on app load
+
+Use `GET /auth/me` to validate whether the stored token is still valid when the application initializes:
+
+```http
+GET /auth/me
+Authorization: Bearer <accessToken>
+```
+
+Response:
+
+```json
+{
+  "data": {
+    "id": "<uuid>",
+    "email": "admin@cotoalameda.com",
+    "firstName": "Carlos",
+    "lastName": "Mendoza",
+    "role": "TENANT_ADMIN",
+    "avatarUrl": null,
+    "condominium": {
+      "id": "<uuid>",
+      "slug": "cotoalameda",
+      "name": "Coto La Alameda 1511"
+    }
+  }
+}
+```
+
+If this returns 401, the session is expired — redirect to login.
+
+### Handling errors
+
+| HTTP Status | `errors[0].code` | Frontend action |
+|---|---|---|
+| 400 | `BAD_REQUEST` | Display `errors[0].reason` as a form or field error |
+| 401 | `UNAUTHORIZED` | Attempt token refresh; if refresh fails, redirect to login |
+| 403 | `FORBIDDEN` | Show "access denied" — user lacks the required role |
+| 404 | `NOT_FOUND` | Show empty state or "not found" message |
+| 409 | `CONFLICT` | Display `errors[0].reason` — typically a duplicate value |
+| 422 | `UNPROCESSABLE_ENTITY` | Display `errors[0].reason` |
+| 500 | `INTERNAL_SERVER_ERROR` | Show a generic error message; do not display the raw `reason` to users |
+
+All error responses follow the same structure — always read from `errors[0].reason` for display.
+
+### API discovery
+
+Full interactive documentation is available at `http://localhost:3001/docs` (development only). In Swagger, click "Authorize" and enter the Bearer token from `POST /auth/login`.
+
+---
+
+## 18. Frontend/Backend Contract
+
+### The frontend must
+
+- Send `Authorization: Bearer <accessToken>` on every protected request
+- Use `user.condominiumSlug` (from the stored login response) to build all tenant-scoped URLs
+- Handle HTTP 401 by attempting a token refresh before redirecting to login
+- Handle HTTP 403 by showing an "access denied" message — never attempt to bypass role restrictions
+- Display validation errors from `errors[0].reason` on HTTP 400
+- Use environment variables for the API base URL — never hardcode it
+- Store only `accessToken`, `refreshToken`, and the `user` object after login
+- Clear all stored tokens and user data on logout
+
+### The frontend must not
+
+- Decide or set the `condominiumId` manually
+- Send `condominiumId` in request bodies as a source of authorization — the API ignores and rejects this pattern
+- Filter data by tenant on the client side — all tenant filtering happens at the API level
+- Hardcode condominium slugs, condominium IDs, or user IDs
+- Assume access to data from a condominium other than the one in the authenticated user's token
+- Store raw tokens in locations accessible to third-party scripts (e.g. unsanitized `localStorage` in XSS-vulnerable contexts)
+- Expose tokens in logs, analytics payloads, or error reporting tools
+
+### The API guarantees
+
+- JWT validation on every protected request
+- Resolution of `condominiumId` from the guard — not from the request body
+- Filtering all Prisma queries by `condominiumId`
+- Role validation before any write operation
+- IDOR-safe writes using `{ id, condominiumId }` in `where` clauses
+- Rejection of any cross-tenant access attempt with HTTP 403
+- Consistent response structure (`{ data: T }` for success, `{ errors: [...] }` for errors)
+
+---
+
+## 19. Conventions for New Endpoints
+
+Every new endpoint added to this API must follow these conventions.
+
+### Tenant-scoped controllers
+
+Apply both guards:
+
+```ts
+@UseGuards(CondominiumAccessGuard, RolesGuard)
+```
+
+Never apply only one — both are required for tenant isolation and role enforcement.
+
+### Resolving `condominiumId`
+
+Get `condominiumId` from the request object set by `CondominiumAccessGuard`:
+
+```ts
+// In a controller method:
+async create(@Req() req: FastifyRequest & { condominiumId: string }) {
+  return this.myService.create(req.condominiumId, ...);
+}
+```
+
+Never read `condominiumId` from the request body, query params, or URL params — always use the guard-resolved value from `req.condominiumId`.
+
+### Read queries
+
+For models without soft delete:
+
+```ts
+prisma.inventoryItem.findMany({ where: { condominiumId } })
+```
+
+For models with soft delete (`User`, `Resident`):
+
+```ts
+prisma.resident.findMany({ where: { condominiumId, deletedAt: null } })
+```
+
+### Write queries (IDOR-safe)
+
+Use `updateMany` or `deleteMany` with both `id` and `condominiumId` in the `where` clause:
+
+```ts
+const result = await prisma.inventoryItem.updateMany({
+  where: { id, condominiumId },
+  data: { ... },
+});
+if (result.count === 0) throw new NotFoundException('Item not found');
+```
+
+This prevents a user from updating a record that belongs to another condominium, even if they guess the ID.
+
+### DTOs
+
+Every input DTO must have:
+- `class-validator` decorators on every field (`@IsString()`, `@IsEmail()`, `@IsEnum()`, etc.)
+- `@ApiProperty()` for Swagger documentation
+- No extra properties — the `ValidationPipe` whitelist will strip them
+
+### Errors
+
+Throw NestJS exception classes — never return error objects from controller methods:
+
+```ts
+throw new NotFoundException('Resource not found');
+throw new ConflictException('Email already exists in this condominium');
+throw new ForbiddenException('Insufficient permissions');
+```
+
+Never include internal details (stack traces, foreign IDs, raw DB errors) in exception messages.
+
+---
+
+## 20. Web & Mobile Considerations
+
+### Bearer Token — no cookies required
+
+This API uses Bearer Token authentication exclusively. It does not set cookies or depend on browser session state. This makes it compatible with:
+
+- Web applications (store tokens in `localStorage`, `sessionStorage`, or in-memory state)
+- Mobile applications (store tokens in secure storage — iOS Keychain, Android Keystore)
+- Any HTTP client that can set the `Authorization` header
+
+### Future mobile client
+
+A future mobile app (e.g. React Native) can consume this API using the exact same authentication flow as the web. No API-specific changes are required for mobile compatibility — the existing endpoints, JWT format, and error responses are already mobile-ready.
+
+### Endpoint compatibility
+
+Do not add endpoints that are exclusively web-specific (e.g. relying on cookies, CSRF tokens, or browser-only behavior). All new endpoints must be consumable by any HTTP client.
+
+### CORS for local mobile development
+
+If a React Native development server runs on `http://localhost:8081`, add it to `CORS_ORIGIN` in the local `.env`:
+
+```env
+CORS_ORIGIN=http://localhost:3000,http://localhost:8081
+```
+
+Do not add mobile development origins to the production CORS config.
+
+---
+
+## 21. Security
+
+### Secrets and credentials
+
+- Never commit `.env` to version control — it is listed in `.gitignore`.
+- Never hardcode connection strings, JWT secrets, or API keys in source code.
+- Generate JWT secrets with: `node -e "console.log(require('crypto').randomBytes(64).toString('base64'))"`
+- Store production secrets in the deployment platform's environment management (Vercel env vars, AWS Secrets Manager, etc.).
+
+### Database safety
+
+- Never run `npm run prisma:seed` or `npm run prisma:reset` against a production or staging database.
+- Verify your `DATABASE_URL` points to the Development branch before running destructive commands.
+- Use `npm run prisma:deploy` (not `prisma:migrate`) in production — it only applies existing migrations.
+
+### Tenant isolation
+
+- Never trust `condominiumId` sent by the client in a request body or query param.
+- Always use `req.condominiumId` (set by `CondominiumAccessGuard`) as the authoritative tenant context.
+- Use `{ id, condominiumId }` in write query `where` clauses to prevent IDOR attacks.
+- Validate tenant membership before any write operation — even for ROOT users performing tenant-scoped actions.
+
+### Passwords
+
+- Passwords are hashed with bcrypt at 12 salt rounds before storage.
+- Never expose `passwordHash` in any API response. Use the `safeSelect()` pattern in services.
+- Never log passwords or password hashes anywhere in the application.
+
+### CORS
+
+- Restrict `CORS_ORIGIN` to known, trusted frontend domains in production.
+- Do not use wildcard origins (`*`) in production.
+
+### Error responses
+
+- Do not reveal internal details (stack traces, foreign resource IDs, raw Prisma errors) in error messages.
+- Return generic `INTERNAL_SERVER_ERROR` messages for unhandled exceptions.
+
+---
+
+## 22. Docker
 
 ### Dockerfile
 
@@ -839,12 +1315,12 @@ Note: The database is hosted on Neon and is not included in `docker-compose.yml`
 
 ---
 
-## 16. Onboarding Flow
+## 23. Onboarding Flow
 
 Follow this sequence when joining the project or starting a new session.
 
 1. **Read this README** — understand the overall architecture, stack, and conventions.
-2. **Check `.env.example`** — copy to `.env` and fill in all required values.
+2. **Check `.env.example`** — copy to `.env` and fill in all required values using the Neon Development branch connection strings.
 3. **Review `package.json`** — understand available scripts and all direct dependencies.
 4. **Read `prisma/schema.prisma`** — understand the full data model (models, enums, relations).
 5. **Read `src/app.module.ts`** — understand which modules are registered and what global providers are applied.
@@ -856,7 +1332,7 @@ Follow this sequence when joining the project or starting a new session.
 
 ---
 
-## 17. Project Conventions
+## 24. Project Conventions
 
 ### Architecture
 
@@ -894,7 +1370,7 @@ Follow this sequence when joining the project or starting a new session.
 
 ---
 
-## 18. Known Gaps
+## 25. Known Gaps
 
 The following are known limitations that have not been implemented yet:
 
@@ -908,7 +1384,7 @@ The following are known limitations that have not been implemented yet:
 
 ---
 
-## 19. Troubleshooting
+## 26. Troubleshooting
 
 ### Port already in use
 
@@ -991,16 +1467,44 @@ Error: Can't reach database server at ...
 ### Unique constraint violation
 
 ```
-Error: Unique constraint failed on the fields: (`email`)
+Error: Unique constraint failed on the fields: (`condominiumId`, `email`)
 ```
 
 Common causes:
-- Duplicate `email` on `User`
+- Duplicate `email` within the same condominium on `User` — email must be unique per condominium
 - Duplicate `slug` on `Condominium`
 - Duplicate `unitNumber` within the same condominium on `Resident`
 - Duplicate `folio` within the same condominium on `PettyCashMovement`
 
-Running `npm run prisma:seed` more than once will not duplicate data — the seed uses `upsert`.
+The seed is idempotent — it deletes all existing data first using `deleteMany` in FK order, then re-creates everything. Running `npm run prisma:seed` more than once is safe, but **all data will be reset** to the initial seed state.
+
+### Seed executed against wrong database
+
+Before running the seed, verify your `DATABASE_URL` points to the Development branch and not production:
+
+```bash
+npx prisma db execute --stdin <<< "SELECT current_database();"
+```
+
+The output should show the development database name, not a production one.
+
+### Data not visible / wrong tenant
+
+If requests return empty results or 403:
+
+- Confirm that the `:condominiumSlug` in the URL matches the authenticated user's `condominiumSlug` from their JWT payload.
+- Re-login and check `user.condominiumSlug` in the login response.
+- ROOT users can access any condominium — other roles can only access their own.
+
+### 403 Forbidden on admin endpoint
+
+```json
+{ "errors": [{ "code": "FORBIDDEN", "reason": "Forbidden resource" }] }
+```
+
+- Verify the user's `role` is `TENANT_ADMIN` or `ROOT` for write operations.
+- `READ_ONLY`, `GUARD`, and `NEIGHBOR` roles cannot perform write operations on most endpoints.
+- Check that the user's `isActive` is `true` — inactive users cannot authenticate.
 
 ### TypeScript compilation errors
 
@@ -1012,7 +1516,7 @@ Ensure the `@/*` path alias is configured in `tsconfig.json` and that you ran `n
 
 ---
 
-## 20. Notes for AI Assistants
+## 27. Notes for AI Assistants
 
 If you are an AI assistant or code tool working in this repository, read the following before making any changes.
 
@@ -1040,9 +1544,11 @@ If you are an AI assistant or code tool working in this repository, read the fol
 ### Request pipeline
 
 The global pipeline order in `app.module.ts` is:
+
 ```
 APP_FILTER (GlobalExceptionFilter) → APP_GUARD (JwtAuthGuard) → APP_INTERCEPTOR (ResponseInterceptor)
 ```
+
 Do not change this order without understanding the implications on all endpoints.
 
 ### Validation
@@ -1056,3 +1562,54 @@ Do not change this order without understanding the implications on all endpoints
 - Run `npm test` to run the test suite (currently 0 specs — this will pass until tests are written).
 - If `prisma/schema.prisma` was modified, run `npm run prisma:generate`.
 - Verify that the API starts cleanly with `npm run start:dev` before considering a task complete.
+
+---
+
+### Web Integration Checklist
+
+Use this checklist when modifying the web frontend to consume this API.
+
+```
+□ Set API base URL via environment variable (e.g. NEXT_PUBLIC_API_URL=http://localhost:3001)
+  — never hardcode the URL in application code
+
+□ POST /auth/login → store accessToken, refreshToken, and the full user object
+  — response is wrapped: read from response.data.accessToken, response.data.user, etc.
+
+□ Read user.condominiumSlug from the stored user object
+  — use it to build all tenant-scoped API URLs dynamically
+
+□ Send Authorization: Bearer <accessToken> on every protected request
+  — all endpoints except /health, /auth/login, /auth/refresh are protected
+
+□ Implement token refresh: POST /auth/refresh when the API returns HTTP 401
+  — on refresh success: update stored tokens and retry the failed request
+  — on refresh failure: clear all tokens and redirect to login
+
+□ On logout: POST /auth/logout, then clear all stored tokens and user data
+  — redirect to login regardless of whether the API call succeeds
+
+□ On app load: call GET /auth/me to validate the stored session
+  — if 401: session expired — redirect to login
+
+□ Do NOT send condominiumId in request bodies as an authorization source
+  — the API resolves condominiumId server-side via the guard
+
+□ Do NOT hardcode condominium slugs, condominium IDs, or user IDs in the frontend code
+
+□ Do NOT hardcode the API base URL — always use the environment variable
+
+□ Handle 401 → attempt token refresh first; if refresh fails, redirect to login
+
+□ Handle 403 → show "access denied" — the user's role is insufficient
+
+□ Handle 400 → display errors[0].reason as a user-facing validation message
+
+□ Handle 404 → show empty state or "not found" — not an authentication error
+
+□ Ensure local development frontend points to http://localhost:3001
+
+□ Ensure production frontend points to the production API URL via environment variable
+
+□ Never expose raw tokens in browser logs, analytics payloads, or error reporting tools
+```
