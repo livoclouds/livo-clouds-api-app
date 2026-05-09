@@ -1,341 +1,616 @@
-import { PrismaClient, UserRole } from '@prisma/client';
+import {
+  PrismaClient,
+  UserRole,
+  ResidentType,
+  PaymentStatus,
+  CommonAreaStatus,
+  InventoryCategory,
+  InventoryCondition,
+  MovementType,
+  MovementCategory,
+  MovementStatus,
+  DeliveryMethod,
+  AuditResult,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 const SALT_ROUNDS = 12;
 
+// ─── Condominium definitions ──────────────────────────────────────────────────
+
+const CONDO_DEFINITIONS = [
+  {
+    slug: 'cotoalameda',
+    name: 'Coto La Alameda 1511',
+    legalName: 'Asociación de Condóminos La Alameda A.C.',
+    primaryColor: '#6366f1',
+    settings: {
+      address: 'Av. La Alameda 1511, Col. Del Valle, Monterrey, N.L. 64300',
+      adminPhone: '+52 81 8356 1200',
+      contactEmail: 'contacto@cotoalameda.com',
+      businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 2:00 PM', sunday: 'Closed' },
+      timezone: 'America/Monterrey', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 50, ordinaryFeeAmount: 2400, lateFeeAmount: 200,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'cotolospatos',
+    name: 'Coto Los Patos',
+    legalName: 'Condominio Los Patos S.A. de C.V.',
+    primaryColor: '#10b981',
+    settings: {
+      address: 'Circuito Los Patos 245, Col. Jardines, Guadalajara, Jal. 44500',
+      adminPhone: '+52 33 3841 5600',
+      contactEmail: 'admin@cotolospatos.com',
+      businessHours: { weekdays: '8:00 AM - 5:00 PM', saturday: '9:00 AM - 1:00 PM', sunday: 'Closed' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 30, ordinaryFeeAmount: 1800, lateFeeAmount: 150,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'cotoencinos',
+    name: 'Coto Los Encinos',
+    legalName: 'Asociación de Colonos Los Encinos A.C.',
+    primaryColor: '#f59e0b',
+    settings: {
+      address: 'Blvd. Los Encinos 890, Fracc. Cumbres, San Pedro Garza García, N.L. 66220',
+      adminPhone: '+52 81 8125 4400',
+      contactEmail: 'info@cotoencinos.com',
+      businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '10:00 AM - 2:00 PM', sunday: 'Closed' },
+      timezone: 'America/Monterrey', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 40, ordinaryFeeAmount: 2200, lateFeeAmount: 180,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'bosquesdellago',
+    name: 'Residencial Bosques del Lago',
+    legalName: 'Condominio Residencial Bosques del Lago S.C.',
+    primaryColor: '#3b82f6',
+    settings: {
+      address: 'Lago Especular 320, Col. Bosques de las Lomas, CDMX 11700',
+      adminPhone: '+52 55 5245 8800',
+      contactEmail: 'administracion@bosquesdellago.mx',
+      businessHours: { weekdays: '8:30 AM - 6:30 PM', saturday: '9:00 AM - 3:00 PM', sunday: '10:00 AM - 1:00 PM' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 60, ordinaryFeeAmount: 3000, lateFeeAmount: 250,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'cotovalledorado',
+    name: 'Coto Valle Dorado',
+    legalName: 'Asociación de Condóminos Valle Dorado A.C.',
+    primaryColor: '#eab308',
+    settings: {
+      address: 'Paseo Valle Dorado 1100, Fracc. Real del Valle, Tlajomulco, Jal. 45640',
+      adminPhone: '+52 33 3680 2200',
+      contactEmail: 'coto@valledorado.com',
+      businessHours: { weekdays: '9:00 AM - 5:30 PM', saturday: '9:00 AM - 12:00 PM', sunday: 'Closed' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 45, ordinaryFeeAmount: 2800, lateFeeAmount: 220,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'vistaroble',
+    name: 'Residencial Vista Roble',
+    legalName: 'Condominio Residencial Vista Roble A.C.',
+    primaryColor: '#84cc16',
+    settings: {
+      address: 'Av. Vista Roble 55, Col. Arboles, Querétaro, Qro. 76230',
+      adminPhone: '+52 442 215 7700',
+      contactEmail: 'vistaroble@administracion.mx',
+      businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 1:00 PM', sunday: 'Closed' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 25, ordinaryFeeAmount: 1500, lateFeeAmount: 120,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'puertadelsol',
+    name: 'Coto Puerta del Sol',
+    legalName: 'Asociación de Colonos Puerta del Sol A.C.',
+    primaryColor: '#f97316',
+    settings: {
+      address: 'Blvd. Puerta del Sol 3400, Fracc. Real del Sol, Zapopan, Jal. 45054',
+      adminPhone: '+52 33 3777 9900',
+      contactEmail: 'puertadelsol@gmail.com',
+      businessHours: { weekdays: '8:00 AM - 7:00 PM', saturday: '9:00 AM - 4:00 PM', sunday: '10:00 AM - 2:00 PM' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 80, ordinaryFeeAmount: 3500, lateFeeAmount: 300,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'jardinesdelvalley',
+    name: 'Condominio Jardines del Valle',
+    legalName: 'Condominio Jardines del Valle S.C.',
+    primaryColor: '#06b6d4',
+    settings: {
+      address: 'Calle Valle Florido 200, Col. Jardines del Valle, Monterrey, N.L. 64985',
+      adminPhone: '+52 81 8421 3300',
+      contactEmail: 'admin@jardinesdelvalley.mx',
+      businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 2:00 PM', sunday: 'Closed' },
+      timezone: 'America/Monterrey', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 55, ordinaryFeeAmount: 2600, lateFeeAmount: 200,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'altosdelparque',
+    name: 'Residencial Altos del Parque',
+    legalName: 'Condominio Residencial Altos del Parque S.A.',
+    primaryColor: '#8b5cf6',
+    settings: {
+      address: 'Av. del Parque 780, Col. Altos, Puebla, Pue. 72830',
+      adminPhone: '+52 222 245 1100',
+      contactEmail: 'altosdelparque@admin.com',
+      businessHours: { weekdays: '9:00 AM - 5:00 PM', saturday: '10:00 AM - 1:00 PM', sunday: 'Closed' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 35, ordinaryFeeAmount: 2000, lateFeeAmount: 160,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+  {
+    slug: 'senderosdelsbosque',
+    name: 'Coto Senderos del Bosque',
+    legalName: 'Asociación de Condóminos Senderos del Bosque A.C.',
+    primaryColor: '#ec4899',
+    settings: {
+      address: 'Sendero Forestal 95, Fracc. Bosque Real, León, Gto. 37510',
+      adminPhone: '+52 477 718 4400',
+      contactEmail: 'senderos@bosque.mx',
+      businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 2:00 PM', sunday: 'Closed' },
+      timezone: 'America/Mexico_City', currency: 'MXN', country: 'MX', defaultLocale: 'es',
+      totalUnits: 28, ordinaryFeeAmount: 1900, lateFeeAmount: 150,
+      ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
+    },
+  },
+];
+
+// ─── Common area templates ────────────────────────────────────────────────────
+
+const AREAS_SECURITY = [
+  {
+    name: 'Caseta de Seguridad',
+    description: 'Punto de control de acceso principal con vigilancia 24/7 y registro de visitas.',
+    physicalLocation: 'Entrada principal del condominio',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Coordinador de Seguridad',
+  },
+  {
+    name: 'Oficina de Administración',
+    description: 'Oficina principal de administración y atención a condóminos.',
+    physicalLocation: 'Planta baja, edificio central',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Administrador General',
+  },
+  {
+    name: 'Estacionamiento de Visitas',
+    description: 'Área de estacionamiento exclusiva para visitantes con capacidad para 20 vehículos.',
+    physicalLocation: 'Costado derecho de la entrada principal',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Guardia de turno',
+  },
+  {
+    name: 'Bodega General',
+    description: 'Almacén para equipos, herramientas y materiales de mantenimiento del condominio.',
+    physicalLocation: 'Zona posterior, junto al área técnica',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Encargado de Mantenimiento',
+  },
+  {
+    name: 'Área de Contenedores',
+    description: 'Zona designada para contenedores de reciclaje y residuos sólidos.',
+    physicalLocation: 'Lateral izquierdo, acceso por calle interna',
+    status: 'MAINTENANCE' as CommonAreaStatus,
+    responsiblePerson: 'Personal de limpieza',
+  },
+];
+
+const AREAS_AMENITIES = [
+  {
+    name: 'Salón de Eventos',
+    description: 'Salón multiusos para eventos sociales, reuniones de condóminos y celebraciones privadas con capacidad para 80 personas.',
+    physicalLocation: 'Edificio de amenidades, planta baja',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Coordinadora de Eventos',
+  },
+  {
+    name: 'Alberca',
+    description: 'Alberca semiolímpica con área de descanso, regaderas y vestidores. Horario de uso 7:00 AM a 9:00 PM.',
+    physicalLocation: 'Área central del condominio, junto a jardines',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Salvavidas certificado',
+  },
+  {
+    name: 'Gimnasio',
+    description: 'Gimnasio equipado con máquinas cardiovasculares, zona de pesas y área de estiramiento.',
+    physicalLocation: 'Edificio de amenidades, segundo piso',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Instructor de fitness',
+  },
+  {
+    name: 'Jardines Comunes',
+    description: 'Áreas verdes con senderos, bancas y zona de juegos infantiles para uso de los residentes.',
+    physicalLocation: 'Distribuidos en el perímetro interior del condominio',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Jardinero principal',
+  },
+  {
+    name: 'Área de Asadores',
+    description: 'Zona de esparcimiento al aire libre con asadores fijos, mesas y área para niños.',
+    physicalLocation: 'Zona norte, colindante con jardines',
+    status: 'ACTIVE' as CommonAreaStatus,
+    responsiblePerson: 'Administrador General',
+  },
+];
+
+// ─── Inventory item templates per area type ───────────────────────────────────
+
+function buildInventoryItems(
+  condominiumId: string,
+  areaIds: string[],
+  prefix: string,
+  isSecurityType: boolean,
+) {
+  if (isSecurityType) {
+    // areaIds: [caseta, oficina, estacionamiento, bodega, contenedores]
+    return [
+      { condominiumId, commonAreaId: areaIds[0], name: 'Cámara IP Domo', category: 'SECURITY' as InventoryCategory, brand: 'Hikvision', model: 'DS-2CD2143G2-I', serialNumber: `${prefix}-CAM-001`, quantity: 4, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2024-03-15'), approximateCost: 3200, supplier: 'TechSec México', hasInvoice: true, invoiceNumber: `INV-${prefix}-001`, notes: 'Cámaras de 4MP con visión nocturna instaladas en perímetro' },
+      { condominiumId, commonAreaId: areaIds[0], name: 'Radio Portátil', category: 'COMMUNICATIONS' as InventoryCategory, brand: 'Motorola', model: 'XT660d', serialNumber: `${prefix}-RAD-001`, quantity: 3, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2024-01-20'), approximateCost: 4500, supplier: 'Comunicaciones Integrales', hasInvoice: true, invoiceNumber: `INV-${prefix}-002`, notes: 'Con cargador triple y baterías de respaldo' },
+      { condominiumId, commonAreaId: areaIds[0], name: 'Control de Acceso Biométrico', category: 'SECURITY' as InventoryCategory, brand: 'ZKTeco', model: 'SpeedFace-V5L', serialNumber: `${prefix}-ACC-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2024-06-01'), approximateCost: 8500, supplier: 'TechSec México', hasInvoice: true, invoiceNumber: `INV-${prefix}-003`, notes: 'Reconocimiento facial y tarjeta RFID' },
+      { condominiumId, commonAreaId: areaIds[1], name: 'Laptop Administrativa', category: 'ELECTRONICS' as InventoryCategory, brand: 'HP', model: 'ProBook 450 G10', serialNumber: `${prefix}-LAP-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-11-10'), approximateCost: 18000, supplier: 'Office Depot México', hasInvoice: true, invoiceNumber: `INV-${prefix}-004`, notes: 'Core i5, 16GB RAM, 512GB SSD' },
+      { condominiumId, commonAreaId: areaIds[1], name: 'Impresora Multifuncional', category: 'OFFICE' as InventoryCategory, brand: 'Epson', model: 'EcoTank ET-4850', serialNumber: `${prefix}-IMP-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-11-10'), approximateCost: 9500, supplier: 'Office Depot México', hasInvoice: true, invoiceNumber: `INV-${prefix}-005`, notes: 'Impresión, copia, escaneo y fax' },
+      { condominiumId, commonAreaId: areaIds[1], name: 'Escritorio Ejecutivo', category: 'FURNITURE' as InventoryCategory, brand: 'Ofisillas', model: 'Modelo Gerente 160', serialNumber: `${prefix}-ESC-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2022-08-05'), approximateCost: 6800, supplier: 'Ofisillas Monterrey', hasInvoice: false, invoiceNumber: null, notes: 'Incluye sillón ejecutivo y credenza' },
+      { condominiumId, commonAreaId: areaIds[2], name: 'Señalética Vial', category: 'SAFETY' as InventoryCategory, brand: 'Tresgres', model: 'SV-Aluminio', serialNumber: `${prefix}-SEN-001`, quantity: 8, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-02-14'), approximateCost: 650, supplier: 'Seguridad Industrial del Norte', hasInvoice: true, invoiceNumber: `INV-${prefix}-006`, notes: 'Señales de ALTO, velocidad máxima y prohibido' },
+      { condominiumId, commonAreaId: areaIds[2], name: 'Cono de Tráfico', category: 'SAFETY' as InventoryCategory, brand: 'Genérico', model: 'CT-70cm', serialNumber: `${prefix}-CON-001`, quantity: 20, condition: 'FAIR' as InventoryCondition, purchaseDate: new Date('2022-05-20'), approximateCost: 180, supplier: 'Ferremat', hasInvoice: false, invoiceNumber: null, notes: 'Uso en maniobras y eventos' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'Cortadora de Césped', category: 'TOOLS' as InventoryCategory, brand: 'Husqvarna', model: 'LC 347V', serialNumber: `${prefix}-CES-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-04-10'), approximateCost: 12000, supplier: 'Jardinerías del Norte', hasInvoice: true, invoiceNumber: `INV-${prefix}-007`, notes: 'Autopropulsada, 47 cm de corte' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'Extintor PQS 9 kg', category: 'SAFETY' as InventoryCategory, brand: 'Amerex', model: 'B441', serialNumber: `${prefix}-EXT-001`, quantity: 6, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2024-01-05'), approximateCost: 1200, supplier: 'Sistemas Contra Incendios S.A.', hasInvoice: true, invoiceNumber: `INV-${prefix}-008`, notes: 'Mantenimiento anual programado para enero 2026' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'Hidrolavadora', category: 'TOOLS' as InventoryCategory, brand: 'Kärcher', model: 'K5 Premium', serialNumber: `${prefix}-HID-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-07-18'), approximateCost: 8900, supplier: 'Ferremat', hasInvoice: true, invoiceNumber: `INV-${prefix}-009`, notes: '145 bar, accesorios completos' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'UPS para Servidores', category: 'ELECTRONICS' as InventoryCategory, brand: 'APC', model: 'Smart-UPS 1000VA', serialNumber: `${prefix}-UPS-001`, quantity: 2, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-09-01'), approximateCost: 7500, supplier: 'TechSec México', hasInvoice: true, invoiceNumber: `INV-${prefix}-010`, notes: 'Para respaldo de equipos de seguridad y red' },
+    ];
+  } else {
+    // areaIds: [salon, alberca, gimnasio, jardines, asadores]
+    return [
+      { condominiumId, commonAreaId: areaIds[0], name: 'Sistema de Sonido Profesional', category: 'ELECTRONICS' as InventoryCategory, brand: 'Bose', model: 'FreeSpace DS 40F', serialNumber: `${prefix}-SND-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-12-01'), approximateCost: 22000, supplier: 'Audio Pro México', hasInvoice: true, invoiceNumber: `INV-${prefix}-001`, notes: 'Con amplificador, mezclador y 8 bocinas empotradas' },
+      { condominiumId, commonAreaId: areaIds[0], name: 'Mesa Plegable 6 personas', category: 'FURNITURE' as InventoryCategory, brand: 'Ofisillas', model: 'MF-180', serialNumber: `${prefix}-MES-001`, quantity: 15, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2022-06-15'), approximateCost: 2200, supplier: 'Ofisillas Monterrey', hasInvoice: true, invoiceNumber: `INV-${prefix}-002`, notes: 'Aluminio plegable, tapizadas en negro' },
+      { condominiumId, commonAreaId: areaIds[0], name: 'Silla Plegable', category: 'FURNITURE' as InventoryCategory, brand: 'Ofisillas', model: 'SF-Básica', serialNumber: `${prefix}-SIL-001`, quantity: 80, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2022-06-15'), approximateCost: 420, supplier: 'Ofisillas Monterrey', hasInvoice: true, invoiceNumber: `INV-${prefix}-003`, notes: 'Almacenadas en rack de metal' },
+      { condominiumId, commonAreaId: areaIds[1], name: 'Bomba de Alberca', category: 'APPLIANCES' as InventoryCategory, brand: 'Pentair', model: 'SuperFlo VS', serialNumber: `${prefix}-BOM-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-05-20'), approximateCost: 18500, supplier: 'Albercas del Pacífico', hasInvoice: true, invoiceNumber: `INV-${prefix}-004`, notes: 'Bomba de velocidad variable, 1.5 HP' },
+      { condominiumId, commonAreaId: areaIds[1], name: 'Kit de Limpieza de Alberca', category: 'CLEANING' as InventoryCategory, brand: 'Hayward', model: 'TigerShark QC', serialNumber: `${prefix}-KIT-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-05-20'), approximateCost: 6500, supplier: 'Albercas del Pacífico', hasInvoice: true, invoiceNumber: `INV-${prefix}-005`, notes: 'Robot limpiador automático de piso y paredes' },
+      { condominiumId, commonAreaId: areaIds[2], name: 'Caminadora Eléctrica', category: 'APPLIANCES' as InventoryCategory, brand: 'ProForm', model: 'Pro 2000', serialNumber: `${prefix}-CAM-001`, quantity: 3, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-01-10'), approximateCost: 14000, supplier: 'Sportland México', hasInvoice: true, invoiceNumber: `INV-${prefix}-006`, notes: 'Con pantalla HD y conectividad iFit' },
+      { condominiumId, commonAreaId: areaIds[2], name: 'Bicicleta Estacionaria', category: 'APPLIANCES' as InventoryCategory, brand: 'NordicTrack', model: 'Commercial S22i', serialNumber: `${prefix}-BIC-001`, quantity: 2, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-01-10'), approximateCost: 12000, supplier: 'Sportland México', hasInvoice: true, invoiceNumber: `INV-${prefix}-007`, notes: 'Con inclinación y declive motorizado' },
+      { condominiumId, commonAreaId: areaIds[2], name: 'Juego de Mancuernas', category: 'APPLIANCES' as InventoryCategory, brand: 'Cap Barbell', model: 'SDBS-20', serialNumber: `${prefix}-MAN-001`, quantity: 1, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-01-10'), approximateCost: 9500, supplier: 'Sportland México', hasInvoice: true, invoiceNumber: `INV-${prefix}-008`, notes: 'Set completo 2kg - 20kg con rack' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'Banca de Jardín', category: 'FURNITURE' as InventoryCategory, brand: 'Eternit', model: 'BJ-150', serialNumber: `${prefix}-BAN-001`, quantity: 12, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2022-03-01'), approximateCost: 1800, supplier: 'Jardinería y Más', hasInvoice: false, invoiceNumber: null, notes: 'Fibrocemento, resistente a la intemperie' },
+      { condominiumId, commonAreaId: areaIds[3], name: 'Luminaria LED Solar', category: 'ELECTRONICS' as InventoryCategory, brand: 'Philips', model: 'BGP302 LED', serialNumber: `${prefix}-LUM-001`, quantity: 18, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2023-08-15'), approximateCost: 3200, supplier: 'Iluminación Total', hasInvoice: true, invoiceNumber: `INV-${prefix}-009`, notes: 'Instaladas en senderos y áreas de acceso' },
+      { condominiumId, commonAreaId: areaIds[4], name: 'Asador Fijo de Gas', category: 'APPLIANCES' as InventoryCategory, brand: 'Weber', model: 'Summit E-470', serialNumber: `${prefix}-ASA-001`, quantity: 3, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2022-12-10'), approximateCost: 28000, supplier: 'Casa Weber México', hasInvoice: true, invoiceNumber: `INV-${prefix}-010`, notes: 'Con cubierta de acero, requiere mantenimiento semestral' },
+      { condominiumId, commonAreaId: areaIds[4], name: 'Extintor CO2 5 kg', category: 'SAFETY' as InventoryCategory, brand: 'Amerex', model: 'B350T', serialNumber: `${prefix}-EXT-001`, quantity: 4, condition: 'GOOD' as InventoryCondition, purchaseDate: new Date('2024-01-05'), approximateCost: 1800, supplier: 'Sistemas Contra Incendios S.A.', hasInvoice: true, invoiceNumber: `INV-${prefix}-011`, notes: 'Para área de asadores y cocinas exteriores' },
+    ];
+  }
+}
+
+// ─── Resident name pool ───────────────────────────────────────────────────────
+
+const FIRST_NAMES = ['Juan', 'María', 'Pedro', 'Elena', 'Luis', 'Carlos', 'Ana', 'Roberto', 'Laura', 'Miguel', 'Sofía', 'Diego', 'Isabel', 'Fernando', 'Valeria', 'Ricardo', 'Patricia', 'Antonio', 'Mónica', 'Javier', 'Claudia', 'Ernesto', 'Daniela', 'Héctor', 'Gabriela'];
+const LAST_NAMES = ['García', 'López', 'Martínez', 'Rodríguez', 'Sánchez', 'Pérez', 'González', 'Hernández', 'Jiménez', 'Torres', 'Flores', 'Ruiz', 'Díaz', 'Moreno', 'Álvarez', 'Romero', 'Castro', 'Ortiz', 'Ramos', 'Vargas', 'Reyes', 'Mendoza', 'Guerrero', 'Medina', 'Aguilar'];
+
+const RESIDENT_TYPES: ResidentType[] = ['OWNER', 'OWNER', 'OWNER', 'TENANT', 'CO_OWNER'];
+const PAYMENT_STATUSES: PaymentStatus[] = ['CURRENT', 'CURRENT', 'CURRENT', 'OVERDUE', 'OVERDUE'];
+
+function nameAt(pool: string[], condoIdx: number, unitIdx: number) {
+  return pool[(condoIdx * 5 + unitIdx) % pool.length];
+}
+
 async function main() {
   console.log('🌱 Seeding database...');
 
-  // ─── Condominiums ────────────────────────────────────────────
+  // ─── Cleanup ───────────────────────────────────────────────────────────────
+  console.log('🗑️  Cleaning existing data...');
+  await prisma.notification.deleteMany();
+  await prisma.auditLog.deleteMany();
+  await prisma.transaction.deleteMany();
+  await prisma.importBatch.deleteMany();
+  await prisma.pettyCashMovement.deleteMany();
+  await prisma.collectionRecord.deleteMany();
+  await prisma.refreshToken.deleteMany();
+  await prisma.inventoryItem.deleteMany();
+  await prisma.commonArea.deleteMany();
+  await prisma.vehicle.deleteMany();
+  await prisma.pet.deleteMany();
+  await prisma.additionalResident.deleteMany();
+  await prisma.resident.deleteMany();
+  await prisma.user.deleteMany();
+  await prisma.condominiumSettings.deleteMany();
+  await prisma.condominium.deleteMany();
+  console.log('✅ Cleanup complete');
 
-  const cotoalameda = await prisma.condominium.upsert({
-    where: { slug: 'cotoalameda' },
-    update: {},
-    create: {
-      slug: 'cotoalameda',
-      name: 'Coto La Alameda 1511',
-      primaryColor: '#6366f1',
-      isActive: true,
-      settings: {
-        create: {
-          timezone: 'America/Monterrey',
-          currency: 'MXN',
-          country: 'MX',
-          defaultLocale: 'es',
-          totalUnits: 50,
-          ordinaryFeeAmount: 2400,
-          ordinaryPaymentDayStart: 1,
-          ordinaryPaymentDayEnd: 10,
-          lateFeeAmount: 200,
-          lateFeeStartDay: 11,
-          paymentFrequency: 'monthly',
+  // ─── Hash passwords ────────────────────────────────────────────────────────
+  const [hashRoot, hashAdmin, hashView, hashGuard] = await Promise.all([
+    bcrypt.hash('Root1234!', SALT_ROUNDS),
+    bcrypt.hash('Admin1234!', SALT_ROUNDS),
+    bcrypt.hash('View1234!', SALT_ROUNDS),
+    bcrypt.hash('Guard1234!', SALT_ROUNDS),
+  ]);
+
+  // ─── Condominiums ──────────────────────────────────────────────────────────
+  const condominiums: { id: string; slug: string; settings: { ordinaryFeeAmount: number } }[] = [];
+
+  for (const def of CONDO_DEFINITIONS) {
+    const { settings, ...rest } = def;
+    const condo = await prisma.condominium.create({
+      data: {
+        ...rest,
+        isActive: true,
+        settings: {
+          create: {
+            timezone: settings.timezone,
+            currency: settings.currency,
+            country: settings.country,
+            defaultLocale: settings.defaultLocale,
+            address: settings.address,
+            adminPhone: settings.adminPhone,
+            contactEmail: settings.contactEmail,
+            businessHours: settings.businessHours,
+            totalUnits: settings.totalUnits,
+            ordinaryFeeAmount: settings.ordinaryFeeAmount,
+            lateFeeAmount: settings.lateFeeAmount,
+            ordinaryPaymentDayStart: settings.ordinaryPaymentDayStart,
+            ordinaryPaymentDayEnd: settings.ordinaryPaymentDayEnd,
+            lateFeeStartDay: settings.lateFeeStartDay,
+            paymentFrequency: settings.paymentFrequency,
+          },
         },
       },
-    },
-  });
+    });
+    condominiums.push({ id: condo.id, slug: condo.slug, settings: { ordinaryFeeAmount: settings.ordinaryFeeAmount } });
+  }
+  console.log(`✅ Condominiums: ${condominiums.length}`);
 
-  const cotolospatos = await prisma.condominium.upsert({
-    where: { slug: 'cotolospatos' },
-    update: {},
-    create: {
-      slug: 'cotolospatos',
-      name: 'Coto Los Patos',
-      primaryColor: '#10b981',
-      isActive: true,
-      settings: {
-        create: {
-          timezone: 'America/Monterrey',
-          currency: 'MXN',
-          country: 'MX',
-          defaultLocale: 'es',
-          totalUnits: 30,
-          ordinaryFeeAmount: 1800,
-          ordinaryPaymentDayStart: 1,
-          ordinaryPaymentDayEnd: 10,
-          lateFeeAmount: 150,
-          lateFeeStartDay: 11,
-          paymentFrequency: 'monthly',
-        },
-      },
-    },
-  });
+  // ─── Users ─────────────────────────────────────────────────────────────────
+  // 1 ROOT + 2-3 per condominium ≈ 24 total; ~13 active, ~11 inactive
 
-  console.log(`✅ Condominiums: ${cotoalameda.slug}, ${cotolospatos.slug}`);
-
-  // ─── Users ───────────────────────────────────────────────────
-
-  const users = [
-    {
-      email: 'root@demo.com',
-      password: 'Root1234!',
-      role: UserRole.ROOT,
-      firstName: 'Admin',
-      lastName: 'Root',
-      condominiumId: null,
-    },
-    {
-      email: 'admin@cotoalameda.com',
-      password: 'Admin1234!',
-      role: UserRole.TENANT_ADMIN,
-      firstName: 'Carlos',
-      lastName: 'Mendoza',
-      condominiumId: cotoalameda.id,
-    },
-    {
-      email: 'view@cotoalameda.com',
-      password: 'View1234!',
-      role: UserRole.READ_ONLY,
-      firstName: 'Ana',
-      lastName: 'Torres',
-      condominiumId: cotoalameda.id,
-    },
-    {
-      email: 'guard@cotoalameda.com',
-      password: 'Guard1234!',
-      role: UserRole.GUARD,
-      firstName: 'Roberto',
-      lastName: 'Flores',
-      condominiumId: cotoalameda.id,
-    },
-    {
-      email: 'admin@cotolospatos.com',
-      password: 'Admin1234!',
-      role: UserRole.TENANT_ADMIN,
-      firstName: 'Laura',
-      lastName: 'Ramirez',
-      condominiumId: cotolospatos.id,
-    },
-    {
-      email: 'view@cotolospatos.com',
-      password: 'View1234!',
-      role: UserRole.READ_ONLY,
-      firstName: 'Miguel',
-      lastName: 'Herrera',
-      condominiumId: cotolospatos.id,
-    },
+  const userRows: {
+    email: string; passwordHash: string; role: UserRole;
+    firstName: string; lastName: string; phone: string;
+    isActive: boolean; condominiumId: string | null;
+  }[] = [
+    { email: 'root@demo.com', passwordHash: hashRoot, role: 'ROOT', firstName: 'Admin', lastName: 'Root', phone: '+52 81 1000 0000', isActive: true, condominiumId: null },
   ];
 
-  const createdUsers: Record<string, string> = {};
+  const perCondoUsers: Array<{ email: string; ph: string; role: UserRole; firstName: string; lastName: string; phone: string; active: boolean }[]> = [
+    // 0 cotoalameda
+    [
+      { email: 'admin@cotoalameda.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Carlos', lastName: 'Mendoza', phone: '+52 81 8356 1201', active: true },
+      { email: 'view@cotoalameda.com', ph: hashView, role: 'READ_ONLY', firstName: 'Ana', lastName: 'Torres', phone: '+52 81 8356 1202', active: true },
+      { email: 'guard@cotoalameda.com', ph: hashGuard, role: 'GUARD', firstName: 'Roberto', lastName: 'Flores', phone: '+52 81 8356 1203', active: false },
+    ],
+    // 1 cotolospatos
+    [
+      { email: 'admin@cotolospatos.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Laura', lastName: 'Ramírez', phone: '+52 33 3841 5601', active: true },
+      { email: 'view@cotolospatos.com', ph: hashView, role: 'READ_ONLY', firstName: 'Miguel', lastName: 'Herrera', phone: '+52 33 3841 5602', active: false },
+    ],
+    // 2 cotoencinos
+    [
+      { email: 'admin@cotoencinos.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Fernando', lastName: 'Castro', phone: '+52 81 8125 4401', active: true },
+      { email: 'view@cotoencinos.com', ph: hashView, role: 'READ_ONLY', firstName: 'Patricia', lastName: 'Moreno', phone: '+52 81 8125 4402', active: false },
+    ],
+    // 3 bosquesdellago
+    [
+      { email: 'admin@bosquesdellago.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Ricardo', lastName: 'Vargas', phone: '+52 55 5245 8801', active: true },
+      { email: 'guard@bosquesdellago.com', ph: hashGuard, role: 'GUARD', firstName: 'Héctor', lastName: 'Jiménez', phone: '+52 55 5245 8802', active: false },
+    ],
+    // 4 cotovalledorado
+    [
+      { email: 'admin@cotovalledorado.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Claudia', lastName: 'Reyes', phone: '+52 33 3680 2201', active: false },
+      { email: 'view@cotovalledorado.com', ph: hashView, role: 'READ_ONLY', firstName: 'Ernesto', lastName: 'Aguilar', phone: '+52 33 3680 2202', active: true },
+    ],
+    // 5 vistaroble
+    [
+      { email: 'admin@vistaroble.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Valeria', lastName: 'Ortiz', phone: '+52 442 215 7701', active: true },
+      { email: 'view@vistaroble.com', ph: hashView, role: 'READ_ONLY', firstName: 'Diego', lastName: 'Ramos', phone: '+52 442 215 7702', active: false },
+    ],
+    // 6 puertadelsol
+    [
+      { email: 'admin@puertadelsol.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Javier', lastName: 'Guerrero', phone: '+52 33 3777 9901', active: false },
+      { email: 'guard@puertadelsol.com', ph: hashGuard, role: 'GUARD', firstName: 'Gabriela', lastName: 'Medina', phone: '+52 33 3777 9902', active: true },
+    ],
+    // 7 jardinesdelvalley
+    [
+      { email: 'admin@jardinesdelvalley.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Isabel', lastName: 'Díaz', phone: '+52 81 8421 3301', active: true },
+      { email: 'view@jardinesdelvalley.com', ph: hashView, role: 'READ_ONLY', firstName: 'Antonio', lastName: 'Pérez', phone: '+52 81 8421 3302', active: false },
+      { email: 'guard@jardinesdelvalley.com', ph: hashGuard, role: 'GUARD', firstName: 'Sofía', lastName: 'López', phone: '+52 81 8421 3303', active: true },
+    ],
+    // 8 altosdelparque
+    [
+      { email: 'admin@altosdelparque.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Mónica', lastName: 'Álvarez', phone: '+52 222 245 1101', active: true },
+      { email: 'view@altosdelparque.com', ph: hashView, role: 'READ_ONLY', firstName: 'Luis', lastName: 'Romero', phone: '+52 222 245 1102', active: false },
+    ],
+    // 9 senderosdelsbosque
+    [
+      { email: 'admin@senderosdelsbosque.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Pedro', lastName: 'González', phone: '+52 477 718 4401', active: false },
+      { email: 'view@senderosdelsbosque.com', ph: hashView, role: 'READ_ONLY', firstName: 'Elena', lastName: 'Ruiz', phone: '+52 477 718 4402', active: true },
+    ],
+  ];
 
-  for (const u of users) {
-    const existing = await prisma.user.findFirst({
-      where: { email: u.email, condominiumId: u.condominiumId ?? null },
-    });
+  const createdUserIds: Record<string, string> = {};
 
-    let user;
-    if (existing) {
-      user = existing;
-    } else {
-      const passwordHash = await bcrypt.hash(u.password, SALT_ROUNDS);
-      user = await prisma.user.create({
+  // ROOT user
+  const rootUser = await prisma.user.create({
+    data: {
+      email: 'root@demo.com', passwordHash: hashRoot, role: 'ROOT',
+      firstName: 'Admin', lastName: 'Root', phone: '+52 81 1000 0000',
+      isActive: true, condominiumId: null,
+    },
+  });
+  createdUserIds['root@demo.com'] = rootUser.id;
+
+  for (let ci = 0; ci < condominiums.length; ci++) {
+    const condoId = condominiums[ci].id;
+    for (const u of perCondoUsers[ci]) {
+      const created = await prisma.user.create({
         data: {
-          email: u.email,
-          passwordHash,
-          role: u.role,
-          firstName: u.firstName,
-          lastName: u.lastName,
-          condominiumId: u.condominiumId,
-          isActive: true,
+          email: u.email, passwordHash: u.ph, role: u.role,
+          firstName: u.firstName, lastName: u.lastName, phone: u.phone,
+          isActive: u.active, condominiumId: condoId,
         },
       });
+      createdUserIds[u.email] = created.id;
+    }
+  }
+
+  const totalUsers = Object.keys(createdUserIds).length;
+  console.log(`✅ Users: ${totalUsers}`);
+
+  // ─── Residents (5 per condominium = 50 total) ──────────────────────────────
+  let totalResidents = 0;
+
+  for (let ci = 0; ci < condominiums.length; ci++) {
+    const condoId = condominiums[ci].id;
+    const fee = condominiums[ci].settings.ordinaryFeeAmount;
+
+    const residents = Array.from({ length: 5 }, (_, ui) => {
+      const payStatus = PAYMENT_STATUSES[(ci + ui) % PAYMENT_STATUSES.length];
+      return {
+        condominiumId: condoId,
+        unitNumber: String(ui + 1),
+        firstName: nameAt(FIRST_NAMES, ci, ui),
+        lastName: nameAt(LAST_NAMES, ci, ui + 5),
+        residentType: RESIDENT_TYPES[(ci + ui) % RESIDENT_TYPES.length],
+        paymentStatus: payStatus,
+        debt: payStatus === 'OVERDUE' ? fee * 2 : 0,
+        monthlyFee: fee,
+        parkingSpots: ui % 3,
+        phone: `+52 81 ${String(8000 + ci * 10 + ui).padStart(4, '0')} ${String(1000 + ui).padStart(4, '0')}`,
+        email: `residente${ui + 1}.${condominiums[ci].slug}@demo.com`,
+      };
+    });
+
+    await prisma.resident.createMany({ data: residents });
+    totalResidents += residents.length;
+  }
+  console.log(`✅ Residents: ${totalResidents}`);
+
+  // ─── Common Areas + Inventory Items ───────────────────────────────────────
+  let totalAreas = 0;
+  let totalItems = 0;
+
+  for (let ci = 0; ci < condominiums.length; ci++) {
+    const condoId = condominiums[ci].id;
+    const isSecurityType = ci % 2 === 0;
+    const areaTemplates = isSecurityType ? AREAS_SECURITY : AREAS_AMENITIES;
+    const prefix = condominiums[ci].slug.slice(0, 6).toUpperCase();
+
+    const areaIds: string[] = [];
+    for (const tpl of areaTemplates) {
+      const area = await prisma.commonArea.create({
+        data: { condominiumId: condoId, ...tpl },
+      });
+      areaIds.push(area.id);
+      totalAreas++;
     }
 
-    createdUsers[u.email] = user.id;
+    const items = buildInventoryItems(condoId, areaIds, prefix, isSecurityType);
+    await prisma.inventoryItem.createMany({ data: items });
+    totalItems += items.length;
   }
 
-  console.log(`✅ Users created: ${Object.keys(createdUsers).length}`);
+  console.log(`✅ Common Areas: ${totalAreas}`);
+  console.log(`✅ Inventory Items: ${totalItems}`);
 
-  const adminId = createdUsers['admin@cotoalameda.com'];
-  const adminPatos = createdUsers['admin@cotolospatos.com'];
-
-  // ─── Residents (Coto La Alameda) ─────────────────────────────
-
-  const residentData = [
-    { unitNumber: 'A01', firstName: 'Juan', lastName: 'García', paymentStatus: 'CURRENT' as const, debt: 0, monthlyFee: 2400 },
-    { unitNumber: 'A02', firstName: 'María', lastName: 'López', paymentStatus: 'OVERDUE' as const, debt: 4800, monthlyFee: 2400 },
-    { unitNumber: 'A03', firstName: 'Pedro', lastName: 'Martínez', paymentStatus: 'CURRENT' as const, debt: 0, monthlyFee: 2400 },
-    { unitNumber: 'B01', firstName: 'Elena', lastName: 'Rodríguez', paymentStatus: 'CURRENT' as const, debt: 0, monthlyFee: 2400 },
-    { unitNumber: 'B02', firstName: 'Luis', lastName: 'Sánchez', paymentStatus: 'OVERDUE' as const, debt: 2400, monthlyFee: 2400 },
-  ];
-
-  for (const r of residentData) {
-    await prisma.resident.upsert({
-      where: { condominiumId_unitNumber: { condominiumId: cotoalameda.id, unitNumber: r.unitNumber } },
-      update: {},
-      create: {
-        condominiumId: cotoalameda.id,
-        unitNumber: r.unitNumber,
-        firstName: r.firstName,
-        lastName: r.lastName,
-        residentType: 'OWNER',
-        paymentStatus: r.paymentStatus,
-        debt: r.debt,
-        monthlyFee: r.monthlyFee,
-        parkingSpots: 1,
-      },
-    });
-  }
-
-  console.log(`✅ Residents seeded for ${cotoalameda.slug}`);
-
-  // ─── Common Areas (Coto La Alameda) ──────────────────────────
-
-  const areas = [
-    { name: 'Administration Office', status: 'ACTIVE' as const },
-    { name: 'Gym', status: 'ACTIVE' as const },
-    { name: 'Pool Area', status: 'ACTIVE' as const },
-    { name: 'Rooftop Terrace', status: 'ACTIVE' as const },
-    { name: 'Security Booth', status: 'ACTIVE' as const },
-    { name: 'Parking Lobby', status: 'ACTIVE' as const },
-  ];
-
-  const createdAreas: string[] = [];
-
-  for (const area of areas) {
-    const created = await prisma.commonArea.create({
-      data: { condominiumId: cotoalameda.id, ...area },
-    });
-    createdAreas.push(created.id);
-  }
-
-  console.log(`✅ Common areas seeded: ${areas.length}`);
-
-  // ─── Inventory Items ──────────────────────────────────────────
-
-  if (createdAreas.length > 0) {
-    await prisma.inventoryItem.createMany({
-      data: [
-        {
-          condominiumId: cotoalameda.id,
-          commonAreaId: createdAreas[0],
-          name: 'Desktop Computer',
-          category: 'ELECTRONICS',
-          brand: 'HP',
-          quantity: 2,
-          condition: 'GOOD',
-          approximateCost: 15000,
-          hasInvoice: true,
-        },
-        {
-          condominiumId: cotoalameda.id,
-          commonAreaId: createdAreas[1],
-          name: 'Treadmill',
-          category: 'APPLIANCES',
-          brand: 'ProForm',
-          quantity: 3,
-          condition: 'GOOD',
-          approximateCost: 12000,
-          hasInvoice: true,
-        },
-        {
-          condominiumId: cotoalameda.id,
-          commonAreaId: createdAreas[2],
-          name: 'Pool Pump',
-          category: 'TOOLS',
-          brand: 'Pentair',
-          quantity: 1,
-          condition: 'GOOD',
-          approximateCost: 8500,
-          hasInvoice: true,
-        },
+  // ─── Petty Cash (first 3 condominiums) ────────────────────────────────────
+  const pettyCashData = [
+    {
+      condoIdx: 0,
+      adminEmail: 'admin@cotoalameda.com',
+      movements: [
+        { folio: 'PC-0001', date: new Date('2026-01-10'), movementType: 'ENTRY' as MovementType, category: 'OTHER' as MovementCategory, concept: 'Apertura de fondo de caja chica', amount: 5000, runningBalance: 5000, status: 'APPROVED' as MovementStatus, deliveryMethod: 'TRANSFER' as DeliveryMethod, responsible: 'Carlos Mendoza', hasReceipt: true, receiptNumber: 'TRF-001', authorizedBy: 'Carlos Mendoza', notes: 'Fondo inicial del ejercicio 2026' },
+        { folio: 'PC-0002', date: new Date('2026-01-15'), movementType: 'EXIT' as MovementType, category: 'CLEANING' as MovementCategory, concept: 'Compra de artículos de limpieza', amount: 450, runningBalance: 4550, status: 'APPROVED' as MovementStatus, deliveryMethod: 'CASH' as DeliveryMethod, responsible: 'Ana Torres', supplier: 'Artículos de Limpieza S.A.', hasReceipt: true, receiptNumber: 'REC-001', authorizedBy: 'Carlos Mendoza', notes: null },
+        { folio: 'PC-0003', date: new Date('2026-01-20'), movementType: 'EXIT' as MovementType, category: 'MAINTENANCE' as MovementCategory, concept: 'Reemplazo de luminarias pasillo norte', amount: 320, runningBalance: 4230, status: 'PENDING' as MovementStatus, deliveryMethod: 'CASH' as DeliveryMethod, responsible: 'Roberto Flores', hasReceipt: true, receiptNumber: 'REC-002', authorizedBy: null, notes: null },
       ],
+    },
+    {
+      condoIdx: 1,
+      adminEmail: 'admin@cotolospatos.com',
+      movements: [
+        { folio: 'PC-0001', date: new Date('2026-02-01'), movementType: 'ENTRY' as MovementType, category: 'OTHER' as MovementCategory, concept: 'Apertura de fondo caja chica', amount: 3000, runningBalance: 3000, status: 'APPROVED' as MovementStatus, deliveryMethod: 'TRANSFER' as DeliveryMethod, responsible: 'Laura Ramírez', hasReceipt: true, receiptNumber: 'TRF-001', authorizedBy: 'Laura Ramírez', notes: null },
+        { folio: 'PC-0002', date: new Date('2026-02-10'), movementType: 'EXIT' as MovementType, category: 'GARDENING' as MovementCategory, concept: 'Compra de fertilizante y semillas', amount: 680, runningBalance: 2320, status: 'APPROVED' as MovementStatus, deliveryMethod: 'CASH' as DeliveryMethod, responsible: 'Laura Ramírez', supplier: 'Viveros del Valle', hasReceipt: true, receiptNumber: 'REC-001', authorizedBy: 'Laura Ramírez', notes: null },
+      ],
+    },
+    {
+      condoIdx: 2,
+      adminEmail: 'admin@cotoencinos.com',
+      movements: [
+        { folio: 'PC-0001', date: new Date('2026-02-15'), movementType: 'ENTRY' as MovementType, category: 'OTHER' as MovementCategory, concept: 'Apertura de fondo operativo', amount: 4000, runningBalance: 4000, status: 'APPROVED' as MovementStatus, deliveryMethod: 'TRANSFER' as DeliveryMethod, responsible: 'Fernando Castro', hasReceipt: true, receiptNumber: 'TRF-001', authorizedBy: 'Fernando Castro', notes: null },
+        { folio: 'PC-0002', date: new Date('2026-02-20'), movementType: 'EXIT' as MovementType, category: 'STATIONERY' as MovementCategory, concept: 'Material de oficina', amount: 290, runningBalance: 3710, status: 'APPROVED' as MovementStatus, deliveryMethod: 'CASH' as DeliveryMethod, responsible: 'Patricia Moreno', supplier: 'Papelería Central', hasReceipt: true, receiptNumber: 'REC-001', authorizedBy: 'Fernando Castro', notes: null },
+        { folio: 'PC-0003', date: new Date('2026-03-01'), movementType: 'EXIT' as MovementType, category: 'SERVICES' as MovementCategory, concept: 'Reparación de portón eléctrico', amount: 1200, runningBalance: 2510, status: 'REJECTED' as MovementStatus, deliveryMethod: 'TRANSFER' as DeliveryMethod, responsible: 'Fernando Castro', supplier: 'Electro Servicios MX', hasReceipt: false, receiptNumber: null, authorizedBy: null, notes: 'Rechazado: requiere mayor cotización' },
+      ],
+    },
+  ];
+
+  let totalMovements = 0;
+  for (const pc of pettyCashData) {
+    const condoId = condominiums[pc.condoIdx].id;
+    const adminId = createdUserIds[pc.adminEmail];
+    await prisma.pettyCashMovement.createMany({
+      data: pc.movements.map((m) => ({
+        condominiumId: condoId,
+        registeredById: adminId,
+        folio: m.folio,
+        date: m.date,
+        movementType: m.movementType,
+        category: m.category,
+        concept: m.concept,
+        amount: m.amount,
+        runningBalance: m.runningBalance,
+        status: m.status,
+        deliveryMethod: m.deliveryMethod,
+        responsible: m.responsible,
+        supplier: m.supplier ?? null,
+        hasReceipt: m.hasReceipt,
+        receiptNumber: m.receiptNumber ?? null,
+        authorizedBy: m.authorizedBy ?? null,
+        notes: m.notes ?? null,
+      })),
     });
-    console.log('✅ Inventory items seeded');
+    totalMovements += pc.movements.length;
   }
+  console.log(`✅ Petty cash movements: ${totalMovements}`);
 
-  // ─── Petty Cash Movements ─────────────────────────────────────
-
-  await prisma.pettyCashMovement.createMany({
-    data: [
-      {
-        condominiumId: cotoalameda.id,
-        folio: 'PC-0001',
-        date: new Date('2026-01-10'),
-        movementType: 'ENTRY',
-        category: 'OTHER',
-        concept: 'Initial petty cash fund',
-        amount: 5000,
-        runningBalance: 5000,
-        status: 'APPROVED',
-        deliveryMethod: 'CASH',
-        responsible: 'Carlos Mendoza',
-        hasReceipt: false,
-        registeredById: adminId,
-      },
-      {
-        condominiumId: cotoalameda.id,
-        folio: 'PC-0002',
-        date: new Date('2026-01-15'),
-        movementType: 'EXIT',
-        category: 'CLEANING',
-        concept: 'Cleaning supplies',
-        amount: 450,
-        runningBalance: 4550,
-        status: 'APPROVED',
-        deliveryMethod: 'CASH',
-        responsible: 'Ana Torres',
-        supplier: 'Supplier XYZ',
-        hasReceipt: true,
-        receiptNumber: 'REC-001',
-        authorizedBy: 'Carlos Mendoza',
-        registeredById: adminId,
-      },
-      {
-        condominiumId: cotoalameda.id,
-        folio: 'PC-0003',
-        date: new Date('2026-01-20'),
-        movementType: 'EXIT',
-        category: 'MAINTENANCE',
-        concept: 'Light bulb replacements',
-        amount: 320,
-        runningBalance: 4230,
-        status: 'PENDING',
-        deliveryMethod: 'CASH',
-        responsible: 'Roberto Flores',
-        hasReceipt: true,
-        receiptNumber: 'REC-002',
-        registeredById: adminId,
-      },
-    ],
-  });
-
-  console.log('✅ Petty cash movements seeded');
-
-  // ─── Audit Logs ───────────────────────────────────────────────
+  // ─── Audit Logs (first condominium) ───────────────────────────────────────
+  const alamedaId = condominiums[0].id;
+  const alamedaAdminId = createdUserIds['admin@cotoalameda.com'];
 
   await prisma.auditLog.createMany({
     data: [
-      {
-        condominiumId: cotoalameda.id,
-        userId: adminId,
-        action: 'USER_LOGGED_IN',
-        actionCategory: 'Authentication',
-        module: 'auth',
-        result: 'SUCCESS',
-        description: 'User logged in successfully',
-        ipAddress: '192.168.1.1',
-      },
-      {
-        condominiumId: cotoalameda.id,
-        userId: adminId,
-        action: 'SETTINGS_UPDATED',
-        actionCategory: 'Configuration',
-        module: 'settings',
-        result: 'SUCCESS',
-        description: 'General settings updated',
-      },
+      { condominiumId: alamedaId, userId: alamedaAdminId, action: 'USER_LOGGED_IN', actionCategory: 'Authentication', module: 'auth', result: 'SUCCESS' as AuditResult, description: 'Inicio de sesión exitoso', ipAddress: '192.168.1.10' },
+      { condominiumId: alamedaId, userId: alamedaAdminId, action: 'SETTINGS_UPDATED', actionCategory: 'Configuration', module: 'settings', result: 'SUCCESS' as AuditResult, description: 'Configuración general actualizada' },
+      { condominiumId: alamedaId, userId: alamedaAdminId, action: 'RESIDENT_CREATED', actionCategory: 'Residents', module: 'residents', result: 'SUCCESS' as AuditResult, description: 'Residente creado: unidad 1' },
+      { condominiumId: alamedaId, userId: rootUser.id, action: 'USER_LOGGED_IN', actionCategory: 'Authentication', module: 'auth', result: 'SUCCESS' as AuditResult, description: 'Inicio de sesión ROOT', ipAddress: '10.0.0.1' },
     ],
   });
+  console.log('✅ Audit logs: 4');
 
-  console.log('✅ Audit logs seeded');
+  // ─── Summary ───────────────────────────────────────────────────────────────
   console.log('\n✨ Seed completed successfully!');
   console.log('\n📋 Test accounts:');
-  console.log('   root@demo.com         / Root1234!   (ROOT)');
-  console.log('   admin@cotoalameda.com / Admin1234!  (TENANT_ADMIN)');
-  console.log('   view@cotoalameda.com  / View1234!   (READ_ONLY)');
-  console.log('   guard@cotoalameda.com / Guard1234!  (GUARD)');
-  console.log('   admin@cotolospatos.com / Admin1234! (TENANT_ADMIN)');
+  console.log('   root@demo.com                / Root1234!   (ROOT)');
+  console.log('   admin@cotoalameda.com        / Admin1234!  (TENANT_ADMIN)');
+  console.log('   view@cotoalameda.com         / View1234!   (READ_ONLY)');
+  console.log('   guard@cotoalameda.com        / Guard1234!  (GUARD, inactive)');
+  console.log('   admin@cotolospatos.com       / Admin1234!  (TENANT_ADMIN)');
+  console.log('   admin@bosquesdellago.com     / Admin1234!  (TENANT_ADMIN)');
+  console.log('   admin@jardinesdelvalley.com  / Admin1234!  (TENANT_ADMIN)');
+  console.log('\n📊 Counts:');
+  console.log(`   Condominiums  : ${condominiums.length}`);
+  console.log(`   Users         : ${totalUsers}`);
+  console.log(`   Residents     : ${totalResidents}`);
+  console.log(`   Common Areas  : ${totalAreas}`);
+  console.log(`   Inventory     : ${totalItems}`);
+  console.log(`   Petty Cash    : ${totalMovements}`);
 }
 
 main()
