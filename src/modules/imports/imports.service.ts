@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from '../classification/classification.service';
@@ -26,12 +27,22 @@ export class ImportsService {
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
-    const { page = 1, limit = 15 } = dto;
+    const { page = 1, limit = 15, fileName, fileType, status, dateFrom, dateTo } = dto;
     const skip = (page - 1) * limit;
+
+    const where: Prisma.ImportBatchWhereInput = { condominiumId };
+    if (fileName) where.fileName = { contains: fileName, mode: 'insensitive' };
+    if (fileType) where.fileType = fileType;
+    if (status) where.status = status;
+    if (dateFrom || dateTo) {
+      where.createdAt = {};
+      if (dateFrom) where.createdAt.gte = new Date(dateFrom);
+      if (dateTo) where.createdAt.lte = new Date(dateTo);
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.importBatch.findMany({
-        where: { condominiumId },
+        where,
         include: {
           importedBy: { select: { id: true, firstName: true, lastName: true } },
           _count: { select: { transactions: true } },
@@ -40,7 +51,7 @@ export class ImportsService {
         skip,
         take: limit,
       }),
-      this.prisma.importBatch.count({ where: { condominiumId } }),
+      this.prisma.importBatch.count({ where }),
     ]);
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
