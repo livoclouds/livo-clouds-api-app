@@ -124,8 +124,8 @@ npm run prisma:seed       ts-node prisma/seed.ts
 
 ## Git & Version Control Rules
 
-**Commits and pushes are never performed automatically.**
-After completing any implementation, refactor, or fix — no matter how small — do not run `git add`, `git commit`, or `git push` unless the user explicitly requests it in a follow-up message. Always wait for a direct instruction.
+**Commits and pushes are NEVER performed automatically — no exceptions.**
+After completing any implementation, refactor, fix, or documentation update — no matter how small — do not run `git add`, `git commit`, or `git push` unless the user explicitly requests it in that same message or a follow-up message. A prior commit instruction in the same session does NOT carry over to subsequent changes. Each commit requires its own fresh, explicit instruction. When in doubt: make the code changes, tell the user what changed, and wait.
 
 **Never add Claude as a co-author.**
 When the user explicitly asks to commit, the commit message must never include any `Co-Authored-By` trailer or any other attribution to Claude, an AI, or any automated tool. The commit must appear as solely authored by the git user configured in the repository.
@@ -151,6 +151,8 @@ addressed>
 The Next.js frontend lives at `~/Code/github/livoclouds/livo-clouds-web-app`.
 
 **Cross-repo rule**: When adding or changing an API endpoint that the web consumes, open the web repo and update the corresponding Next.js route handler and API client type. When the web adds a new proxy route, verify the API endpoint exists and the payload shape matches.
+
+**Web app read permission**: Claude has standing permission to read any file in `~/Code/github/livoclouds/livo-clouds-web-app` without asking.
 
 ## Known Gaps
 - No Helmet (no HTTP security headers)
