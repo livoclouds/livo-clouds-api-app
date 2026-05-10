@@ -27,12 +27,13 @@ src/
 │   └── types/           UserRole enum  JwtPayload  PaginationQuery
 ├── prisma/              PrismaService (global module)
 ├── health/              GET /health  (@Public)
-└── modules/             14 feature modules (see below)
+└── modules/             feature modules (see below)
 ```
 
 ## Feature Modules (`src/modules/`)
 `auth` `users` `residents` `condominiums` `collection` `petty-cash`
 `inventory` `settings` `audit` `dashboard` `reports` `imports` `notifications`
+`classification` `storage` (Cloudflare R2 file uploads)
 
 Each module: `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`
 
@@ -77,17 +78,19 @@ NestJS exception classes map to HTTP codes: `NotFoundException` → 404, `Confli
 ## Database & ORM
 - `DATABASE_URL`: pooled (PgBouncer) — for runtime queries
 - `DIRECT_URL`: direct — for migrations only
-- Schema: `prisma/schema.prisma` (~590 lines, 16 models, 19 enums)
+- Schema: `prisma/schema.prisma` — see file for authoritative model list
 - No migration history committed; run `prisma migrate dev` to generate
 
+**Key models**: `Condominium` `User` `Resident` `ImportBatch` `Transaction` `FinancialMonthlySummary` `RefreshToken` `AuditLog`
+
 **Key enums**: `UserRole` `ResidentType` `MovementType` `MovementStatus` `MovementCategory`
-`CollectionStatus` `UnitGeneralStatus` `CommonAreaStatus` `InventoryCondition` `NotificationType` `AuditResult`
+`CollectionStatus` `ClassificationStatus` `MatchSource` `UnitGeneralStatus`
 
 ## Key Patterns & Conventions
 - **No repository layer** — services inject `PrismaService` and query directly
 - **Soft deletes** — `deletedAt: DateTime?` on `User` + `Resident`; always filter `deletedAt: null`
 - **safeSelect()** — private method on services; never expose `passwordHash` in responses
-- **DTO validation** — every input DTO uses class-validator decorators + Swagger `@ApiProperty`; ValidationPipe is `whitelist: true`, `forbidNonWhitelisted: true`, `transform: true`
+- **DTO validation** — every input DTO uses class-validator decorators + Swagger `@ApiProperty`; ValidationPipe is `whitelist: true`, `transform: true` (`forbidNonWhitelisted` intentionally removed — caused false 400s on valid requests)
 - **Config** — each config file uses `registerAs('key', () => ({...}))`; `ConfigModule` is global
 - **File uploads** — `@fastify/multipart`; 20 MB max per file, 5 files max
 - **Password hashing** — bcrypt with `SALT_ROUNDS = 12` (defined inline in auth + users services)
@@ -143,6 +146,11 @@ addressed>
 - The body must be detailed: list each file modified, what changed in it, what functions or logic were added, altered, or removed, and why.
 - Use the imperative mood in the title ("Add", "Fix", "Refactor", not "Added", "Fixed").
 - Do not use conventional commit type prefixes (e.g. `feat:`, `fix:`) unless the user explicitly requests them.
+
+## Web App Companion
+The Next.js frontend lives at `~/Code/github/livoclouds/livo-clouds-web-app`.
+
+**Cross-repo rule**: When adding or changing an API endpoint that the web consumes, open the web repo and update the corresponding Next.js route handler and API client type. When the web adds a new proxy route, verify the API endpoint exists and the payload shape matches.
 
 ## Known Gaps
 - No Helmet (no HTTP security headers)
