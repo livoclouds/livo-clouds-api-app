@@ -267,6 +267,18 @@ Copy `.env.example` to `.env` and fill in real values. Never commit `.env` to ve
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | No (default: `7d`) | Refresh token lifetime |
 | `CORS_ORIGIN` | `http://localhost:3000,https://app.livoclouds.com` | No | Comma-separated list of allowed CORS origins |
 
+### File Storage (Cloudflare R2) — Optional
+
+The import pipeline works without these variables. When configured, the `/uploads` endpoint stores the original file in R2 for audit purposes. When not configured, files are processed in-memory and discarded after SHA256 hashing — the existing behavior is unchanged.
+
+| Variable | Example Value | Required | Description |
+|---|---|---|---|
+| `R2_ACCOUNT_ID` | `abc123...` | No | Cloudflare account ID (found in Cloudflare Dashboard) |
+| `R2_ACCESS_KEY_ID` | `key-id...` | No | R2 API token access key |
+| `R2_SECRET_ACCESS_KEY` | `secret...` | No | R2 API token secret key |
+| `R2_BUCKET_NAME` | `livoclouds-files` | No | Name of the private R2 bucket |
+| `R2_PUBLIC_URL` | `https://assets.domain.com` | No | Optional: custom domain for public assets only |
+
 **Neon dual-URL requirement**: Neon (PostgreSQL serverless) requires two URLs because PgBouncer (pooled mode) is incompatible with `prisma migrate`. Use `DATABASE_URL` for the pooled connection at runtime and `DIRECT_URL` for the direct connection during migrations.
 
 ---
@@ -855,7 +867,8 @@ All routes are scoped to `/condominiums/:condominiumSlug/residents`.
 |---|---|---|---|---|
 | `GET` | `/condominiums/:condominiumSlug/imports` | JWT | Any | List import batches. |
 | `GET` | `/condominiums/:condominiumSlug/imports/:id` | JWT | Any | Get import batch with all its transactions. |
-| `POST` | `/condominiums/:condominiumSlug/imports/upload` | JWT | ROOT, TENANT_ADMIN | Upload bank statement files (multipart, max 5 files, 20 MB each). |
+| `POST` | `/condominiums/:condominiumSlug/imports/upload` | JWT | ROOT, TENANT_ADMIN | Upload bank statement files (multipart, max 5 files, 20 MB each). Hashes each file; if external storage is configured, stores the original file in R2/S3. |
+| `POST` | `/condominiums/:condominiumSlug/imports/confirm` | JWT | ROOT, TENANT_ADMIN | Persist parsed transaction data. Receives pre-parsed transactions (sent by the web app after local file parsing), creates a completed `ImportBatch`, and batch-inserts `Transaction` records. |
 | `DELETE` | `/condominiums/:condominiumSlug/imports/:id` | JWT | ROOT, TENANT_ADMIN | Cancel and delete an import batch. |
 
 ### Audit
@@ -1381,6 +1394,7 @@ The following are known limitations that have not been implemented yet:
 | No dedicated logging library | Logging relies on NestJS's built-in `Logger` and Fastify's logger. No structured log aggregation. |
 | No test files | Jest is fully configured but no test specs have been written. `npm test` will pass with zero test files. |
 | Inconsistent pagination | `PaginationQuery` type is defined in `src/common/types/index.ts` but not consistently applied across all list endpoints. |
+| No external file storage configured | The `StorageService` and R2 integration are implemented but inactive until `R2_*` environment variables are set. Without them, uploaded files are hashed and discarded — original files are not retained. See Section 5 for setup instructions. |
 
 ---
 

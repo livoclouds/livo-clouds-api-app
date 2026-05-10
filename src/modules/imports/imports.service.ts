@@ -6,6 +6,7 @@ import {
 import * as crypto from 'crypto';
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
 
 const ALLOWED_MIME_TYPES = [
@@ -16,7 +17,10 @@ const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 
 @Injectable()
 export class ImportsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   async findAll(condominiumId: string) {
     return this.prisma.importBatch.findMany({
@@ -111,6 +115,19 @@ export class ImportsService {
           status: 'PENDING',
         },
       });
+
+      if (this.storage.isConfigured()) {
+        const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${file.originalname}`;
+        try {
+          await this.storage.uploadFile(storageKey, file.buffer, file.mimetype);
+          await this.prisma.importBatch.update({
+            where: { id: batch.id },
+            data: { storageKey, storageProvider: 'r2' },
+          });
+        } catch {
+          // Storage upload is non-critical — batch is already created
+        }
+      }
 
       results.push({
         fileName: file.originalname,

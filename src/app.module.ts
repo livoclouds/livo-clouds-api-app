@@ -5,6 +5,7 @@ import appConfig from './config/app.config';
 import corsConfig from './config/cors.config';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import storageConfig from './config/storage.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -20,6 +21,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { PettyCashModule } from './modules/petty-cash/petty-cash.module';
 import { HealthController } from './health/health.controller';
 import { ReportsModule } from './modules/reports/reports.module';
+import { StorageModule } from './modules/storage/storage.module';
 import { ResidentsModule } from './modules/residents/residents.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
@@ -30,9 +32,10 @@ import { UsersModule } from './modules/users/users.module';
     ConfigModule.forRoot({
       isGlobal: true,
       ignoreEnvFile: process.env.NODE_ENV === 'production',
-      load: [appConfig, corsConfig, databaseConfig, jwtConfig],
+      load: [appConfig, corsConfig, databaseConfig, jwtConfig, storageConfig],
     }),
     PrismaModule,
+    StorageModule,
     AuthModule,
     AuditModule,
     CollectionModule,

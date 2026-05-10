@@ -463,6 +463,8 @@ model ImportBatch {
   transactionCount Int          @default(0)
   warnings         Json         @default("[]")
   errorMessage     String?
+  storageKey       String?
+  storageProvider  String?
   startedAt        DateTime     @default(now())
   completedAt      DateTime?
   createdAt        DateTime     @default(now())
