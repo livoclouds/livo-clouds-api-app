@@ -54,12 +54,12 @@ export class TransactionsService {
   }
 
   async findClassified(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, dateFrom, dateTo, residentId, importBatchId } = dto;
+    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = {
       condominiumId,
-      classificationStatus: { in: ['AUTO', 'MANUAL_OVERRIDE'] },
+      classificationStatus: classificationStatus ?? { in: ['AUTO', 'MANUAL_OVERRIDE'] },
     };
     if (flowType) where.flowType = flowType;
     if (residentId) where.residentId = residentId;
