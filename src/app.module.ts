@@ -15,8 +15,10 @@ import { AuditModule } from './modules/audit/audit.module';
 import { CollectionModule } from './modules/collection/collection.module';
 import { CondominiumsModule } from './modules/condominiums/condominiums.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ClassificationModule } from './modules/classification/classification.module';
 import { ImportsModule } from './modules/imports/imports.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { TransactionsModule } from './modules/transactions/transactions.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PettyCashModule } from './modules/petty-cash/petty-cash.module';
 import { HealthController } from './health/health.controller';
@@ -40,8 +42,10 @@ import { UsersModule } from './modules/users/users.module';
     AuditModule,
     CollectionModule,
     CondominiumsModule,
+    ClassificationModule,
     DashboardModule,
     ImportsModule,
+    TransactionsModule,
     InventoryModule,
     NotificationsModule,
     PettyCashModule,

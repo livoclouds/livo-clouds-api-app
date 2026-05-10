@@ -6,6 +6,7 @@ import {
 import * as crypto from 'crypto';
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ClassificationService } from '../classification/classification.service';
 import { StorageService } from '../storage/storage.service';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
 
@@ -20,6 +21,7 @@ export class ImportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly classification: ClassificationService,
   ) {}
 
   async findAll(condominiumId: string) {
@@ -173,6 +175,7 @@ export class ImportsService {
       batchId?: string;
       imported: number;
       duplicateFile: boolean;
+      classification?: { total: number; classified: number; needsReview: number; unmatched: number };
     }[] = [];
 
     let totalImported = 0;
@@ -272,7 +275,7 @@ export class ImportsService {
               balance: t.balance,
               flowType: t.flowType === 'income' ? 'INCOME' : 'EXPENSE',
               reference: t.receipt ?? null,
-              classificationStatus: 'AUTO',
+              classificationStatus: 'NEEDS_REVIEW',
             })),
           });
         }
@@ -282,12 +285,19 @@ export class ImportsService {
 
       console.log(`[ImportsService] confirm: saved ${file.transactions.length} transactions, batchId=${batch.id}`);
 
+      const classificationSummary = await this.classification.classifyBatch(
+        condominiumId,
+        batch.id,
+      );
+      console.log(`[ImportsService] confirm: classification done`, classificationSummary);
+
       results.push({
         fileName: file.fileName,
         status: 'imported',
         batchId: batch.id,
         imported: file.transactions.length,
         duplicateFile: false,
+        classification: classificationSummary,
       });
 
       totalImported += file.transactions.length;

@@ -113,6 +113,14 @@ enum ClassificationStatus {
   NEEDS_REVIEW
 }
 
+enum MatchSource {
+  AUTO_UNIT_NUMBER
+  AUTO_NAME
+  AUTO_AMOUNT_DATE
+  MANUAL
+  RULE
+}
+
 enum ImportStatus {
   PENDING
   PROCESSING
@@ -174,11 +182,12 @@ model Condominium {
   pettyCashMovements PettyCashMovement[]
   commonAreas       CommonArea[]
   inventoryItems    InventoryItem[]
-  importBatches     ImportBatch[]
-  transactions      Transaction[]
-  collectionRecords CollectionRecord[]
-  auditLogs         AuditLog[]
-  notifications     Notification[]
+  importBatches            ImportBatch[]
+  transactions             Transaction[]
+  collectionRecords        CollectionRecord[]
+  auditLogs                AuditLog[]
+  notifications            Notification[]
+  financialMonthlySummaries FinancialMonthlySummary[]
 
   @@map("condominiums")
 }
@@ -482,22 +491,31 @@ model ImportBatch {
 }
 
 model Transaction {
-  id                   String               @id @default(uuid())
-  condominiumId        String
-  importBatchId        String
-  residentId           String?
-  transactionDate      DateTime             @db.Date
-  description          String
-  charges              Decimal?             @db.Decimal(12, 2)
-  credits              Decimal?             @db.Decimal(12, 2)
-  balance              Decimal              @db.Decimal(12, 2)
-  flowType             FlowType
-  category             String?
-  reference            String?
-  payerName            String?
-  classificationStatus ClassificationStatus @default(AUTO)
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
+  id                    String               @id @default(uuid())
+  condominiumId         String
+  importBatchId         String
+  residentId            String?
+  transactionDate       DateTime             @db.Date
+  description           String
+  charges               Decimal?             @db.Decimal(12, 2)
+  credits               Decimal?             @db.Decimal(12, 2)
+  balance               Decimal              @db.Decimal(12, 2)
+  flowType              FlowType
+  category              String?
+  reference             String?
+  payerName             String?
+  classificationStatus  ClassificationStatus @default(NEEDS_REVIEW)
+  unitNumberDetected    String?
+  payerNameDetected     String?
+  paymentConcept        String?
+  paymentPeriodYear     Int?
+  paymentPeriodMonth    Int?
+  matchSource           MatchSource?
+  confidenceScore       Decimal?             @db.Decimal(5, 4)
+  matchedAt             DateTime?
+  classificationVersion Int                  @default(1)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
   condominium Condominium @relation(fields: [condominiumId], references: [id])
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id])
@@ -508,6 +526,10 @@ model Transaction {
   @@index([residentId])
   @@index([transactionDate])
   @@index([flowType])
+  @@index([condominiumId, classificationStatus])
+  @@index([condominiumId, transactionDate, flowType])
+  @@index([residentId, paymentPeriodYear, paymentPeriodMonth])
+  @@index([condominiumId, paymentPeriodYear, paymentPeriodMonth])
   @@map("transactions")
 }
 
@@ -589,4 +611,25 @@ model Notification {
   @@index([isRead])
   @@index([createdAt])
   @@map("notifications")
+}
+
+model FinancialMonthlySummary {
+  id               String   @id @default(uuid())
+  condominiumId    String
+  year             Int
+  month            Int
+  totalIncome      Decimal  @default(0) @db.Decimal(15, 2)
+  totalExpenses    Decimal  @default(0) @db.Decimal(15, 2)
+  netBalance       Decimal  @default(0) @db.Decimal(15, 2)
+  transactionCount Int      @default(0)
+  classifiedCount  Int      @default(0)
+  needsReviewCount Int      @default(0)
+  unmatchedCount   Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+
+  @@unique([condominiumId, year, month])
+  @@index([condominiumId])
+  @@map("financial_monthly_summaries")
 }

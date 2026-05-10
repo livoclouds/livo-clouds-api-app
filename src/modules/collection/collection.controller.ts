@@ -31,6 +31,24 @@ export class CollectionController {
     return this.collectionService.findByResident(req.condominiumId, residentId);
   }
 
+  @Get('residents/:residentId/account-statement')
+  @ApiOperation({ summary: 'Get resident account statement with transactions and collection records' })
+  getAccountStatement(
+    @Request() req: { condominiumId: string },
+    @Param('residentId') residentId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('year') year?: string,
+    @Query('month') month?: string,
+  ) {
+    return this.collectionService.getAccountStatement(req.condominiumId, residentId, {
+      from,
+      to,
+      year: year ? parseInt(year, 10) : undefined,
+      month: month ? parseInt(month, 10) : undefined,
+    });
+  }
+
   @Patch(':id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Manual override collection record' })

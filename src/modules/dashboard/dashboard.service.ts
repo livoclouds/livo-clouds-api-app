@@ -77,43 +77,44 @@ export class DashboardService {
   }
 
   async getMonthlyTrend(condominiumId: string, year: number) {
-    const months = Array.from({ length: 12 }, (_, i) => i + 1);
+    // Use pre-computed summaries when available (avoids 24 queries)
+    const summaries = await this.prisma.financialMonthlySummary.findMany({
+      where: { condominiumId, year },
+      orderBy: { month: 'asc' },
+    });
 
-    const rows = await Promise.all(
-      months.map(async (month) => {
-        const [income, expense] = await Promise.all([
-          this.prisma.transaction.aggregate({
-            where: {
-              condominiumId,
-              flowType: 'INCOME',
-              transactionDate: {
-                gte: new Date(year, month - 1, 1),
-                lt: new Date(year, month, 1),
-              },
-            },
-            _sum: { credits: true },
-          }),
-          this.prisma.transaction.aggregate({
-            where: {
-              condominiumId,
-              flowType: 'EXPENSE',
-              transactionDate: {
-                gte: new Date(year, month - 1, 1),
-                lt: new Date(year, month, 1),
-              },
-            },
-            _sum: { charges: true },
-          }),
-        ]);
-
+    if (summaries.length > 0) {
+      const byMonth = new Map(summaries.map((s) => [s.month, s]));
+      return Array.from({ length: 12 }, (_, i) => {
+        const m = i + 1;
+        const s = byMonth.get(m);
         return {
-          month,
-          income: Number(income._sum.credits ?? 0),
-          expenses: Number(expense._sum.charges ?? 0),
+          month: m,
+          income: s ? Number(s.totalIncome) : 0,
+          expenses: s ? Number(s.totalExpenses) : 0,
         };
-      }),
-    );
+      });
+    }
 
-    return rows;
+    // Fallback: single aggregation query grouped by month
+    type TrendRow = { month: number; income: number; expenses: number };
+    const rows = await this.prisma.$queryRaw<TrendRow[]>`
+      SELECT
+        EXTRACT(MONTH FROM transaction_date)::int AS month,
+        COALESCE(SUM(CASE WHEN flow_type = 'INCOME' THEN credits ELSE 0 END), 0)::float  AS income,
+        COALESCE(SUM(CASE WHEN flow_type = 'EXPENSE' THEN charges ELSE 0 END), 0)::float AS expenses
+      FROM transactions
+      WHERE condominium_id = ${condominiumId}
+        AND EXTRACT(YEAR FROM transaction_date) = ${year}
+      GROUP BY EXTRACT(MONTH FROM transaction_date)
+      ORDER BY month
+    `;
+
+    const byMonth = new Map(rows.map((r) => [r.month, r]));
+    return Array.from({ length: 12 }, (_, i) => {
+      const m = i + 1;
+      const r = byMonth.get(m);
+      return { month: m, income: r?.income ?? 0, expenses: r?.expenses ?? 0 };
+    });
   }
 }
