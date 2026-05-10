@@ -94,9 +94,10 @@ export class ImportsService {
 
       const duplicate = await this.prisma.importBatch.findFirst({
         where: { condominiumId, fileHash },
+        include: { _count: { select: { transactions: true } } },
       });
 
-      if (duplicate?.status === 'COMPLETED') {
+      if (duplicate?.status === 'COMPLETED' && duplicate._count.transactions > 0) {
         console.log(`[ImportsService] upload: COMPLETED duplicate found, skipping`);
         results.push({
           fileName: file.originalname,
@@ -107,7 +108,12 @@ export class ImportsService {
         continue;
       }
 
-      if (duplicate?.status === 'PENDING') {
+      if (duplicate?.status === 'COMPLETED' && duplicate._count.transactions === 0) {
+        // Stale COMPLETED batch with no transactions (e.g. transactions table was reset).
+        // Delete it so a clean PENDING batch can be created below.
+        console.log(`[ImportsService] upload: stale COMPLETED batch with 0 transactions, deleting id=${duplicate.id}`);
+        await this.prisma.importBatch.delete({ where: { id: duplicate.id } });
+      } else if (duplicate?.status === 'PENDING') {
         console.log(`[ImportsService] upload: PENDING batch found, returning existing batchId=${duplicate.id}`);
         results.push({
           fileName: file.originalname,
@@ -195,9 +201,10 @@ export class ImportsService {
 
       const existing = await this.prisma.importBatch.findFirst({
         where: { condominiumId, fileHash: file.fileHash },
+        include: { _count: { select: { transactions: true } } },
       });
 
-      if (existing?.status === 'COMPLETED') {
+      if (existing?.status === 'COMPLETED' && existing._count.transactions > 0) {
         console.log(`[ImportsService] confirm: duplicate detected, batchId=${existing.id}`);
         results.push({
           fileName: file.fileName,
@@ -208,6 +215,8 @@ export class ImportsService {
         });
         continue;
       }
+      // If COMPLETED with 0 transactions, fall through and treat it like a PENDING batch
+      // (reuse the record in the $transaction block below).
 
       const totalIncome = file.transactions.reduce(
         (sum, t) => sum + (t.credits ?? 0),
