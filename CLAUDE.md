@@ -119,6 +119,31 @@ npm run prisma:deploy     prisma migrate deploy (CI/production)
 npm run prisma:seed       ts-node prisma/seed.ts
 ```
 
+## Git & Version Control Rules
+
+**Commits and pushes are never performed automatically.**
+After completing any implementation, refactor, or fix — no matter how small — do not run `git add`, `git commit`, or `git push` unless the user explicitly requests it in a follow-up message. Always wait for a direct instruction.
+
+**Never add Claude as a co-author.**
+When the user explicitly asks to commit, the commit message must never include any `Co-Authored-By` trailer or any other attribution to Claude, an AI, or any automated tool. The commit must appear as solely authored by the git user configured in the repository.
+
+**Commit message format.**
+Every commit must follow this structure:
+
+```
+<concise descriptive title summarizing all changes>
+
+<detailed body covering every file changed, every function added or
+modified, behavioral changes before and after, reason for each decision,
+migration or DB changes if any, and any side effects or edge cases
+addressed>
+```
+
+- The title must be general enough to convey the full scope of the change set (not just one file or one fix).
+- The body must be detailed: list each file modified, what changed in it, what functions or logic were added, altered, or removed, and why.
+- Use the imperative mood in the title ("Add", "Fix", "Refactor", not "Added", "Fixed").
+- Do not use conventional commit type prefixes (e.g. `feat:`, `fix:`) unless the user explicitly requests them.
+
 ## Known Gaps
 - No Helmet (no HTTP security headers)
 - No rate limiting
