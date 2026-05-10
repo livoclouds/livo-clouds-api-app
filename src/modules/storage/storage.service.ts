@@ -48,6 +48,7 @@ export class StorageService {
     mimeType: string,
   ): Promise<string> {
     if (!this.client) throw new Error('External storage is not configured');
+    console.log(`[StorageService] uploadFile: bucket=${this.bucket}, key=${key}, size=${buffer.length}B`);
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -56,6 +57,7 @@ export class StorageService {
         ContentType: mimeType,
       }),
     );
+    console.log(`[StorageService] uploadFile: success, key=${key}`);
     return key;
   }
 

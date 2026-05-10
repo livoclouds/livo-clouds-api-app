@@ -83,6 +83,8 @@ export class ImportsService {
         continue;
       }
 
+      console.log(`[ImportsService] upload: file=${file.originalname}, size=${file.size}B, mime=${file.mimetype}`);
+
       const fileHash = crypto
         .createHash('sha256')
         .update(file.buffer)
@@ -92,12 +94,24 @@ export class ImportsService {
         where: { condominiumId, fileHash },
       });
 
-      if (duplicate) {
+      if (duplicate?.status === 'COMPLETED') {
+        console.log(`[ImportsService] upload: COMPLETED duplicate found, skipping`);
         results.push({
           fileName: file.originalname,
           status: 'duplicate',
           message: 'File already imported',
           existingBatchId: duplicate.id,
+        });
+        continue;
+      }
+
+      if (duplicate?.status === 'PENDING') {
+        console.log(`[ImportsService] upload: PENDING batch found, returning existing batchId=${duplicate.id}`);
+        results.push({
+          fileName: file.originalname,
+          status: 'queued',
+          batchId: duplicate.id,
+          message: 'File already queued',
         });
         continue;
       }
@@ -116,16 +130,20 @@ export class ImportsService {
         },
       });
 
+      console.log(`[ImportsService] upload: created PENDING batch id=${batch.id}, R2 configured=${this.storage.isConfigured()}`);
+
       if (this.storage.isConfigured()) {
         const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${file.originalname}`;
         try {
+          console.log(`[ImportsService] upload: uploading to R2, key=${storageKey}`);
           await this.storage.uploadFile(storageKey, file.buffer, file.mimetype);
           await this.prisma.importBatch.update({
             where: { id: batch.id },
             data: { storageKey, storageProvider: 'r2' },
           });
-        } catch {
-          // Storage upload is non-critical — batch is already created
+          console.log(`[ImportsService] upload: R2 upload complete, key=${storageKey}`);
+        } catch (err) {
+          console.error(`[ImportsService] upload: R2 upload failed:`, err);
         }
       }
 
@@ -170,11 +188,14 @@ export class ImportsService {
         continue;
       }
 
+      console.log(`[ImportsService] confirm: file=${file.fileName}, transactions=${file.transactions.length}, hash=${file.fileHash.slice(0, 16)}...`);
+
       const existing = await this.prisma.importBatch.findFirst({
         where: { condominiumId, fileHash: file.fileHash },
       });
 
-      if (existing) {
+      if (existing?.status === 'COMPLETED') {
+        console.log(`[ImportsService] confirm: duplicate detected, batchId=${existing.id}`);
         results.push({
           fileName: file.fileName,
           status: 'duplicate',
@@ -197,24 +218,45 @@ export class ImportsService {
         file.transactions[file.transactions.length - 1]?.balance ?? 0;
 
       const batch = await this.prisma.$transaction(async (tx) => {
-        const importBatch = await tx.importBatch.create({
-          data: {
-            condominiumId,
-            importedById: user.sub,
-            fileName: file.fileName,
-            fileType: file.fileType,
-            fileSizeBytes: file.fileSizeBytes,
-            fileHash: file.fileHash,
-            status: 'COMPLETED',
-            totalRows: file.transactions.length,
-            totalIncome,
-            totalExpenses,
-            finalBalance,
-            transactionCount: file.transactions.length,
-            warnings: file.warnings,
-            completedAt: new Date(),
-          },
-        });
+        let importBatch;
+
+        if (existing) {
+          // PENDING batch from upload step — update to COMPLETED, preserve storageKey
+          console.log(`[ImportsService] confirm: updating PENDING batch ${existing.id} to COMPLETED`);
+          importBatch = await tx.importBatch.update({
+            where: { id: existing.id },
+            data: {
+              importedById: user.sub,
+              status: 'COMPLETED',
+              totalRows: file.transactions.length,
+              totalIncome,
+              totalExpenses,
+              finalBalance,
+              transactionCount: file.transactions.length,
+              warnings: file.warnings,
+              completedAt: new Date(),
+            },
+          });
+        } else {
+          importBatch = await tx.importBatch.create({
+            data: {
+              condominiumId,
+              importedById: user.sub,
+              fileName: file.fileName,
+              fileType: file.fileType,
+              fileSizeBytes: file.fileSizeBytes,
+              fileHash: file.fileHash,
+              status: 'COMPLETED',
+              totalRows: file.transactions.length,
+              totalIncome,
+              totalExpenses,
+              finalBalance,
+              transactionCount: file.transactions.length,
+              warnings: file.warnings,
+              completedAt: new Date(),
+            },
+          });
+        }
 
         const CHUNK = 500;
         for (let i = 0; i < file.transactions.length; i += CHUNK) {
@@ -237,6 +279,8 @@ export class ImportsService {
 
         return importBatch;
       });
+
+      console.log(`[ImportsService] confirm: saved ${file.transactions.length} transactions, batchId=${batch.id}`);
 
       results.push({
         fileName: file.fileName,
