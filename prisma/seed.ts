@@ -324,6 +324,7 @@ async function main() {
   await prisma.additionalResident.deleteMany();
   await prisma.resident.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.financialMonthlySummary.deleteMany();
   await prisma.condominiumSettings.deleteMany();
   await prisma.condominium.deleteMany();
   console.log('✅ Cleanup complete');

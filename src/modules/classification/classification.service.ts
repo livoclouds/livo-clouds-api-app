@@ -333,6 +333,45 @@ export class ClassificationService {
     });
   }
 
+  async manualClassify(
+    condominiumId: string,
+    transactionId: string,
+    dto: {
+      unitNumber?: string;
+      paymentConcept?: string;
+      paymentPeriodMonth?: number;
+      paymentPeriodYear?: number;
+      transactionDate?: string;
+      description?: string;
+    },
+  ): Promise<void> {
+    let residentId: string | undefined;
+    if (dto.unitNumber) {
+      const resident = await this.prisma.resident.findFirst({
+        where: { condominiumId, unitNumber: dto.unitNumber, deletedAt: null },
+        select: { id: true },
+      });
+      if (resident) residentId = resident.id;
+    }
+
+    await this.prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        ...(dto.unitNumber !== undefined && { unitNumberDetected: dto.unitNumber || null }),
+        ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
+        ...(dto.paymentPeriodMonth !== undefined && { paymentPeriodMonth: dto.paymentPeriodMonth }),
+        ...(dto.paymentPeriodYear !== undefined && { paymentPeriodYear: dto.paymentPeriodYear }),
+        ...(dto.transactionDate !== undefined && { transactionDate: new Date(dto.transactionDate) }),
+        ...(dto.description !== undefined && { description: dto.description }),
+        ...(residentId !== undefined && { residentId }),
+        matchSource: MatchSource.MANUAL,
+        confidenceScore: new Prisma.Decimal('1.0000'),
+        matchedAt: new Date(),
+        classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+      },
+    });
+  }
+
   async unmatch(condominiumId: string, transactionId: string): Promise<void> {
     await this.prisma.transaction.update({
       where: { id: transactionId },
