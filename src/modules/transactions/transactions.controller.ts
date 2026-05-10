@@ -28,4 +28,13 @@ export class TransactionsController {
   ) {
     return this.transactionsService.findUnmatched(req.condominiumId, query);
   }
+
+  @Get('classified')
+  @ApiOperation({ summary: 'List classified transactions (AUTO or MANUAL_OVERRIDE)' })
+  findClassified(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListTransactionsDto,
+  ) {
+    return this.transactionsService.findClassified(req.condominiumId, query);
+  }
 }

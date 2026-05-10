@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { ImportsService } from './imports.service';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
+import { ListImportBatchesDto } from './dto/list-import-batches.dto';
 
 interface MultipartFile {
   buffer: Buffer;
@@ -33,8 +35,11 @@ export class ImportsController {
 
   @Get()
   @ApiOperation({ summary: 'List import batches' })
-  findAll(@Request() req: { condominiumId: string }) {
-    return this.importsService.findAll(req.condominiumId);
+  findAll(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListImportBatchesDto,
+  ) {
+    return this.importsService.findAll(req.condominiumId, query);
   }
 
   @Get(':id')

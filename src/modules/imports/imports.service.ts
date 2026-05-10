@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from '../classification/classification.service';
 import { StorageService } from '../storage/storage.service';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
+import { ListImportBatchesDto } from './dto/list-import-batches.dto';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -24,15 +25,25 @@ export class ImportsService {
     private readonly classification: ClassificationService,
   ) {}
 
-  async findAll(condominiumId: string) {
-    return this.prisma.importBatch.findMany({
-      where: { condominiumId },
-      include: {
-        importedBy: { select: { id: true, firstName: true, lastName: true } },
-        _count: { select: { transactions: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(condominiumId: string, dto: ListImportBatchesDto) {
+    const { page = 1, limit = 15 } = dto;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.importBatch.findMany({
+        where: { condominiumId },
+        include: {
+          importedBy: { select: { id: true, firstName: true, lastName: true } },
+          _count: { select: { transactions: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.importBatch.count({ where: { condominiumId } }),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async findOne(condominiumId: string, id: string) {
