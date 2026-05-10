@@ -60,6 +60,7 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
+      sessionDuration: user.sessionDuration,
       user: {
         id: user.id,
         email: user.email,
@@ -102,7 +103,8 @@ export class AuthService {
       condominiumSlug: user.condominium?.slug ?? null,
     };
 
-    return this.generateTokens(payload);
+    const { accessToken, refreshToken } = await this.generateTokens(payload);
+    return { accessToken, refreshToken, sessionDuration: user.sessionDuration };
   }
 
   async logout(token: string) {
