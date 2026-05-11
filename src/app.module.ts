@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerUserGuard } from './common/guards/throttler-user.guard';
 import appConfig from './config/app.config';
 import corsConfig from './config/cors.config';
 import databaseConfig from './config/database.config';
@@ -37,6 +39,21 @@ import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconc
       ignoreEnvFile: process.env.NODE_ENV === 'production',
       load: [appConfig, corsConfig, databaseConfig, jwtConfig, storageConfig],
     }),
+    ThrottlerModule.forRoot([
+      {
+        // Burst protection: max 20 requests in 10 seconds per user
+        name: 'burst',
+        ttl: 10_000,
+        limit: 20,
+      },
+      {
+        // Sustained protection: max 120 requests per minute per user
+        // Normal tab-switching generates ~5-10 req/min; 120 is generous but blocks scripts
+        name: 'sustained',
+        ttl: 60_000,
+        limit: 120,
+      },
+    ]),
     PrismaModule,
     StorageModule,
     AuthModule,
@@ -58,6 +75,7 @@ import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconc
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_GUARD, useClass: ThrottlerUserGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
   ],

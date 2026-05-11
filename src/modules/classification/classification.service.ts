@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { MatchSource, ClassificationStatus, RequiresReviewReason, Prisma } from '@prisma/client';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
 
@@ -544,71 +544,303 @@ export class ClassificationService {
     }
 
     await Promise.all(
-      Array.from(uniqueMonths).map(async (key) => {
+      Array.from(uniqueMonths).map((key) => {
         const [year, month] = key.split('-').map(Number);
-        const start = new Date(year, month - 1, 1);
-        const end = new Date(year, month, 1);
-
-        const [incomeAgg, expenseAgg, statusCounts] = await Promise.all([
-          this.prisma.transaction.aggregate({
-            where: { condominiumId, flowType: 'INCOME', transactionDate: { gte: start, lt: end } },
-            _sum: { credits: true },
-            _count: true,
-          }),
-          this.prisma.transaction.aggregate({
-            where: { condominiumId, flowType: 'EXPENSE', transactionDate: { gte: start, lt: end } },
-            _sum: { charges: true },
-            _count: true,
-          }),
-          this.prisma.transaction.groupBy({
-            by: ['classificationStatus'],
-            where: { condominiumId, transactionDate: { gte: start, lt: end } },
-            _count: true,
-          }),
-        ]);
-
-        const totalIncome = Number(incomeAgg._sum.credits ?? 0);
-        const totalExpenses = Number(expenseAgg._sum.charges ?? 0);
-        const transactionCount = incomeAgg._count + expenseAgg._count;
-        const classifiedCount =
-          statusCounts.find((s) => s.classificationStatus === 'AUTO')?._count ?? 0;
-        const needsReviewCount =
-          statusCounts.find((s) => s.classificationStatus === 'NEEDS_REVIEW')?._count ?? 0;
-
-        const unmatchedRows = await this.prisma.transaction.count({
-          where: {
-            condominiumId,
-            transactionDate: { gte: start, lt: end },
-            classificationStatus: 'NEEDS_REVIEW',
-            residentId: null,
-          },
-        });
-
-        await this.prisma.financialMonthlySummary.upsert({
-          where: { condominiumId_year_month: { condominiumId, year, month } },
-          create: {
-            condominiumId,
-            year,
-            month,
-            totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-            totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-            netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-            transactionCount,
-            classifiedCount,
-            needsReviewCount,
-            unmatchedCount: unmatchedRows,
-          },
-          update: {
-            totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-            totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-            netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-            transactionCount,
-            classifiedCount,
-            needsReviewCount,
-            unmatchedCount: unmatchedRows,
-          },
-        });
+        return this.upsertSummaryForMonth(condominiumId, year, month);
       }),
     );
+  }
+
+  private async upsertSummaryForMonth(
+    condominiumId: string,
+    year: number,
+    month: number,
+  ): Promise<void> {
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+
+    // Only APPROVED transactions affect official income/expense totals
+    const [incomeAgg, expenseAgg, classificationCounts, reconciliationCounts] = await Promise.all([
+      this.prisma.transaction.aggregate({
+        where: {
+          condominiumId,
+          flowType: 'INCOME',
+          transactionDate: { gte: start, lt: end },
+          reconciliationStatus: ReconciliationStatus.APPROVED,
+        },
+        _sum: { credits: true },
+        _count: true,
+      }),
+      this.prisma.transaction.aggregate({
+        where: {
+          condominiumId,
+          flowType: 'EXPENSE',
+          transactionDate: { gte: start, lt: end },
+          reconciliationStatus: ReconciliationStatus.APPROVED,
+        },
+        _sum: { charges: true },
+        _count: true,
+      }),
+      this.prisma.transaction.groupBy({
+        by: ['classificationStatus'],
+        where: { condominiumId, transactionDate: { gte: start, lt: end } },
+        _count: true,
+      }),
+      this.prisma.transaction.groupBy({
+        by: ['reconciliationStatus'],
+        where: { condominiumId, transactionDate: { gte: start, lt: end } },
+        _count: true,
+      }),
+    ]);
+
+    const totalIncome = Number(incomeAgg._sum.credits ?? 0);
+    const totalExpenses = Number(expenseAgg._sum.charges ?? 0);
+    const approvedCount = incomeAgg._count + expenseAgg._count;
+
+    const totalAll = await this.prisma.transaction.count({
+      where: { condominiumId, transactionDate: { gte: start, lt: end } },
+    });
+
+    const classifiedCount =
+      classificationCounts.find((s) => s.classificationStatus === 'AUTO')?._count ?? 0;
+    const needsReviewCount =
+      classificationCounts.find((s) => s.classificationStatus === 'NEEDS_REVIEW')?._count ?? 0;
+
+    const pendingCount =
+      reconciliationCounts.find((s) => s.reconciliationStatus === 'PENDING')?._count ?? 0;
+    const ignoredCount =
+      reconciliationCounts.find((s) => s.reconciliationStatus === 'IGNORED')?._count ?? 0;
+
+    const unmatchedRows = await this.prisma.transaction.count({
+      where: {
+        condominiumId,
+        transactionDate: { gte: start, lt: end },
+        classificationStatus: 'NEEDS_REVIEW',
+        residentId: null,
+      },
+    });
+
+    await this.prisma.financialMonthlySummary.upsert({
+      where: { condominiumId_year_month: { condominiumId, year, month } },
+      create: {
+        condominiumId,
+        year,
+        month,
+        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
+        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
+        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
+        transactionCount: totalAll,
+        classifiedCount,
+        needsReviewCount,
+        unmatchedCount: unmatchedRows,
+        approvedCount,
+        pendingCount,
+        ignoredCount,
+      },
+      update: {
+        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
+        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
+        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
+        transactionCount: totalAll,
+        classifiedCount,
+        needsReviewCount,
+        unmatchedCount: unmatchedRows,
+        approvedCount,
+        pendingCount,
+        ignoredCount,
+      },
+    });
+  }
+
+  async approveTransaction(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+  ): Promise<void> {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, condominiumId },
+    });
+    if (!tx) throw new NotFoundException('Transaction not found');
+
+    const before = { reconciliationStatus: tx.reconciliationStatus };
+    const now = new Date();
+
+    await this.prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+        reconciledById: userId,
+        reconciledAt: now,
+      },
+    });
+
+    const d = new Date(tx.transactionDate);
+    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: 'TRANSACTION_APPROVED',
+        actionCategory: 'RECONCILIATION',
+        module: 'transactions',
+        entityType: 'Transaction',
+        entityId: transactionId,
+        beforeState: before,
+        afterState: { reconciliationStatus: ReconciliationStatus.APPROVED },
+        result: 'SUCCESS',
+      },
+    });
+  }
+
+  async ignoreTransaction(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+  ): Promise<void> {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, condominiumId },
+    });
+    if (!tx) throw new NotFoundException('Transaction not found');
+
+    const before = { reconciliationStatus: tx.reconciliationStatus };
+    const now = new Date();
+
+    await this.prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        reconciliationStatus: ReconciliationStatus.IGNORED,
+        reconciledById: userId,
+        reconciledAt: now,
+      },
+    });
+
+    const d = new Date(tx.transactionDate);
+    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: 'TRANSACTION_IGNORED',
+        actionCategory: 'RECONCILIATION',
+        module: 'transactions',
+        entityType: 'Transaction',
+        entityId: transactionId,
+        beforeState: before,
+        afterState: { reconciliationStatus: ReconciliationStatus.IGNORED },
+        result: 'SUCCESS',
+      },
+    });
+  }
+
+  async reopenTransaction(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+  ): Promise<void> {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, condominiumId },
+    });
+    if (!tx) throw new NotFoundException('Transaction not found');
+
+    const before = { reconciliationStatus: tx.reconciliationStatus };
+
+    await this.prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        reconciliationStatus: ReconciliationStatus.PENDING,
+        reconciledById: null,
+        reconciledAt: null,
+      },
+    });
+
+    const d = new Date(tx.transactionDate);
+    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: 'TRANSACTION_REOPENED',
+        actionCategory: 'RECONCILIATION',
+        module: 'transactions',
+        entityType: 'Transaction',
+        entityId: transactionId,
+        beforeState: before,
+        afterState: { reconciliationStatus: ReconciliationStatus.PENDING },
+        result: 'SUCCESS',
+      },
+    });
+  }
+
+  async bulkReconcile(
+    condominiumId: string,
+    ids: string[],
+    action: 'approve' | 'ignore' | 'reopen',
+    userId: string,
+  ): Promise<{ affected: number }> {
+    // Verify all IDs belong to this condominium (IDOR protection)
+    const existing = await this.prisma.transaction.findMany({
+      where: { id: { in: ids }, condominiumId },
+      select: { id: true, transactionDate: true, reconciliationStatus: true },
+    });
+
+    if (existing.length !== ids.length) {
+      throw new ForbiddenException('One or more transactions do not belong to this condominium');
+    }
+
+    const statusMap: Record<string, ReconciliationStatus> = {
+      approve: ReconciliationStatus.APPROVED,
+      ignore: ReconciliationStatus.IGNORED,
+      reopen: ReconciliationStatus.PENDING,
+    };
+    const newStatus = statusMap[action];
+    const now = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.transaction.updateMany({
+        where: { id: { in: ids }, condominiumId },
+        data: {
+          reconciliationStatus: newStatus,
+          reconciledById: action === 'reopen' ? null : userId,
+          reconciledAt: action === 'reopen' ? null : now,
+        },
+      }),
+    ]);
+
+    // Recalculate summaries for all affected months
+    const uniqueMonths = new Set<string>();
+    for (const tx of existing) {
+      const d = new Date(tx.transactionDate);
+      uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
+    }
+    await Promise.all(
+      Array.from(uniqueMonths).map((key) => {
+        const [year, month] = key.split('-').map(Number);
+        return this.upsertSummaryForMonth(condominiumId, year, month);
+      }),
+    );
+
+    const actionMap: Record<string, string> = {
+      approve: 'TRANSACTIONS_BULK_APPROVED',
+      ignore: 'TRANSACTIONS_BULK_IGNORED',
+      reopen: 'TRANSACTIONS_BULK_REOPENED',
+    };
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: actionMap[action],
+        actionCategory: 'RECONCILIATION',
+        module: 'transactions',
+        afterState: { ids, newStatus, count: ids.length },
+        result: 'SUCCESS',
+        description: `Bulk ${action}: ${ids.length} transactions`,
+      },
+    });
+
+    return { affected: ids.length };
   }
 }

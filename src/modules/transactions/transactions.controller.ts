@@ -37,4 +37,13 @@ export class TransactionsController {
   ) {
     return this.transactionsService.findClassified(req.condominiumId, query);
   }
+
+  @Get('reconciled')
+  @ApiOperation({ summary: 'List reconciled transactions (APPROVED or IGNORED)' })
+  findReconciled(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListTransactionsDto,
+  ) {
+    return this.transactionsService.findReconciled(req.condominiumId, query);
+  }
 }

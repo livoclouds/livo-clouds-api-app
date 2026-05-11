@@ -172,6 +172,12 @@ enum RequiresReviewReason {
   NO_MATCH
 }
 
+enum ReconciliationStatus {
+  PENDING
+  APPROVED
+  IGNORED
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -272,6 +278,7 @@ model User {
   importBatches      ImportBatch[]
   auditLogs          AuditLog[]
   notifications      Notification[]
+  reconciledTransactions Transaction[]   @relation("ReconciledBy")
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -530,13 +537,17 @@ model Transaction {
   classificationVersion Int                  @default(1)
   requiresReviewReason  RequiresReviewReason?
   matchedRuleId         String?
+  reconciliationStatus  ReconciliationStatus @default(PENDING)
+  reconciledById        String?
+  reconciledAt          DateTime?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
-  condominium Condominium         @relation(fields: [condominiumId], references: [id])
-  importBatch ImportBatch         @relation(fields: [importBatchId], references: [id])
-  resident    Resident?           @relation(fields: [residentId], references: [id])
-  matchedRule ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
+  condominium   Condominium         @relation(fields: [condominiumId], references: [id])
+  importBatch   ImportBatch         @relation(fields: [importBatchId], references: [id])
+  resident      Resident?           @relation(fields: [residentId], references: [id])
+  matchedRule   ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
+  reconciledBy  User?               @relation("ReconciledBy", fields: [reconciledById], references: [id])
   paymentAllocations PaymentAllocation[]
 
   @@index([condominiumId])
@@ -549,6 +560,8 @@ model Transaction {
   @@index([residentId, paymentPeriodYear, paymentPeriodMonth])
   @@index([condominiumId, paymentPeriodYear, paymentPeriodMonth])
   @@index([condominiumId, requiresReviewReason])
+  @@index([condominiumId, reconciliationStatus])
+  @@index([condominiumId, reconciliationStatus, transactionDate])
   @@map("transactions")
 }
 
@@ -644,6 +657,9 @@ model FinancialMonthlySummary {
   classifiedCount  Int      @default(0)
   needsReviewCount Int      @default(0)
   unmatchedCount   Int      @default(0)
+  approvedCount    Int      @default(0)
+  pendingCount     Int      @default(0)
+  ignoredCount     Int      @default(0)
   updatedAt        DateTime @updatedAt
 
   condominium Condominium @relation(fields: [condominiumId], references: [id])
