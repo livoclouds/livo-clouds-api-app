@@ -19,7 +19,7 @@ export class UpdateFeesSettingsDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
-  @Min(0)
+  @Min(0.01)
   @Transform(({ value }) => parseFloat(value))
   ordinaryFeeAmount?: number;
 
