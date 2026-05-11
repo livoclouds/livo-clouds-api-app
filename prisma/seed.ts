@@ -14,6 +14,8 @@ import {
   AuditResult,
 } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const prisma = new PrismaClient();
 const SALT_ROUNDS = 12;
@@ -32,7 +34,7 @@ const CONDO_DEFINITIONS = [
       contactEmail: 'contacto@cotoalameda.com',
       businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 2:00 PM', sunday: 'Closed' },
       timezone: 'America/Monterrey', currency: 'MXN', country: 'MX', defaultLocale: 'es',
-      totalUnits: 50, ordinaryFeeAmount: 2400, lateFeeAmount: 200,
+      totalUnits: 370, ordinaryFeeAmount: 2400, lateFeeAmount: 200,
       ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
     },
   },
@@ -306,6 +308,45 @@ function nameAt(pool: string[], condoIdx: number, unitIdx: number) {
   return pool[(condoIdx * 5 + unitIdx) % pool.length];
 }
 
+// ─── CSV resident helpers ─────────────────────────────────────────────────────
+
+interface CsvResident {
+  nombre: string;
+  perfil: string;
+  tipoUsuario: string;
+  unidad: string;
+  email: string;
+  telefono: string;
+  celular: string;
+}
+
+function parseResidentsCsv(filePath: string): CsvResident[] {
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^﻿/, '').replace(/\r/g, '');
+  const lines = content.split('\n').filter((l) => l.trim());
+  return lines.slice(1).map((line) => {
+    const cols = line.split(',');
+    return {
+      nombre:      cols[0]?.trim() ?? '',
+      perfil:      cols[1]?.trim() ?? '',
+      tipoUsuario: cols[2]?.trim() ?? '',
+      unidad:      cols[3]?.trim() ?? '',
+      email:       cols[4]?.trim() ?? '',
+      telefono:    cols[5]?.trim() ?? '',
+      celular:     cols[6]?.trim() ?? '',
+    };
+  }).filter((r) => r.unidad && r.nombre);
+}
+
+function splitName(full: string): { firstName: string; lastName: string } {
+  const parts = full.trim().split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+}
+
+function csvResidentType(perfil: string): ResidentType {
+  return perfil.toLowerCase().includes('residente') ? 'RESIDENT' : 'OWNER';
+}
+
 async function main() {
   console.log('🌱 Seeding database...');
 
@@ -548,32 +589,67 @@ async function main() {
   const totalUsers = Object.keys(createdUserIds).length;
   console.log(`✅ Users: ${totalUsers}`);
 
-  // ─── Residents (5 per condominium = 50 total) ──────────────────────────────
+  // ─── Residents ─────────────────────────────────────────────────────────────
+  // cotoalameda (ci=0): loaded from prisma/seed-data/residents.csv (Principal rows only)
+  // all other condominiums: 5 synthetic residents each
+  const csvPath = path.join(process.cwd(), 'prisma', 'seed-data', 'residents.csv');
+  const csvRows = parseResidentsCsv(csvPath).filter((r) => r.tipoUsuario === 'Principal');
+  const seenUnits = new Set<string>();
+  const csvResidents = csvRows.filter((r) => {
+    if (seenUnits.has(r.unidad)) return false;
+    seenUnits.add(r.unidad);
+    return true;
+  });
+
   let totalResidents = 0;
 
   for (let ci = 0; ci < condominiums.length; ci++) {
     const condoId = condominiums[ci].id;
     const fee = condominiums[ci].settings.ordinaryFeeAmount;
 
-    const residents = Array.from({ length: 5 }, (_, ui) => {
-      const payStatus = PAYMENT_STATUSES[(ci + ui) % PAYMENT_STATUSES.length];
-      return {
-        condominiumId: condoId,
-        unitNumber: String(ui + 1),
-        firstName: nameAt(FIRST_NAMES, ci, ui),
-        lastName: nameAt(LAST_NAMES, ci, ui + 5),
-        residentType: RESIDENT_TYPES[(ci + ui) % RESIDENT_TYPES.length],
-        paymentStatus: payStatus,
-        debt: payStatus === 'OVERDUE' ? fee * 2 : 0,
-        monthlyFee: fee,
-        parkingSpots: ui % 3,
-        phone: `+52 81 ${String(8000 + ci * 10 + ui).padStart(4, '0')} ${String(1000 + ui).padStart(4, '0')}`,
-        email: `residente${ui + 1}.${condominiums[ci].slug}@demo.com`,
-      };
-    });
+    if (ci === 0) {
+      // Load real residents from CSV for cotoalameda
+      const residents = csvResidents.map((row) => {
+        const { firstName, lastName } = splitName(row.nombre);
+        return {
+          condominiumId: condoId,
+          unitNumber: row.unidad,
+          firstName,
+          lastName,
+          residentType: csvResidentType(row.perfil),
+          paymentStatus: 'CURRENT' as PaymentStatus,
+          debt: 0,
+          monthlyFee: fee,
+          parkingSpots: 0,
+          phone: row.celular ? row.celular.replace(/\s+/g, '') : null,
+          secondaryPhone: row.telefono ? row.telefono.replace(/\s+/g, '') : null,
+          email: row.email || null,
+        };
+      });
 
-    await prisma.resident.createMany({ data: residents });
-    totalResidents += residents.length;
+      await prisma.resident.createMany({ data: residents });
+      totalResidents += residents.length;
+    } else {
+      const residents = Array.from({ length: 5 }, (_, ui) => {
+        const payStatus = PAYMENT_STATUSES[(ci + ui) % PAYMENT_STATUSES.length];
+        return {
+          condominiumId: condoId,
+          unitNumber: String(ui + 1),
+          firstName: nameAt(FIRST_NAMES, ci, ui),
+          lastName: nameAt(LAST_NAMES, ci, ui + 5),
+          residentType: RESIDENT_TYPES[(ci + ui) % RESIDENT_TYPES.length],
+          paymentStatus: payStatus,
+          debt: payStatus === 'OVERDUE' ? fee * 2 : 0,
+          monthlyFee: fee,
+          parkingSpots: ui % 3,
+          phone: `+52 81 ${String(8000 + ci * 10 + ui).padStart(4, '0')} ${String(1000 + ui).padStart(4, '0')}`,
+          email: `residente${ui + 1}.${condominiums[ci].slug}@demo.com`,
+        };
+      });
+
+      await prisma.resident.createMany({ data: residents });
+      totalResidents += residents.length;
+    }
   }
   console.log(`✅ Residents: ${totalResidents}`);
 
