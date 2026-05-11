@@ -131,6 +131,7 @@ export class AuthService {
       lastName: user.lastName,
       role: user.role,
       avatarUrl: user.avatarUrl,
+      phone: user.phone,
       condominium: user.condominium ?? null,
     };
   }
