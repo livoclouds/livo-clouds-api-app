@@ -46,6 +46,19 @@ export class SettingsService {
     });
   }
 
+  async validateFeesConfigured(
+    condominiumId: string,
+  ): Promise<{ valid: boolean; missingFields: string[] }> {
+    const s = await this.prisma.condominiumSettings.findUnique({
+      where: { condominiumId },
+      select: { totalUnits: true, ordinaryFeeAmount: true },
+    });
+    const missing: string[] = [];
+    if (!s || s.totalUnits <= 0) missing.push('totalUnits');
+    if (!s || Number(s.ordinaryFeeAmount) <= 0) missing.push('ordinaryFeeAmount');
+    return { valid: missing.length === 0, missingFields: missing };
+  }
+
   async updateNotifications(
     condominiumId: string,
     dto: {

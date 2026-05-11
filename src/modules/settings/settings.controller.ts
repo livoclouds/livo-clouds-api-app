@@ -50,6 +50,12 @@ export class SettingsController {
     return this.settingsService.updateFinancial(req.condominiumId, dto);
   }
 
+  @Get('validate-fees')
+  @ApiOperation({ summary: 'Check if minimum fees configuration is set' })
+  validateFees(@Request() req: { condominiumId: string }) {
+    return this.settingsService.validateFeesConfigured(req.condominiumId);
+  }
+
   @Patch('notifications')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update notification preferences' })

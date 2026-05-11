@@ -163,6 +163,15 @@ enum NotificationType {
   NEW_INCIDENT
 }
 
+enum RequiresReviewReason {
+  UNIT_NOT_FOUND
+  UNIT_AMBIGUOUS
+  NAME_NOT_FOUND
+  NAME_AMBIGUOUS
+  LOW_CONFIDENCE
+  NO_MATCH
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -188,6 +197,9 @@ model Condominium {
   auditLogs                AuditLog[]
   notifications            Notification[]
   financialMonthlySummaries FinancialMonthlySummary[]
+  reconciliationRules               ReconciliationRule[]
+  paymentAllocations                PaymentAllocation[]
+  reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
 
   @@map("condominiums")
 }
@@ -310,6 +322,8 @@ model Resident {
   additionalResidents AdditionalResident[]
   transactions      Transaction[]
   collectionRecords CollectionRecord[]
+  paymentAllocations                PaymentAllocation[]
+  reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
 
   @@unique([condominiumId, unitNumber])
   @@index([condominiumId])
@@ -514,12 +528,16 @@ model Transaction {
   confidenceScore       Decimal?             @db.Decimal(5, 4)
   matchedAt             DateTime?
   classificationVersion Int                  @default(1)
+  requiresReviewReason  RequiresReviewReason?
+  matchedRuleId         String?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
-  condominium Condominium @relation(fields: [condominiumId], references: [id])
-  importBatch ImportBatch @relation(fields: [importBatchId], references: [id])
-  resident    Resident?   @relation(fields: [residentId], references: [id])
+  condominium Condominium         @relation(fields: [condominiumId], references: [id])
+  importBatch ImportBatch         @relation(fields: [importBatchId], references: [id])
+  resident    Resident?           @relation(fields: [residentId], references: [id])
+  matchedRule ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
+  paymentAllocations PaymentAllocation[]
 
   @@index([condominiumId])
   @@index([importBatchId])
@@ -530,6 +548,7 @@ model Transaction {
   @@index([condominiumId, transactionDate, flowType])
   @@index([residentId, paymentPeriodYear, paymentPeriodMonth])
   @@index([condominiumId, paymentPeriodYear, paymentPeriodMonth])
+  @@index([condominiumId, requiresReviewReason])
   @@map("transactions")
 }
 
@@ -632,4 +651,66 @@ model FinancialMonthlySummary {
   @@unique([condominiumId, year, month])
   @@index([condominiumId])
   @@map("financial_monthly_summaries")
+}
+
+model ReconciliationRule {
+  id                  String   @id @default(uuid())
+  condominiumId       String
+  name                String
+  keywords            String[]
+  unitPatterns        String[]
+  conceptType         String?
+  confidenceThreshold Decimal  @default(0.80) @db.Decimal(3, 2)
+  isActive            Boolean  @default(true)
+  priority            Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  condominium  Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([condominiumId, isActive])
+  @@index([condominiumId, priority])
+  @@map("reconciliation_rules")
+}
+
+model PaymentAllocation {
+  id                 String   @id @default(uuid())
+  condominiumId      String
+  transactionId      String
+  residentId         String
+  paymentPeriodYear  Int
+  paymentPeriodMonth Int
+  allocatedAmount    Decimal  @db.Decimal(12, 2)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  resident    Resident    @relation(fields: [residentId], references: [id])
+
+  @@index([condominiumId])
+  @@index([transactionId])
+  @@index([residentId, paymentPeriodYear, paymentPeriodMonth])
+  @@map("payment_allocations")
+}
+
+model ReconciliationCorrectionPattern {
+  id                  String   @id @default(uuid())
+  condominiumId       String
+  originalDescription String
+  selectedUnitNumber  String?
+  selectedResidentId  String?
+  selectedConcept     String?
+  occurrenceCount     Int      @default(1)
+  lastSeenAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  resident    Resident?   @relation(fields: [selectedResidentId], references: [id])
+
+  @@unique([condominiumId, originalDescription])
+  @@index([condominiumId])
+  @@map("reconciliation_correction_patterns")
 }

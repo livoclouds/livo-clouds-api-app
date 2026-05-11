@@ -1,12 +1,21 @@
 import { Injectable } from '@nestjs/common';
-import { MatchSource, ClassificationStatus, Prisma } from '@prisma/client';
+import { MatchSource, ClassificationStatus, RequiresReviewReason, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
 
 interface ResidentData {
   id: string;
   unitNumber: string;
   firstName: string;
   lastName: string;
+}
+
+interface DbRule {
+  id: string;
+  keywords: string[];
+  unitPatterns: string[];
+  conceptType: string | null;
+  confidenceThreshold: Prisma.Decimal;
 }
 
 interface TextExtraction {
@@ -23,6 +32,8 @@ interface MatchResult {
   matchSource: MatchSource | null;
   confidenceScore: number;
   classificationStatus: ClassificationStatus;
+  requiresReviewReason: RequiresReviewReason | null;
+  matchedRuleId: string | null;
   matchedAt: Date | null;
 }
 
@@ -58,6 +69,8 @@ const MONTH_MAP: Record<string, number> = {
   julio: 7, agosto: 8, septiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
   january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
   july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+  ene: 1, feb: 2, mar: 3, abr: 4, may_: 5, jun: 6,
+  jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
 };
 
 const PAYER_PATTERNS: RegExp[] = [
@@ -122,7 +135,8 @@ function extractFromText(description: string): TextExtraction {
   let paymentPeriodMonth: number | null = null;
   let paymentPeriodYear: number | null = null;
   for (const [name, num] of Object.entries(MONTH_MAP)) {
-    if (normalized.includes(name)) {
+    const key = name === 'may_' ? 'may' : name;
+    if (normalized.includes(key)) {
       paymentPeriodMonth = num;
       break;
     }
@@ -151,6 +165,33 @@ function extractFromText(description: string): TextExtraction {
   };
 }
 
+function applyDbRules(
+  description: string,
+  rules: DbRule[],
+): { matchedRule: DbRule; score: number } | null {
+  const normalized = normalizeText(description);
+
+  for (const rule of rules) {
+    const allKeywordsMatch = rule.keywords.length > 0 &&
+      rule.keywords.every((kw) => normalized.includes(normalizeText(kw)));
+
+    const patternMatch = rule.unitPatterns.length > 0 &&
+      rule.unitPatterns.some((p) => {
+        try {
+          return new RegExp(p, 'i').test(normalized);
+        } catch {
+          return false;
+        }
+      });
+
+    if (allKeywordsMatch || (rule.unitPatterns.length > 0 && patternMatch)) {
+      return { matchedRule: rule, score: Number(rule.confidenceThreshold) };
+    }
+  }
+
+  return null;
+}
+
 function matchToResident(
   extraction: TextExtraction,
   residents: ResidentData[],
@@ -158,22 +199,46 @@ function matchToResident(
   // Pass 1: exact unit number match
   if (extraction.unitNumberDetected) {
     const normalizedDetected = normalizeText(extraction.unitNumberDetected);
-    const found = residents.find(
+    const matches = residents.filter(
       (r) => normalizeText(r.unitNumber) === normalizedDetected,
     );
-    if (found) {
+
+    if (matches.length === 1) {
+      const found = matches[0];
       const score = extraction.unitConfidence;
+      const isAuto = score >= 0.8;
       return {
-        residentId: score >= 0.8 ? found.id : null,
+        residentId: isAuto ? found.id : null,
         matchSource: MatchSource.AUTO_UNIT_NUMBER,
         confidenceScore: score,
-        classificationStatus:
-          score >= 0.8
-            ? ClassificationStatus.AUTO
-            : ClassificationStatus.NEEDS_REVIEW,
-        matchedAt: score >= 0.8 ? new Date() : null,
+        classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
+        matchedRuleId: null,
+        matchedAt: isAuto ? new Date() : null,
       };
     }
+
+    if (matches.length > 1) {
+      return {
+        residentId: null,
+        matchSource: MatchSource.AUTO_UNIT_NUMBER,
+        confidenceScore: extraction.unitConfidence,
+        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: RequiresReviewReason.UNIT_AMBIGUOUS,
+        matchedRuleId: null,
+        matchedAt: null,
+      };
+    }
+
+    return {
+      residentId: null,
+      matchSource: null,
+      confidenceScore: 0,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.UNIT_NOT_FOUND,
+      matchedRuleId: null,
+      matchedAt: null,
+    };
   }
 
   // Pass 2: fuzzy name match
@@ -197,18 +262,27 @@ function matchToResident(
 
     if (bestResident) {
       const multipleMatches = matchCount > 1;
-      const status =
-        multipleMatches || bestScore < 0.8
-          ? ClassificationStatus.NEEDS_REVIEW
-          : ClassificationStatus.AUTO;
+      const isAuto = !multipleMatches && bestScore >= 0.8;
       return {
-        residentId: status === ClassificationStatus.AUTO ? bestResident.id : null,
+        residentId: isAuto ? bestResident.id : null,
         matchSource: MatchSource.AUTO_NAME,
         confidenceScore: bestScore,
-        classificationStatus: status,
-        matchedAt: status === ClassificationStatus.AUTO ? new Date() : null,
+        classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: isAuto ? null : (multipleMatches ? RequiresReviewReason.NAME_AMBIGUOUS : RequiresReviewReason.LOW_CONFIDENCE),
+        matchedRuleId: null,
+        matchedAt: isAuto ? new Date() : null,
       };
     }
+
+    return {
+      residentId: null,
+      matchSource: null,
+      confidenceScore: 0,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.NAME_NOT_FOUND,
+      matchedRuleId: null,
+      matchedAt: null,
+    };
   }
 
   // Pass 3: no match
@@ -217,19 +291,44 @@ function matchToResident(
     matchSource: null,
     confidenceScore: 0,
     classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+    requiresReviewReason: RequiresReviewReason.NO_MATCH,
+    matchedRuleId: null,
     matchedAt: null,
   };
 }
 
 @Injectable()
 export class ClassificationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly rulesService: ReconciliationRulesService,
+  ) {}
 
   classifyTransaction(
     description: string,
     residents: ResidentData[],
+    rules: DbRule[] = [],
   ): ClassificationResult {
     const extraction = extractFromText(description);
+
+    // Pass 0: DB-driven rules (priority order, first match wins)
+    const ruleMatch = applyDbRules(description, rules);
+    if (ruleMatch) {
+      const { matchedRule, score } = ruleMatch;
+      const isAuto = score >= 0.8;
+      return {
+        ...extraction,
+        paymentConcept: matchedRule.conceptType ?? extraction.paymentConcept,
+        residentId: null,
+        matchSource: MatchSource.RULE,
+        confidenceScore: score,
+        classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
+        matchedRuleId: matchedRule.id,
+        matchedAt: isAuto ? new Date() : null,
+      };
+    }
+
     const match = matchToResident(extraction, residents);
     return { ...extraction, ...match };
   }
@@ -238,7 +337,7 @@ export class ClassificationService {
     condominiumId: string,
     batchId: string,
   ): Promise<ClassificationSummary> {
-    const [residents, transactions] = await Promise.all([
+    const [residents, transactions, activeRules] = await Promise.all([
       this.prisma.resident.findMany({
         where: { condominiumId, deletedAt: null },
         select: { id: true, unitNumber: true, firstName: true, lastName: true },
@@ -247,6 +346,7 @@ export class ClassificationService {
         where: { condominiumId, importBatchId: batchId },
         select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
       }),
+      this.rulesService.findActive(condominiumId),
     ]);
 
     let classified = 0;
@@ -258,7 +358,7 @@ export class ClassificationService {
       const chunk = transactions.slice(i, i + CHUNK);
       await Promise.all(
         chunk.map(async (tx) => {
-          const result = this.classifyTransaction(tx.description, residents);
+          const result = this.classifyTransaction(tx.description, residents, activeRules);
           await this.prisma.transaction.update({
             where: { id: tx.id },
             data: {
@@ -274,6 +374,8 @@ export class ClassificationService {
               matchedAt: result.matchedAt,
               residentId: result.residentId,
               classificationStatus: result.classificationStatus,
+              requiresReviewReason: result.requiresReviewReason ?? null,
+              matchedRuleId: result.matchedRuleId ?? null,
             },
           });
 
@@ -304,6 +406,8 @@ export class ClassificationService {
         matchSource: null,
         confidenceScore: null,
         matchedAt: null,
+        requiresReviewReason: null,
+        matchedRuleId: null,
         classificationVersion: { increment: 1 },
       },
     });
@@ -329,6 +433,8 @@ export class ClassificationService {
         confidenceScore: new Prisma.Decimal('1.0000'),
         matchedAt: new Date(),
         classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+        requiresReviewReason: null,
+        matchedRuleId: null,
       },
     });
   }
@@ -345,6 +451,11 @@ export class ClassificationService {
       description?: string;
     },
   ): Promise<void> {
+    const existingTx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, condominiumId },
+      select: { description: true },
+    });
+
     let residentId: string | undefined;
     if (dto.unitNumber) {
       const resident = await this.prisma.resident.findFirst({
@@ -368,8 +479,38 @@ export class ClassificationService {
         confidenceScore: new Prisma.Decimal('1.0000'),
         matchedAt: new Date(),
         classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+        requiresReviewReason: null,
+        matchedRuleId: null,
       },
     });
+
+    const descriptionForPattern = dto.description ?? existingTx?.description;
+    if (descriptionForPattern) {
+      await this.prisma.reconciliationCorrectionPattern.upsert({
+        where: {
+          condominiumId_originalDescription: {
+            condominiumId,
+            originalDescription: descriptionForPattern,
+          },
+        },
+        create: {
+          condominiumId,
+          originalDescription: descriptionForPattern,
+          selectedUnitNumber: dto.unitNumber ?? null,
+          selectedResidentId: residentId ?? null,
+          selectedConcept: dto.paymentConcept ?? null,
+          occurrenceCount: 1,
+          lastSeenAt: new Date(),
+        },
+        update: {
+          selectedUnitNumber: dto.unitNumber ?? null,
+          selectedResidentId: residentId ?? null,
+          selectedConcept: dto.paymentConcept ?? null,
+          occurrenceCount: { increment: 1 },
+          lastSeenAt: new Date(),
+        },
+      });
+    }
   }
 
   async unmatch(condominiumId: string, transactionId: string): Promise<void> {
@@ -381,6 +522,8 @@ export class ClassificationService {
         confidenceScore: null,
         matchedAt: null,
         classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: RequiresReviewReason.NO_MATCH,
+        matchedRuleId: null,
       },
     });
   }

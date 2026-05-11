@@ -1,5 +1,6 @@
 import {
   PrismaClient,
+  Prisma,
   UserRole,
   ResidentType,
   PaymentStatus,
@@ -312,7 +313,10 @@ async function main() {
   console.log('🗑️  Cleaning existing data...');
   await prisma.notification.deleteMany();
   await prisma.auditLog.deleteMany();
+  await prisma.reconciliationCorrectionPattern.deleteMany();
+  await prisma.paymentAllocation.deleteMany();
   await prisma.transaction.deleteMany();
+  await prisma.reconciliationRule.deleteMany();
   await prisma.importBatch.deleteMany();
   await prisma.pettyCashMovement.deleteMany();
   await prisma.collectionRecord.deleteMany();
@@ -370,6 +374,84 @@ async function main() {
     condominiums.push({ id: condo.id, slug: condo.slug, settings: { ordinaryFeeAmount: settings.ordinaryFeeAmount } });
   }
   console.log(`✅ Condominiums: ${condominiums.length}`);
+
+  // ─── Reconciliation Rules ──────────────────────────────────────────────────
+
+  const baseRules = (condominiumId: string) => [
+    {
+      condominiumId,
+      name: 'Cuota mensual de mantenimiento',
+      keywords: ['mantenimiento', 'cuota mensual', 'mensualidad', 'mtto'],
+      unitPatterns: [] as string[],
+      conceptType: 'MAINTENANCE',
+      confidenceThreshold: new Prisma.Decimal('0.85'),
+      priority: 0,
+      isActive: true,
+    },
+    {
+      condominiumId,
+      name: 'Pago de servicios',
+      keywords: ['servicio', 'agua', 'luz', 'electricidad', 'gas'],
+      unitPatterns: [] as string[],
+      conceptType: 'UTILITY',
+      confidenceThreshold: new Prisma.Decimal('0.80'),
+      priority: 10,
+      isActive: true,
+    },
+    {
+      condominiumId,
+      name: 'Cuota de estacionamiento',
+      keywords: ['estacionamiento', 'cajón', 'parking'],
+      unitPatterns: [] as string[],
+      conceptType: 'PARKING',
+      confidenceThreshold: new Prisma.Decimal('0.80'),
+      priority: 20,
+      isActive: true,
+    },
+  ];
+
+  const rulesAlamedaId = condominiums.find((c) => c.slug === 'cotoalameda')!.id;
+  const alamedaExtraRules = [
+    {
+      condominiumId: rulesAlamedaId,
+      name: 'Depósito de seguridad',
+      keywords: ['depósito', 'deposito', 'garantía', 'garantia'],
+      unitPatterns: [] as string[],
+      conceptType: 'DEPOSIT',
+      confidenceThreshold: new Prisma.Decimal('0.85'),
+      priority: 5,
+      isActive: true,
+    },
+    {
+      condominiumId: rulesAlamedaId,
+      name: 'Recargo / multa',
+      keywords: ['multa', 'recargo', 'mora', 'penalización', 'penalizacion'],
+      unitPatterns: [] as string[],
+      conceptType: 'FINE',
+      confidenceThreshold: new Prisma.Decimal('0.85'),
+      priority: 15,
+      isActive: true,
+    },
+    {
+      condominiumId: rulesAlamedaId,
+      name: 'Reservación de amenidad',
+      keywords: ['salón', 'salon', 'alberca', 'amenidad', 'reserva', 'reservación'],
+      unitPatterns: [] as string[],
+      conceptType: 'AMENITY',
+      confidenceThreshold: new Prisma.Decimal('0.80'),
+      priority: 25,
+      isActive: true,
+    },
+  ];
+
+  let totalRules = 0;
+  for (const condo of condominiums) {
+    await prisma.reconciliationRule.createMany({ data: baseRules(condo.id) });
+    totalRules += 3;
+  }
+  await prisma.reconciliationRule.createMany({ data: alamedaExtraRules });
+  totalRules += alamedaExtraRules.length;
+  console.log(`✅ Reconciliation rules: ${totalRules}`);
 
   // ─── Users ─────────────────────────────────────────────────────────────────
   // 1 ROOT + 2-3 per condominium ≈ 24 total; ~13 active, ~11 inactive
@@ -607,6 +689,7 @@ async function main() {
   console.log('   admin@jardinesdelvalley.com  / Admin1234!  (TENANT_ADMIN)');
   console.log('\n📊 Counts:');
   console.log(`   Condominiums  : ${condominiums.length}`);
+  console.log(`   Rules         : ${totalRules}`);
   console.log(`   Users         : ${totalUsers}`);
   console.log(`   Residents     : ${totalResidents}`);
   console.log(`   Common Areas  : ${totalAreas}`);

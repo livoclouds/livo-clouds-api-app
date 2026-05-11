@@ -9,6 +9,7 @@ import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from '../classification/classification.service';
 import { StorageService } from '../storage/storage.service';
+import { SettingsService } from '../settings/settings.service';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
 
@@ -24,6 +25,7 @@ export class ImportsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly classification: ClassificationService,
+    private readonly settings: SettingsService,
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
@@ -193,6 +195,15 @@ export class ImportsService {
     dto: ConfirmImportDto,
     user: JwtPayload,
   ) {
+    const feesCheck = await this.settings.validateFeesConfigured(condominiumId);
+    if (!feesCheck.valid) {
+      throw new BadRequestException({
+        code: 'FEES_NOT_CONFIGURED',
+        reason: 'Configure condominium fees before importing transactions',
+        missingFields: feesCheck.missingFields,
+      });
+    }
+
     if (!dto.files || dto.files.length === 0) {
       throw new BadRequestException('No files provided');
     }

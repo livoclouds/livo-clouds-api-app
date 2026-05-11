@@ -27,6 +27,7 @@ import { StorageModule } from './modules/storage/storage.module';
 import { ResidentsModule } from './modules/residents/residents.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
+import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
 
 @Module({
   controllers: [HealthController],
@@ -53,6 +54,7 @@ import { UsersModule } from './modules/users/users.module';
     ResidentsModule,
     SettingsModule,
     UsersModule,
+    ReconciliationRulesModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
