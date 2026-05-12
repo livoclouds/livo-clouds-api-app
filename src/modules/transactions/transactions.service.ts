@@ -32,6 +32,15 @@ export class TransactionsService {
           resident: {
             select: { id: true, unitNumber: true, firstName: true, lastName: true },
           },
+          matchedCalendarEvent: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
         },
       }),
       this.prisma.transaction.count({ where }),
@@ -72,6 +81,15 @@ export class TransactionsService {
         orderBy: { transactionDate: 'desc' },
         include: {
           resident: { select: { id: true, unitNumber: true, firstName: true, lastName: true } },
+          matchedCalendarEvent: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
         },
       }),
       this.prisma.transaction.count({ where }),
@@ -107,6 +125,15 @@ export class TransactionsService {
         include: {
           resident: { select: { id: true, unitNumber: true, firstName: true, lastName: true } },
           matchedRule: { select: { id: true, name: true } },
+          matchedCalendarEvent: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
         },
       }),
       this.prisma.transaction.count({ where }),
@@ -145,6 +172,15 @@ export class TransactionsService {
           importBatch: { select: { id: true, fileName: true } },
           matchedRule: { select: { id: true, name: true } },
           reconciledBy: { select: { id: true, firstName: true, lastName: true } },
+          matchedCalendarEvent: {
+            select: {
+              id: true,
+              title: true,
+              startDate: true,
+              unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
         },
       }),
       this.prisma.transaction.count({ where }),

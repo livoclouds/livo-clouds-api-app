@@ -18,6 +18,7 @@ function validPayload(overrides: Record<string, unknown> = {}): Record<string, u
     depositDeductionAmount: 0,
     depositDeductionReason: '',
     postEventReviewNotes: '',
+    customKeywords: [],
     ...overrides,
   };
 }
@@ -79,10 +80,14 @@ describe('validateTerraceMetadata', () => {
     expect(r.valid).toBe(false);
   });
 
-  it('accepts zero for both amounts', () => {
-    const r = validateTerraceMetadata(
-      validPayload({ terraceRentalAmount: 0, securityDepositAmount: 0 }),
-    );
+  it('rejects terraceRentalAmount of zero', () => {
+    const r = validateTerraceMetadata(validPayload({ terraceRentalAmount: 0 }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/terraceRentalAmount.*> 0/);
+  });
+
+  it('accepts securityDepositAmount of zero (no deposit required)', () => {
+    const r = validateTerraceMetadata(validPayload({ securityDepositAmount: 0 }));
     expect(r.valid).toBe(true);
   });
 
@@ -310,5 +315,56 @@ describe('validateTerraceMetadata', () => {
     const r = validateTerraceMetadata(validPayload({ cleaningIssueReported: 1 }));
     expect(r.valid).toBe(false);
     expect((r as { valid: false; error: string }).error).toMatch(/cleaningIssueReported/);
+  });
+
+  // ── Custom keywords ────────────────────────────────────────────────────────
+
+  it('accepts an empty customKeywords array', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: [] }));
+    expect(r.valid).toBe(true);
+    if (r.valid) expect(r.data.customKeywords).toEqual([]);
+  });
+
+  it('accepts omitted customKeywords and defaults to empty array', () => {
+    const { customKeywords: _c, ...rest } = validPayload() as { customKeywords: unknown; [k: string]: unknown };
+    const r = validateTerraceMetadata(rest);
+    expect(r.valid).toBe(true);
+    if (r.valid) expect(r.data.customKeywords).toEqual([]);
+  });
+
+  it('accepts valid custom keyword strings and trims + lowercases them', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: ['  Fiesta  ', 'RENTA SALON'] }));
+    expect(r.valid).toBe(true);
+    if (r.valid) expect(r.data.customKeywords).toEqual(['fiesta', 'renta salon']);
+  });
+
+  it('rejects customKeywords as a plain string', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: 'fiesta' }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/customKeywords.*array/);
+  });
+
+  it('rejects customKeywords with an empty string entry', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: ['fiesta', ''] }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/non-empty/);
+  });
+
+  it('rejects customKeywords with a whitespace-only entry', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: ['  '] }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/non-empty/);
+  });
+
+  it('rejects customKeywords exceeding 20 entries', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: Array.from({ length: 21 }, (_, i) => `kw${i}`) }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/at most 20/);
+  });
+
+  it('rejects a custom keyword exceeding 100 characters', () => {
+    const r = validateTerraceMetadata(validPayload({ customKeywords: ['a'.repeat(101)] }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/100 characters/);
   });
 });

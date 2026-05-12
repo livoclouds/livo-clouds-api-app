@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
+import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-matcher';
+import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 
 interface ResidentData {
   id: string;
@@ -34,6 +36,7 @@ interface MatchResult {
   classificationStatus: ClassificationStatus;
   requiresReviewReason: RequiresReviewReason | null;
   matchedRuleId: string | null;
+  matchedCalendarEventId: string | null;
   matchedAt: Date | null;
 }
 
@@ -214,6 +217,7 @@ function matchToResident(
         classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
         requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
         matchedRuleId: null,
+        matchedCalendarEventId: null,
         matchedAt: isAuto ? new Date() : null,
       };
     }
@@ -226,6 +230,7 @@ function matchToResident(
         classificationStatus: ClassificationStatus.NEEDS_REVIEW,
         requiresReviewReason: RequiresReviewReason.UNIT_AMBIGUOUS,
         matchedRuleId: null,
+        matchedCalendarEventId: null,
         matchedAt: null,
       };
     }
@@ -237,6 +242,7 @@ function matchToResident(
       classificationStatus: ClassificationStatus.NEEDS_REVIEW,
       requiresReviewReason: RequiresReviewReason.UNIT_NOT_FOUND,
       matchedRuleId: null,
+      matchedCalendarEventId: null,
       matchedAt: null,
     };
   }
@@ -270,6 +276,7 @@ function matchToResident(
         classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
         requiresReviewReason: isAuto ? null : (multipleMatches ? RequiresReviewReason.NAME_AMBIGUOUS : RequiresReviewReason.LOW_CONFIDENCE),
         matchedRuleId: null,
+        matchedCalendarEventId: null,
         matchedAt: isAuto ? new Date() : null,
       };
     }
@@ -281,6 +288,7 @@ function matchToResident(
       classificationStatus: ClassificationStatus.NEEDS_REVIEW,
       requiresReviewReason: RequiresReviewReason.NAME_NOT_FOUND,
       matchedRuleId: null,
+      matchedCalendarEventId: null,
       matchedAt: null,
     };
   }
@@ -293,12 +301,15 @@ function matchToResident(
     classificationStatus: ClassificationStatus.NEEDS_REVIEW,
     requiresReviewReason: RequiresReviewReason.NO_MATCH,
     matchedRuleId: null,
+    matchedCalendarEventId: null,
     matchedAt: null,
   };
 }
 
 @Injectable()
 export class ClassificationService {
+  private readonly logger = new Logger(ClassificationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly rulesService: ReconciliationRulesService,
@@ -308,6 +319,12 @@ export class ClassificationService {
     description: string,
     residents: ResidentData[],
     rules: DbRule[] = [],
+    terraceContext?: {
+      events: TerraceCandidate[];
+      amount: number | null;
+      transactionDate: Date;
+      detectedResidentId?: string | null;
+    },
   ): ClassificationResult {
     const extraction = extractFromText(description);
 
@@ -325,8 +342,44 @@ export class ClassificationService {
         classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
         requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
         matchedRuleId: matchedRule.id,
+        matchedCalendarEventId: null,
         matchedAt: isAuto ? new Date() : null,
       };
+    }
+
+    // Pass 0.5: terrace booking matching — only for INCOME transactions with amount data.
+    if (
+      terraceContext &&
+      terraceContext.events.length > 0 &&
+      terraceContext.amount !== null &&
+      terraceContext.amount > 0
+    ) {
+      const terraceResult = matchTerraceBooking(
+        {
+          amount: terraceContext.amount,
+          transactionDate: terraceContext.transactionDate,
+          description,
+          detectedResidentId: terraceContext.detectedResidentId ?? null,
+          detectedUnitNumber: extraction.unitNumberDetected,
+        },
+        terraceContext.events,
+      );
+      if (terraceResult) {
+        return {
+          ...extraction,
+          paymentConcept: terraceResult.paymentConcept,
+          residentId: terraceResult.residentId,
+          matchSource: MatchSource[terraceResult.matchSource],
+          confidenceScore: terraceResult.confidenceScore,
+          classificationStatus: ClassificationStatus[terraceResult.classificationStatus],
+          requiresReviewReason: terraceResult.requiresReviewReason
+            ? RequiresReviewReason[terraceResult.requiresReviewReason]
+            : null,
+          matchedRuleId: null,
+          matchedCalendarEventId: terraceResult.matchedCalendarEventId,
+          matchedAt: terraceResult.matchedAt,
+        };
+      }
     }
 
     const match = matchToResident(extraction, residents);
@@ -337,7 +390,7 @@ export class ClassificationService {
     condominiumId: string,
     batchId: string,
   ): Promise<ClassificationSummary> {
-    const [residents, transactions, activeRules] = await Promise.all([
+    const [residents, transactions, activeRules, rawTerraceEvents] = await Promise.all([
       this.prisma.resident.findMany({
         where: { condominiumId, deletedAt: null },
         select: { id: true, unitNumber: true, firstName: true, lastName: true },
@@ -347,7 +400,31 @@ export class ClassificationService {
         select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
       }),
       this.rulesService.findActive(condominiumId),
+      // Load active, non-cancelled TERRACE_BOOKING events with PENDING payment status.
+      this.prisma.calendarEvent.findMany({
+        where: {
+          condominiumId,
+          eventType: 'TERRACE_BOOKING',
+          status: { not: 'CANCELLED' },
+          deletedAt: null,
+        },
+        select: { id: true, residentId: true, unitNumber: true, startDate: true, metadata: true },
+      }),
     ]);
+
+    // Parse terrace metadata and filter to events with PENDING payment.
+    const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
+      const validation = validateTerraceMetadata(ev.metadata);
+      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
+      return [{
+        id: ev.id,
+        residentId: ev.residentId,
+        unitNumber: ev.unitNumber,
+        startDate: new Date(ev.startDate),
+        terraceRentalAmount: validation.data.terraceRentalAmount,
+        customKeywords: validation.data.customKeywords,
+      }];
+    });
 
     let classified = 0;
     let needsReview = 0;
@@ -358,7 +435,16 @@ export class ClassificationService {
       const chunk = transactions.slice(i, i + CHUNK);
       await Promise.all(
         chunk.map(async (tx) => {
-          const result = this.classifyTransaction(tx.description, residents, activeRules);
+          // Terrace pass only runs for INCOME transactions (terrace rentals are received payments).
+          const terraceContext = tx.flowType === 'INCOME' && terraceEvents.length > 0
+            ? {
+                events: terraceEvents,
+                amount: tx.credits ? Number(tx.credits) : null,
+                transactionDate: new Date(tx.transactionDate),
+              }
+            : undefined;
+
+          const result = this.classifyTransaction(tx.description, residents, activeRules, terraceContext);
           await this.prisma.transaction.update({
             where: { id: tx.id },
             data: {
@@ -376,6 +462,7 @@ export class ClassificationService {
               classificationStatus: result.classificationStatus,
               requiresReviewReason: result.requiresReviewReason ?? null,
               matchedRuleId: result.matchedRuleId ?? null,
+              matchedCalendarEventId: result.matchedCalendarEventId ?? null,
             },
           });
 
@@ -659,6 +746,11 @@ export class ClassificationService {
   ): Promise<void> {
     const tx = await this.prisma.transaction.findFirst({
       where: { id: transactionId, condominiumId },
+      select: {
+        transactionDate: true,
+        reconciliationStatus: true,
+        matchedCalendarEventId: true,
+      },
     });
     if (!tx) throw new NotFoundException('Transaction not found');
 
@@ -677,6 +769,11 @@ export class ClassificationService {
     const d = new Date(tx.transactionDate);
     await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
 
+    // When a terrace booking was linked, mark it as PAID on approval.
+    if (tx.matchedCalendarEventId) {
+      await this.markTerraceEventPaid(tx.matchedCalendarEventId, transactionId, condominiumId, userId);
+    }
+
     await this.prisma.auditLog.create({
       data: {
         condominiumId,
@@ -689,6 +786,61 @@ export class ClassificationService {
         beforeState: before,
         afterState: { reconciliationStatus: ReconciliationStatus.APPROVED },
         result: 'SUCCESS',
+      },
+    });
+  }
+
+  private async markTerraceEventPaid(
+    calendarEventId: string,
+    transactionId: string,
+    condominiumId: string,
+    userId: string,
+  ): Promise<void> {
+    const ev = await this.prisma.calendarEvent.findFirst({
+      where: { id: calendarEventId, condominiumId, deletedAt: null },
+      select: { metadata: true },
+    });
+    if (!ev) {
+      this.logger.warn(
+        `markTerraceEventPaid: event ${calendarEventId} not found or deleted — skipping payment status update`,
+      );
+      return;
+    }
+
+    const validation = validateTerraceMetadata(ev.metadata);
+    if (!validation.valid) {
+      this.logger.warn(
+        `markTerraceEventPaid: corrupt metadata on event ${calendarEventId} — ${validation.error}`,
+      );
+      return;
+    }
+    if (validation.data.paymentStatus === 'PAID') {
+      this.logger.debug(
+        `markTerraceEventPaid: event ${calendarEventId} already PAID — skipping`,
+      );
+      return;
+    }
+
+    const updatedMetadata = { ...validation.data, paymentStatus: 'PAID' as const };
+
+    await this.prisma.calendarEvent.update({
+      where: { id: calendarEventId },
+      data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: 'TERRACE_BOOKING_MARKED_PAID',
+        actionCategory: 'RECONCILIATION',
+        module: 'calendar',
+        entityType: 'CalendarEvent',
+        entityId: calendarEventId,
+        beforeState: { paymentStatus: validation.data.paymentStatus },
+        afterState: { paymentStatus: 'PAID', linkedTransactionId: transactionId },
+        result: 'SUCCESS',
+        description: `Terrace booking payment confirmed via transaction ${transactionId}`,
       },
     });
   }

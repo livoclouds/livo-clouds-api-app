@@ -20,6 +20,8 @@ export interface TerraceBookingMetadata {
   depositDeductionAmount: number;
   depositDeductionReason: string;
   postEventReviewNotes: string;
+  // Matching hints — merged with the global keyword list during classification
+  customKeywords: string[];
 }
 
 export type TerraceMetadataValidationResult =
@@ -50,7 +52,11 @@ const ALLOWED_FIELDS = new Set([
   'depositDeductionAmount',
   'depositDeductionReason',
   'postEventReviewNotes',
+  'customKeywords',
 ]);
+
+const MAX_CUSTOM_KEYWORDS = 20;
+const MAX_CUSTOM_KEYWORD_LENGTH = 100;
 
 // Defaults mirror the frontend TERRACE_DEFAULTS to avoid silent divergence.
 export const TERRACE_BOOKING_DEFAULTS: TerraceBookingMetadata = {
@@ -67,6 +73,7 @@ export const TERRACE_BOOKING_DEFAULTS: TerraceBookingMetadata = {
   depositDeductionAmount: 0,
   depositDeductionReason: '',
   postEventReviewNotes: '',
+  customKeywords: [],
 };
 
 // ─── Validator ────────────────────────────────────────────────────────────────
@@ -88,9 +95,9 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
   if (
     typeof m.terraceRentalAmount !== 'number' ||
     !isFinite(m.terraceRentalAmount) ||
-    m.terraceRentalAmount < 0
+    m.terraceRentalAmount <= 0
   ) {
-    return { valid: false, error: 'metadata.terraceRentalAmount must be a finite number >= 0' };
+    return { valid: false, error: 'metadata.terraceRentalAmount must be a finite number > 0' };
   }
 
   if (
@@ -184,6 +191,33 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
     return { valid: false, error: 'metadata.postEventReviewNotes must be a string' };
   }
 
+  // ── Custom keywords ────────────────────────────────────────────────────────
+
+  const rawCustomKeywords = m.customKeywords === undefined ? [] : m.customKeywords;
+
+  if (!Array.isArray(rawCustomKeywords)) {
+    return { valid: false, error: 'metadata.customKeywords must be an array of strings' };
+  }
+  if (rawCustomKeywords.length > MAX_CUSTOM_KEYWORDS) {
+    return {
+      valid: false,
+      error: `metadata.customKeywords may contain at most ${MAX_CUSTOM_KEYWORDS} entries`,
+    };
+  }
+  for (const kw of rawCustomKeywords) {
+    if (typeof kw !== 'string' || kw.trim().length === 0) {
+      return { valid: false, error: 'metadata.customKeywords must be an array of non-empty strings' };
+    }
+    if (kw.length > MAX_CUSTOM_KEYWORD_LENGTH) {
+      return {
+        valid: false,
+        error: `metadata.customKeywords entries must be at most ${MAX_CUSTOM_KEYWORD_LENGTH} characters`,
+      };
+    }
+  }
+
+  const customKeywords = (rawCustomKeywords as string[]).map((kw) => kw.trim().toLowerCase());
+
   return {
     valid: true,
     data: {
@@ -200,6 +234,7 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
       depositDeductionAmount,
       depositDeductionReason,
       postEventReviewNotes: typeof m.postEventReviewNotes === 'string' ? m.postEventReviewNotes : '',
+      customKeywords,
     },
   };
 }

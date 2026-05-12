@@ -6,6 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateTerraceSettingsDto } from './dto/update-terrace-settings.dto';
 import { SettingsService } from './settings.service';
 
@@ -19,6 +20,16 @@ export class SettingsController {
   @ApiOperation({ summary: 'Get condominium settings' })
   findOne(@Request() req: { condominiumId: string }) {
     return this.settingsService.findOne(req.condominiumId);
+  }
+
+  @Patch('profile')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Update condominium name and brand color' })
+  updateProfile(
+    @Request() req: { condominiumId: string },
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.settingsService.updateProfile(req.condominiumId, dto);
   }
 
   @Patch('general')

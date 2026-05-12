@@ -41,4 +41,9 @@ export class UpdateGeneralSettingsDto {
   @IsOptional()
   @IsString()
   defaultLocale?: string;
+
+  @ApiPropertyOptional({ example: 'Mon–Fri 09:00–18:00' })
+  @IsOptional()
+  @IsString()
+  businessHours?: string;
 }

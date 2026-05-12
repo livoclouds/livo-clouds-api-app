@@ -119,6 +119,7 @@ enum MatchSource {
   AUTO_AMOUNT_DATE
   MANUAL
   RULE
+  AUTO_TERRACE_BOOKING
 }
 
 enum ImportStatus {
@@ -170,6 +171,7 @@ enum RequiresReviewReason {
   NAME_AMBIGUOUS
   LOW_CONFIDENCE
   NO_MATCH
+  TERRACE_AMBIGUOUS
 }
 
 enum ReconciliationStatus {
@@ -561,19 +563,21 @@ model Transaction {
   matchedAt             DateTime?
   classificationVersion Int                  @default(1)
   requiresReviewReason  RequiresReviewReason?
-  matchedRuleId         String?
+  matchedRuleId              String?
+  matchedCalendarEventId     String?
   reconciliationStatus  ReconciliationStatus @default(PENDING)
   reconciledById        String?
   reconciledAt          DateTime?
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
-  condominium   Condominium         @relation(fields: [condominiumId], references: [id])
-  importBatch   ImportBatch         @relation(fields: [importBatchId], references: [id])
-  resident      Resident?           @relation(fields: [residentId], references: [id])
-  matchedRule   ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
-  reconciledBy  User?               @relation("ReconciledBy", fields: [reconciledById], references: [id])
-  paymentAllocations PaymentAllocation[]
+  condominium          Condominium         @relation(fields: [condominiumId], references: [id])
+  importBatch          ImportBatch         @relation(fields: [importBatchId], references: [id])
+  resident             Resident?           @relation(fields: [residentId], references: [id])
+  matchedRule          ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
+  matchedCalendarEvent CalendarEvent?      @relation("MatchedTransaction", fields: [matchedCalendarEventId], references: [id])
+  reconciledBy         User?               @relation("ReconciledBy", fields: [reconciledById], references: [id])
+  paymentAllocations   PaymentAllocation[]
 
   @@index([condominiumId])
   @@index([importBatchId])
@@ -587,6 +591,7 @@ model Transaction {
   @@index([condominiumId, requiresReviewReason])
   @@index([condominiumId, reconciliationStatus])
   @@index([condominiumId, reconciliationStatus, transactionDate])
+  @@index([matchedCalendarEventId])
   @@map("transactions")
 }
 
@@ -776,9 +781,10 @@ model CalendarEvent {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
-  condominium Condominium @relation(fields: [condominiumId], references: [id])
-  resident    Resident?   @relation(fields: [residentId], references: [id])
-  createdBy   User        @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
+  condominium         Condominium   @relation(fields: [condominiumId], references: [id])
+  resident            Resident?     @relation(fields: [residentId], references: [id])
+  createdBy           User          @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
+  matchedTransactions Transaction[] @relation("MatchedTransaction")
 
   @@index([condominiumId])
   @@index([condominiumId, startDate, endDate])
