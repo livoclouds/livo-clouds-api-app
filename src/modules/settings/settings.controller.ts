@@ -6,6 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
+import { UpdateTerraceSettingsDto } from './dto/update-terrace-settings.dto';
 import { SettingsService } from './settings.service';
 
 @ApiTags('Settings')
@@ -48,6 +49,16 @@ export class SettingsController {
     @Body() dto: { maxFilesPerImport?: number; allowedFilePdf?: boolean; allowedFileExcel?: boolean },
   ) {
     return this.settingsService.updateFinancial(req.condominiumId, dto);
+  }
+
+  @Patch('terrace')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Update terrace booking settings' })
+  updateTerrace(
+    @Request() req: { condominiumId: string },
+    @Body() dto: UpdateTerraceSettingsDto,
+  ) {
+    return this.settingsService.updateTerrace(req.condominiumId, dto);
   }
 
   @Get('validate-fees')

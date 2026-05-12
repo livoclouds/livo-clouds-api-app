@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
+import { UpdateTerraceSettingsDto } from './dto/update-terrace-settings.dto';
 
 @Injectable()
 export class SettingsService {
@@ -57,6 +58,14 @@ export class SettingsService {
     if (!s || s.totalUnits <= 0) missing.push('totalUnits');
     if (!s || Number(s.ordinaryFeeAmount) <= 0) missing.push('ordinaryFeeAmount');
     return { valid: missing.length === 0, missingFields: missing };
+  }
+
+  async updateTerrace(condominiumId: string, dto: UpdateTerraceSettingsDto) {
+    return this.prisma.condominiumSettings.upsert({
+      where: { condominiumId },
+      create: { condominiumId, ...dto },
+      update: dto,
+    });
   }
 
   async updateNotifications(

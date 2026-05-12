@@ -4,13 +4,21 @@ export type TerracePaymentStatus = 'PENDING' | 'PAID';
 export type TerraceDepositStatus = 'PENDING' | 'RECEIVED' | 'RETURNED' | 'RETAINED';
 
 export interface TerraceBookingMetadata {
+  // Financial
   terraceRentalAmount: number;
   securityDepositAmount: number;
   paymentStatus: TerracePaymentStatus;
   securityDepositStatus: TerraceDepositStatus;
+  // Pre-event
   contractSigned: boolean;
   guestParkingRequested: boolean;
   setupNotes: string;
+  // Post-event review
+  postEventReviewed: boolean;
+  damagesReported: boolean;
+  cleaningIssueReported: boolean;
+  depositDeductionAmount: number;
+  depositDeductionReason: string;
   postEventReviewNotes: string;
 }
 
@@ -36,11 +44,15 @@ const ALLOWED_FIELDS = new Set([
   'contractSigned',
   'guestParkingRequested',
   'setupNotes',
+  'postEventReviewed',
+  'damagesReported',
+  'cleaningIssueReported',
+  'depositDeductionAmount',
+  'depositDeductionReason',
   'postEventReviewNotes',
 ]);
 
 // Defaults mirror the frontend TERRACE_DEFAULTS to avoid silent divergence.
-// Move to per-condominium configuration once a settings surface is available.
 export const TERRACE_BOOKING_DEFAULTS: TerraceBookingMetadata = {
   terraceRentalAmount: 1500,
   securityDepositAmount: 1000,
@@ -49,6 +61,11 @@ export const TERRACE_BOOKING_DEFAULTS: TerraceBookingMetadata = {
   contractSigned: false,
   guestParkingRequested: false,
   setupNotes: '',
+  postEventReviewed: false,
+  damagesReported: false,
+  cleaningIssueReported: false,
+  depositDeductionAmount: 0,
+  depositDeductionReason: '',
   postEventReviewNotes: '',
 };
 
@@ -66,6 +83,8 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
     return { valid: false, error: `metadata contains unknown fields: ${extraFields.join(', ')}` };
   }
 
+  // ── Financial amounts ──────────────────────────────────────────────────────
+
   if (
     typeof m.terraceRentalAmount !== 'number' ||
     !isFinite(m.terraceRentalAmount) ||
@@ -82,6 +101,8 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
     return { valid: false, error: 'metadata.securityDepositAmount must be a finite number >= 0' };
   }
 
+  // ── Status enums ───────────────────────────────────────────────────────────
+
   if (!VALID_PAYMENT_STATUSES.includes(m.paymentStatus as TerracePaymentStatus)) {
     return {
       valid: false,
@@ -96,6 +117,8 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
     };
   }
 
+  // ── Pre-event booleans ─────────────────────────────────────────────────────
+
   if (typeof m.contractSigned !== 'boolean') {
     return { valid: false, error: 'metadata.contractSigned must be a boolean' };
   }
@@ -106,6 +129,55 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
 
   if (m.setupNotes !== undefined && typeof m.setupNotes !== 'string') {
     return { valid: false, error: 'metadata.setupNotes must be a string' };
+  }
+
+  // ── Post-event review fields (optional with safe defaults for old events) ──
+
+  // Resolve with defaults when fields are absent (backward compat with existing events).
+  const postEventReviewed = m.postEventReviewed === undefined ? false : m.postEventReviewed;
+  const damagesReported = m.damagesReported === undefined ? false : m.damagesReported;
+  const cleaningIssueReported = m.cleaningIssueReported === undefined ? false : m.cleaningIssueReported;
+  const depositDeductionAmount = m.depositDeductionAmount === undefined ? 0 : m.depositDeductionAmount;
+  const depositDeductionReason = m.depositDeductionReason === undefined ? '' : m.depositDeductionReason;
+
+  if (typeof postEventReviewed !== 'boolean') {
+    return { valid: false, error: 'metadata.postEventReviewed must be a boolean' };
+  }
+
+  if (typeof damagesReported !== 'boolean') {
+    return { valid: false, error: 'metadata.damagesReported must be a boolean' };
+  }
+
+  if (typeof cleaningIssueReported !== 'boolean') {
+    return { valid: false, error: 'metadata.cleaningIssueReported must be a boolean' };
+  }
+
+  if (
+    typeof depositDeductionAmount !== 'number' ||
+    !isFinite(depositDeductionAmount) ||
+    depositDeductionAmount < 0
+  ) {
+    return { valid: false, error: 'metadata.depositDeductionAmount must be a finite number >= 0' };
+  }
+
+  // Deduction cannot exceed the original security deposit.
+  if (depositDeductionAmount > (m.securityDepositAmount as number)) {
+    return {
+      valid: false,
+      error: 'metadata.depositDeductionAmount cannot exceed securityDepositAmount',
+    };
+  }
+
+  if (typeof depositDeductionReason !== 'string') {
+    return { valid: false, error: 'metadata.depositDeductionReason must be a string' };
+  }
+
+  // Reason is required when a deduction is recorded.
+  if (depositDeductionAmount > 0 && !depositDeductionReason.trim()) {
+    return {
+      valid: false,
+      error: 'metadata.depositDeductionReason is required when depositDeductionAmount > 0',
+    };
   }
 
   if (m.postEventReviewNotes !== undefined && typeof m.postEventReviewNotes !== 'string') {
@@ -122,6 +194,11 @@ export function validateTerraceMetadata(raw: unknown): TerraceMetadataValidation
       contractSigned: m.contractSigned as boolean,
       guestParkingRequested: m.guestParkingRequested as boolean,
       setupNotes: typeof m.setupNotes === 'string' ? m.setupNotes : '',
+      postEventReviewed,
+      damagesReported,
+      cleaningIssueReported,
+      depositDeductionAmount,
+      depositDeductionReason,
       postEventReviewNotes: typeof m.postEventReviewNotes === 'string' ? m.postEventReviewNotes : '',
     },
   };

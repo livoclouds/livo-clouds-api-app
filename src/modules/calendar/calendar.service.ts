@@ -96,7 +96,22 @@ export class CalendarService {
 
     let resolvedMetadata: TerraceBookingMetadata | undefined;
     if (dto.eventType === EventType.TERRACE_BOOKING) {
-      const result = validateTerraceMetadata(dto.metadata ?? TERRACE_BOOKING_DEFAULTS);
+      const cs = await this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
+      });
+      if (cs !== null && !cs.terraceBookingEnabled) {
+        throw new BadRequestException('Terrace bookings are disabled for this condominium');
+      }
+      let defaults = TERRACE_BOOKING_DEFAULTS;
+      if (!dto.metadata && cs) {
+        defaults = {
+          ...TERRACE_BOOKING_DEFAULTS,
+          terraceRentalAmount: Number(cs.terraceRentalAmount),
+          securityDepositAmount: Number(cs.terraceSecurityDepositAmount),
+        };
+      }
+      const result = validateTerraceMetadata(dto.metadata ?? defaults);
       if (!result.valid) throw new BadRequestException(result.error);
       resolvedMetadata = result.data;
     }
@@ -220,6 +235,16 @@ export class CalendarService {
 
     if (dto.metadata !== undefined) {
       if (effectiveType === EventType.TERRACE_BOOKING) {
+        if (existing.eventType !== EventType.TERRACE_BOOKING) {
+          // Changing from a non-terrace type to terrace with explicit metadata: check enabled.
+          const cs = await this.prisma.condominiumSettings.findUnique({
+            where: { condominiumId },
+            select: { terraceBookingEnabled: true },
+          });
+          if (cs !== null && !cs.terraceBookingEnabled) {
+            throw new BadRequestException('Terrace bookings are disabled for this condominium');
+          }
+        }
         const result = validateTerraceMetadata(dto.metadata);
         if (!result.valid) throw new BadRequestException(result.error);
         data.metadata = result.data as unknown as object;
@@ -235,8 +260,22 @@ export class CalendarService {
         existing.eventType === EventType.TERRACE_BOOKING &&
         dto.eventType !== EventType.TERRACE_BOOKING;
       if (changingToTerrace) {
-        // No metadata provided when switching to TERRACE_BOOKING: apply safe defaults.
-        data.metadata = TERRACE_BOOKING_DEFAULTS as unknown as object;
+        // No metadata provided when switching to TERRACE_BOOKING: check enabled and apply defaults.
+        const cs = await this.prisma.condominiumSettings.findUnique({
+          where: { condominiumId },
+          select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
+        });
+        if (cs !== null && !cs.terraceBookingEnabled) {
+          throw new BadRequestException('Terrace bookings are disabled for this condominium');
+        }
+        const defaults: TerraceBookingMetadata = cs
+          ? {
+              ...TERRACE_BOOKING_DEFAULTS,
+              terraceRentalAmount: Number(cs.terraceRentalAmount),
+              securityDepositAmount: Number(cs.terraceSecurityDepositAmount),
+            }
+          : TERRACE_BOOKING_DEFAULTS;
+        data.metadata = defaults as unknown as object;
       } else if (changingFromTerrace) {
         // Switching away from TERRACE_BOOKING: clear stale terrace metadata.
         data.metadata = null;

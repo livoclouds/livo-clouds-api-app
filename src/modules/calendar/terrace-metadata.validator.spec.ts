@@ -12,6 +12,11 @@ function validPayload(overrides: Record<string, unknown> = {}): Record<string, u
     contractSigned: false,
     guestParkingRequested: false,
     setupNotes: '',
+    postEventReviewed: false,
+    damagesReported: false,
+    cleaningIssueReported: false,
+    depositDeductionAmount: 0,
+    depositDeductionReason: '',
     postEventReviewNotes: '',
     ...overrides,
   };
@@ -184,5 +189,126 @@ describe('validateTerraceMetadata', () => {
       expect(r.data.securityDepositStatus).toBe('RETURNED');
       expect(r.data.contractSigned).toBe(true);
     }
+  });
+
+  // ── Post-event review fields ────────────────────────────────────────────────
+
+  it('accepts valid post-event review defaults embedded in payload', () => {
+    const r = validateTerraceMetadata(validPayload());
+    expect(r.valid).toBe(true);
+    if (r.valid) {
+      expect(r.data.postEventReviewed).toBe(false);
+      expect(r.data.damagesReported).toBe(false);
+      expect(r.data.cleaningIssueReported).toBe(false);
+      expect(r.data.depositDeductionAmount).toBe(0);
+      expect(r.data.depositDeductionReason).toBe('');
+    }
+  });
+
+  it('accepts postEventReviewed true with valid post-event data', () => {
+    const r = validateTerraceMetadata(
+      validPayload({
+        postEventReviewed: true,
+        damagesReported: true,
+        cleaningIssueReported: false,
+        depositDeductionAmount: 200,
+        depositDeductionReason: 'Broken chair',
+        postEventReviewNotes: 'Minor damage to furniture',
+      }),
+    );
+    expect(r.valid).toBe(true);
+    if (r.valid) {
+      expect(r.data.postEventReviewed).toBe(true);
+      expect(r.data.damagesReported).toBe(true);
+      expect(r.data.depositDeductionAmount).toBe(200);
+      expect(r.data.depositDeductionReason).toBe('Broken chair');
+    }
+  });
+
+  it('accepts old metadata without post-event review fields (backward compat)', () => {
+    // Simulates an existing event saved before post-event review was added.
+    const oldPayload = {
+      terraceRentalAmount: 1500,
+      securityDepositAmount: 1000,
+      paymentStatus: 'PENDING',
+      securityDepositStatus: 'PENDING',
+      contractSigned: false,
+      guestParkingRequested: false,
+      setupNotes: '',
+      postEventReviewNotes: '',
+      // No postEventReviewed, damagesReported, etc.
+    };
+    const r = validateTerraceMetadata(oldPayload);
+    expect(r.valid).toBe(true);
+    if (r.valid) {
+      expect(r.data.postEventReviewed).toBe(false);
+      expect(r.data.depositDeductionAmount).toBe(0);
+    }
+  });
+
+  it('rejects depositDeductionAmount as negative', () => {
+    const r = validateTerraceMetadata(validPayload({ depositDeductionAmount: -1 }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/depositDeductionAmount/);
+  });
+
+  it('rejects depositDeductionAmount greater than securityDepositAmount', () => {
+    const r = validateTerraceMetadata(
+      validPayload({ securityDepositAmount: 500, depositDeductionAmount: 600 }),
+    );
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/cannot exceed/);
+  });
+
+  it('accepts depositDeductionAmount exactly equal to securityDepositAmount', () => {
+    const r = validateTerraceMetadata(
+      validPayload({
+        securityDepositAmount: 1000,
+        depositDeductionAmount: 1000,
+        depositDeductionReason: 'Total loss',
+      }),
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it('rejects depositDeductionAmount > 0 without a reason', () => {
+    const r = validateTerraceMetadata(
+      validPayload({ depositDeductionAmount: 200, depositDeductionReason: '' }),
+    );
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/depositDeductionReason.*required/);
+  });
+
+  it('rejects depositDeductionAmount > 0 with whitespace-only reason', () => {
+    const r = validateTerraceMetadata(
+      validPayload({ depositDeductionAmount: 100, depositDeductionReason: '   ' }),
+    );
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/depositDeductionReason.*required/);
+  });
+
+  it('accepts depositDeductionAmount 0 without a reason', () => {
+    const r = validateTerraceMetadata(
+      validPayload({ depositDeductionAmount: 0, depositDeductionReason: '' }),
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it('rejects postEventReviewed as string', () => {
+    const r = validateTerraceMetadata(validPayload({ postEventReviewed: 'true' }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/postEventReviewed/);
+  });
+
+  it('rejects damagesReported as string', () => {
+    const r = validateTerraceMetadata(validPayload({ damagesReported: 'true' }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/damagesReported/);
+  });
+
+  it('rejects cleaningIssueReported as number', () => {
+    const r = validateTerraceMetadata(validPayload({ cleaningIssueReported: 1 }));
+    expect(r.valid).toBe(false);
+    expect((r as { valid: false; error: string }).error).toMatch(/cleaningIssueReported/);
   });
 });
