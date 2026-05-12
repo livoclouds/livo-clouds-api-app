@@ -178,6 +178,21 @@ enum ReconciliationStatus {
   IGNORED
 }
 
+enum EventType {
+  TERRACE_BOOKING
+  ASSEMBLY
+  COUNCIL_MEETING
+  MAINTENANCE
+  PROVIDER
+  GENERAL
+}
+
+enum EventStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -206,6 +221,7 @@ model Condominium {
   reconciliationRules               ReconciliationRule[]
   paymentAllocations                PaymentAllocation[]
   reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
+  calendarEvents                    CalendarEvent[]
 
   @@map("condominiums")
 }
@@ -278,7 +294,8 @@ model User {
   importBatches      ImportBatch[]
   auditLogs          AuditLog[]
   notifications      Notification[]
-  reconciledTransactions Transaction[]   @relation("ReconciledBy")
+  reconciledTransactions    Transaction[]   @relation("ReconciledBy")
+  createdCalendarEvents     CalendarEvent[] @relation("CreatedCalendarEvents")
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -331,6 +348,7 @@ model Resident {
   collectionRecords CollectionRecord[]
   paymentAllocations                PaymentAllocation[]
   reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
+  calendarEvents                    CalendarEvent[]
 
   @@unique([condominiumId, unitNumber])
   @@index([condominiumId])
@@ -729,4 +747,35 @@ model ReconciliationCorrectionPattern {
   @@unique([condominiumId, originalDescription])
   @@index([condominiumId])
   @@map("reconciliation_correction_patterns")
+}
+
+model CalendarEvent {
+  id            String      @id @default(uuid())
+  condominiumId String
+  title         String
+  description   String?
+  eventType     EventType
+  startDate     DateTime
+  endDate       DateTime
+  allDay        Boolean     @default(false)
+  location      String?
+  unitNumber    String?
+  residentId    String?
+  createdById   String
+  status        EventStatus @default(PENDING)
+  notes         String?
+  metadata      Json?
+  deletedAt     DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  resident    Resident?   @relation(fields: [residentId], references: [id])
+  createdBy   User        @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
+
+  @@index([condominiumId])
+  @@index([condominiumId, startDate, endDate])
+  @@index([condominiumId, eventType])
+  @@index([deletedAt])
+  @@map("calendar_events")
 }

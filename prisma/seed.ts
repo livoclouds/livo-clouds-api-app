@@ -12,6 +12,8 @@ import {
   MovementStatus,
   DeliveryMethod,
   AuditResult,
+  EventType,
+  EventStatus,
 } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as fs from 'fs';
@@ -752,6 +754,86 @@ async function main() {
     ],
   });
   console.log('✅ Audit logs: 4');
+
+  // ─── Calendar Events (first two condominiums) ─────────────────────────────
+  const now = new Date('2026-05-11T00:00:00.000Z');
+  const d = (offsetDays: number, hour: number) => {
+    const dt = new Date(now);
+    dt.setDate(dt.getDate() + offsetDays);
+    dt.setUTCHours(hour, 0, 0, 0);
+    return dt;
+  };
+
+  await prisma.calendarEvent.createMany({
+    data: [
+      {
+        condominiumId: alamedaId,
+        createdById: alamedaAdminId,
+        title: 'Reservación Terraza - Familia Martínez',
+        eventType: EventType.TERRACE_BOOKING,
+        startDate: d(3, 18),
+        endDate: d(3, 23),
+        location: 'Terraza A',
+        unitNumber: 'A-14',
+        status: EventStatus.CONFIRMED,
+      },
+      {
+        condominiumId: alamedaId,
+        createdById: alamedaAdminId,
+        title: 'Asamblea General Ordinaria',
+        description: 'Revisión de presupuesto anual y elección de comité',
+        eventType: EventType.ASSEMBLY,
+        startDate: d(7, 19),
+        endDate: d(7, 21),
+        location: 'Salón de usos múltiples',
+        status: EventStatus.CONFIRMED,
+      },
+      {
+        condominiumId: alamedaId,
+        createdById: alamedaAdminId,
+        title: 'Mantenimiento Elevadores',
+        description: 'Revisión anual por OTIS México',
+        eventType: EventType.MAINTENANCE,
+        startDate: d(10, 9),
+        endDate: d(10, 17),
+        location: 'Torres A y B',
+        status: EventStatus.PENDING,
+      },
+      {
+        condominiumId: alamedaId,
+        createdById: alamedaAdminId,
+        title: 'Reservación Terraza - Familia Gutiérrez',
+        eventType: EventType.TERRACE_BOOKING,
+        startDate: d(14, 17),
+        endDate: d(14, 22),
+        location: 'Terraza A',
+        unitNumber: 'B-07',
+        status: EventStatus.PENDING,
+      },
+      {
+        condominiumId: alamedaId,
+        createdById: alamedaAdminId,
+        title: 'Junta de Consejo',
+        description: 'Revisión mensual de estados financieros',
+        eventType: EventType.COUNCIL_MEETING,
+        startDate: d(21, 19),
+        endDate: d(21, 21),
+        location: 'Oficina de administración',
+        status: EventStatus.PENDING,
+      },
+      {
+        condominiumId: condominiums[1].id,
+        createdById: createdUserIds['admin@cotolospatos.com'],
+        title: 'Revisión Cisterna y Bomba de Agua',
+        eventType: EventType.MAINTENANCE,
+        startDate: d(5, 10),
+        endDate: d(5, 14),
+        location: 'Cuarto de máquinas',
+        status: EventStatus.CONFIRMED,
+      },
+    ],
+  });
+  console.log('✅ Calendar events: 6');
 
   // ─── Summary ───────────────────────────────────────────────────────────────
   console.log('\n✨ Seed completed successfully!');

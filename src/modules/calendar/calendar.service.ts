@@ -1,0 +1,289 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { EventType, EventStatus } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
+import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
+import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
+import {
+  validateTerraceMetadata,
+  TERRACE_BOOKING_DEFAULTS,
+  type TerraceBookingMetadata,
+} from './terrace-metadata.validator';
+
+export interface CalendarEventQuery {
+  from?: string;
+  to?: string;
+  type?: string;
+  status?: string;
+}
+
+@Injectable()
+export class CalendarService {
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
+
+  async findAll(condominiumId: string, query: CalendarEventQuery) {
+    if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
+      throw new BadRequestException(
+        `Invalid eventType: "${query.type}". Valid values: ${Object.values(EventType).join(', ')}`,
+      );
+    }
+    if (query.status && !Object.values(EventStatus).includes(query.status as EventStatus)) {
+      throw new BadRequestException(
+        `Invalid status: "${query.status}". Valid values: ${Object.values(EventStatus).join(', ')}`,
+      );
+    }
+
+    if (query.from && isNaN(new Date(query.from).getTime())) {
+      throw new BadRequestException('Invalid "from" date format. Expected ISO 8601.');
+    }
+    if (query.to && isNaN(new Date(query.to).getTime())) {
+      throw new BadRequestException('Invalid "to" date format. Expected ISO 8601.');
+    }
+
+    const where: Record<string, unknown> = { condominiumId, deletedAt: null };
+
+    if (query.type) where.eventType = query.type;
+    if (query.status) where.status = query.status;
+    if (query.from || query.to) {
+      // Overlap filter: events whose interval intersects [from, to]
+      const rangeFilter: Record<string, unknown>[] = [];
+      if (query.to) rangeFilter.push({ startDate: { lt: new Date(query.to) } });
+      if (query.from) rangeFilter.push({ endDate: { gt: new Date(query.from) } });
+      if (rangeFilter.length > 0) where.AND = rangeFilter;
+    }
+
+    return this.prisma.calendarEvent.findMany({
+      where,
+      include: {
+        resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+      orderBy: { startDate: 'asc' },
+    });
+  }
+
+  async findOne(condominiumId: string, id: string) {
+    const event = await this.prisma.calendarEvent.findFirst({
+      where: { id, condominiumId, deletedAt: null },
+      include: {
+        resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!event) {
+      throw new NotFoundException('Calendar event not found');
+    }
+
+    return event;
+  }
+
+  async create(condominiumId: string, userId: string, dto: CreateCalendarEventDto) {
+    const start = new Date(dto.startDate);
+    const end = new Date(dto.endDate);
+
+    if (end <= start) {
+      throw new BadRequestException('endDate must be after startDate');
+    }
+
+    let resolvedMetadata: TerraceBookingMetadata | undefined;
+    if (dto.eventType === EventType.TERRACE_BOOKING) {
+      const result = validateTerraceMetadata(dto.metadata ?? TERRACE_BOOKING_DEFAULTS);
+      if (!result.valid) throw new BadRequestException(result.error);
+      resolvedMetadata = result.data;
+    }
+    // Non-terrace events: metadata is always stripped — resolvedMetadata stays undefined.
+
+    if (dto.residentId) {
+      const resident = await this.prisma.resident.findFirst({
+        where: { id: dto.residentId, condominiumId, deletedAt: null },
+      });
+      if (!resident) throw new NotFoundException('Resident not found');
+    }
+
+    if (dto.eventType === EventType.TERRACE_BOOKING) {
+      const conflict = await this.prisma.calendarEvent.findFirst({
+        where: {
+          condominiumId,
+          eventType: EventType.TERRACE_BOOKING,
+          status: { not: EventStatus.CANCELLED },
+          deletedAt: null,
+          AND: [{ startDate: { lt: end } }, { endDate: { gt: start } }],
+        },
+        select: { id: true },
+      });
+      if (conflict) {
+        throw new ConflictException(
+          'Terrace already booked for the requested time slot',
+        );
+      }
+    }
+
+    const event = await this.prisma.calendarEvent.create({
+      data: {
+        condominiumId,
+        createdById: userId,
+        title: dto.title,
+        description: dto.description,
+        eventType: dto.eventType,
+        startDate: start,
+        endDate: end,
+        allDay: dto.allDay ?? false,
+        location: dto.location,
+        unitNumber: dto.unitNumber,
+        residentId: dto.residentId,
+        notes: dto.notes,
+        ...(resolvedMetadata !== undefined && { metadata: resolvedMetadata as unknown as object }),
+      },
+      include: {
+        resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: 'CALENDAR_EVENT_CREATED',
+      actionCategory: 'CREATE',
+      module: 'calendar',
+      entityType: 'CalendarEvent',
+      entityId: event.id,
+      afterState: event,
+    });
+
+    return event;
+  }
+
+  async update(condominiumId: string, userId: string, id: string, dto: UpdateCalendarEventDto) {
+    const existing = await this.findOne(condominiumId, id);
+
+    const start = new Date(dto.startDate ?? existing.startDate);
+    const end = new Date(dto.endDate ?? existing.endDate);
+
+    if (end <= start) {
+      throw new BadRequestException('endDate must be after startDate');
+    }
+
+    if (dto.residentId && dto.residentId !== existing.residentId) {
+      const resident = await this.prisma.resident.findFirst({
+        where: { id: dto.residentId, condominiumId, deletedAt: null },
+      });
+      if (!resident) throw new NotFoundException('Resident not found');
+    }
+
+    const effectiveType = dto.eventType ?? existing.eventType;
+    const effectiveStatus = dto.status ?? existing.status;
+
+    if (
+      effectiveType === EventType.TERRACE_BOOKING &&
+      effectiveStatus !== EventStatus.CANCELLED
+    ) {
+      const conflict = await this.prisma.calendarEvent.findFirst({
+        where: {
+          condominiumId,
+          id: { not: id },
+          eventType: EventType.TERRACE_BOOKING,
+          status: { not: EventStatus.CANCELLED },
+          deletedAt: null,
+          AND: [{ startDate: { lt: end } }, { endDate: { gt: start } }],
+        },
+        select: { id: true },
+      });
+      if (conflict) {
+        throw new ConflictException(
+          'Terrace already booked for the requested time slot',
+        );
+      }
+    }
+
+    const data: Record<string, unknown> = {};
+    if (dto.title !== undefined) data.title = dto.title;
+    if (dto.description !== undefined) data.description = dto.description;
+    if (dto.eventType !== undefined) data.eventType = dto.eventType;
+    if (dto.startDate !== undefined) data.startDate = new Date(dto.startDate);
+    if (dto.endDate !== undefined) data.endDate = new Date(dto.endDate);
+    if (dto.allDay !== undefined) data.allDay = dto.allDay;
+    if (dto.location !== undefined) data.location = dto.location;
+    if (dto.unitNumber !== undefined) data.unitNumber = dto.unitNumber;
+    if (dto.residentId !== undefined) data.residentId = dto.residentId;
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.notes !== undefined) data.notes = dto.notes;
+
+    if (dto.metadata !== undefined) {
+      if (effectiveType === EventType.TERRACE_BOOKING) {
+        const result = validateTerraceMetadata(dto.metadata);
+        if (!result.valid) throw new BadRequestException(result.error);
+        data.metadata = result.data as unknown as object;
+      } else {
+        // metadata provided for a non-terrace event: strip it to avoid stale data
+        data.metadata = null;
+      }
+    } else if (dto.eventType !== undefined) {
+      const changingToTerrace =
+        dto.eventType === EventType.TERRACE_BOOKING &&
+        existing.eventType !== EventType.TERRACE_BOOKING;
+      const changingFromTerrace =
+        existing.eventType === EventType.TERRACE_BOOKING &&
+        dto.eventType !== EventType.TERRACE_BOOKING;
+      if (changingToTerrace) {
+        // No metadata provided when switching to TERRACE_BOOKING: apply safe defaults.
+        data.metadata = TERRACE_BOOKING_DEFAULTS as unknown as object;
+      } else if (changingFromTerrace) {
+        // Switching away from TERRACE_BOOKING: clear stale terrace metadata.
+        data.metadata = null;
+      }
+    }
+
+    await this.prisma.calendarEvent.updateMany({
+      where: { id, condominiumId, deletedAt: null },
+      data,
+    });
+
+    const updated = await this.findOne(condominiumId, id);
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: 'CALENDAR_EVENT_UPDATED',
+      actionCategory: 'UPDATE',
+      module: 'calendar',
+      entityType: 'CalendarEvent',
+      entityId: id,
+      beforeState: existing,
+      afterState: updated,
+    });
+
+    return updated;
+  }
+
+  async remove(condominiumId: string, userId: string, id: string) {
+    const existing = await this.findOne(condominiumId, id);
+
+    await this.prisma.calendarEvent.updateMany({
+      where: { id, condominiumId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: 'CALENDAR_EVENT_DELETED',
+      actionCategory: 'DELETE',
+      module: 'calendar',
+      entityType: 'CalendarEvent',
+      entityId: id,
+      beforeState: existing,
+    });
+
+    return { id };
+  }
+}
