@@ -6,7 +6,7 @@ export class DashboardService {
   constructor(private prisma: PrismaService) {}
 
   async getKpis(condominiumId: string, year: number, month: number) {
-    const [incomeAgg, expenseAgg, residentStats, recentTransactions] =
+    const [incomeAgg, expenseAgg, residentStats, recentTransactions, settings] =
       await Promise.all([
         this.prisma.transaction.aggregate({
           where: {
@@ -45,6 +45,10 @@ export class DashboardService {
             resident: { select: { unitNumber: true, firstName: true, lastName: true } },
           },
         }),
+        this.prisma.condominiumSettings.findUnique({
+          where: { condominiumId },
+          select: { currency: true },
+        }),
       ]);
 
     const totalIncome = Number(incomeAgg._sum.credits ?? 0);
@@ -62,6 +66,7 @@ export class DashboardService {
         : 0;
 
     return {
+      currency: settings?.currency ?? 'MXN',
       period: { year, month },
       kpis: {
         totalIncome,
@@ -77,11 +82,34 @@ export class DashboardService {
   }
 
   async getMonthlyTrend(condominiumId: string, year: number) {
-    // Use pre-computed summaries when available (avoids 24 queries)
-    const summaries = await this.prisma.financialMonthlySummary.findMany({
-      where: { condominiumId, year },
-      orderBy: { month: 'asc' },
-    });
+    const [summaries, totalResidents, collectionRecords] = await Promise.all([
+      this.prisma.financialMonthlySummary.findMany({
+        where: { condominiumId, year },
+        orderBy: { month: 'asc' },
+      }),
+      this.prisma.resident.count({
+        where: { condominiumId, deletedAt: null },
+      }),
+      this.prisma.collectionRecord.findMany({
+        where: {
+          condominiumId,
+          year,
+          status: { in: ['PAID_ON_TIME', 'PAID_LATE', 'PARTIAL'] },
+        },
+        select: { month: true, residentId: true },
+      }),
+    ]);
+
+    const paidByMonth = new Map<number, Set<string>>();
+    for (const record of collectionRecords) {
+      if (!paidByMonth.has(record.month)) paidByMonth.set(record.month, new Set());
+      paidByMonth.get(record.month)!.add(record.residentId);
+    }
+
+    const getCollectionRate = (m: number) =>
+      totalResidents > 0
+        ? Math.round(((paidByMonth.get(m)?.size ?? 0) / totalResidents) * 1000) / 10
+        : 0;
 
     if (summaries.length > 0) {
       const byMonth = new Map(summaries.map((s) => [s.month, s]));
@@ -92,6 +120,7 @@ export class DashboardService {
           month: m,
           income: s ? Number(s.totalIncome) : 0,
           expenses: s ? Number(s.totalExpenses) : 0,
+          collectionRate: getCollectionRate(m),
         };
       });
     }
@@ -114,7 +143,12 @@ export class DashboardService {
     return Array.from({ length: 12 }, (_, i) => {
       const m = i + 1;
       const r = byMonth.get(m);
-      return { month: m, income: r?.income ?? 0, expenses: r?.expenses ?? 0 };
+      return {
+        month: m,
+        income: r?.income ?? 0,
+        expenses: r?.expenses ?? 0,
+        collectionRate: getCollectionRate(m),
+      };
     });
   }
 }
