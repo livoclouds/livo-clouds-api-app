@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Review — Overall Implementation Progress</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8fafc;
+      --bg2: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text2: #475569;
+      --text3: #94a3b8;
+      --critical: #b91c1c;
+      --critical-bg: #fee2e2;
+      --high: #dc2626;
+      --high-bg: #fef2f2;
+      --medium: #ea580c;
+      --medium-bg: #fff7ed;
+      --low: #d97706;
+      --low-bg: #fffbeb;
+      --ok: #16a34a;
+      --ok-bg: #f0fdf4;
+      --primary: #4f46e5;
+      --primary-light: #eef2ff;
+      --in-progress: #2563eb;
+      --in-progress-bg: #eff6ff;
+      --pending-bg: #f1f5f9;
+      --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      --shadow-md: 0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --bg2: #1e293b;
+        --border: #334155;
+        --text: #f1f5f9;
+        --text2: #94a3b8;
+        --text3: #64748b;
+        --critical-bg: #450a0a;
+        --high-bg: #450a0a;
+        --medium-bg: #431407;
+        --low-bg: #451a03;
+        --ok-bg: #052e16;
+        --primary-light: #1e1b4b;
+        --in-progress-bg: #1e293b;
+        --pending-bg: #1e293b;
+        --shadow: 0 1px 3px rgba(0,0,0,.4);
+        --shadow-md: 0 4px 6px rgba(0,0,0,.4);
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+
+    .header {
+      background: linear-gradient(135deg, #1e1b4b, #4f46e5, #6d28d9);
+      color: white;
+      padding: 40px 32px;
+      border-radius: 16px;
+      margin-bottom: 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .header::after {
+      content: ""; position: absolute;
+      top: -60px; right: -60px;
+      width: 220px; height: 220px;
+      background: rgba(255,255,255,.05);
+      border-radius: 50%;
+    }
+    .header::before {
+      content: ""; position: absolute;
+      bottom: -40px; left: 40%;
+      width: 160px; height: 160px;
+      background: rgba(255,255,255,.03);
+      border-radius: 50%;
+    }
+    .header h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; position: relative; }
+    .header p { font-size: 14px; opacity: .85; position: relative; }
+    .header .meta { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; position: relative; }
+    .header .meta span {
+      font-size: 12px; opacity: .9;
+      background: rgba(255,255,255,.14);
+      padding: 4px 12px; border-radius: 20px;
+    }
+
+    .progress-shell {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 32px;
+    }
+    .progress-shell h2 {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      color: var(--text2);
+      margin-bottom: 12px;
+    }
+    .progress-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 8px;
+    }
+    .progress-bar {
+      flex: 1;
+      height: 14px;
+      background: var(--pending-bg);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4f46e5, #6d28d9);
+      transition: width .3s ease;
+    }
+    .progress-pct {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--primary);
+      min-width: 80px;
+      text-align: right;
+    }
+    .progress-meta {
+      font-size: 12px;
+      color: var(--text2);
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .kpi-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 16px;
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+    .kpi-card .kpi-value { font-size: 32px; font-weight: 800; line-height: 1; margin-bottom: 6px; }
+    .kpi-card .kpi-label { font-size: 11px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .kpi-card.total    .kpi-value { color: var(--primary); }
+    .kpi-card.done     .kpi-value { color: var(--ok); }
+    .kpi-card.active   .kpi-value { color: var(--in-progress); }
+    .kpi-card.pending  .kpi-value { color: var(--text2); }
+
+    .section { margin-bottom: 36px; }
+    .section-title {
+      font-size: 17px; font-weight: 700;
+      margin-bottom: 16px; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::before {
+      content: ""; width: 4px; height: 18px;
+      background: var(--primary); border-radius: 2px;
+    }
+
+    .phase-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 14px;
+    }
+    .phase-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+    .phase-card.is-done { border-color: var(--ok); background: var(--ok-bg); }
+    .phase-card .phase-id {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      color: var(--text3);
+      text-transform: uppercase;
+    }
+    .phase-card .phase-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin: 4px 0 12px;
+      color: var(--text);
+    }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .badge.complete { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); }
+    .badge.active   { background: var(--in-progress-bg); color: var(--in-progress); }
+    .badge.pending  { background: var(--pending-bg); color: var(--text2); }
+    .phase-card .phase-pct {
+      float: right;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text2);
+    }
+    .phase-card.is-done .phase-pct { color: var(--ok); }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .checklist li {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      box-shadow: var(--shadow);
+    }
+    .checklist .check {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      border: 2px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .checklist .check.done {
+      background: var(--ok);
+      color: white;
+      border-color: var(--ok);
+    }
+    .checklist code { font-size: 12px; background: var(--primary-light); padding: 1px 6px; border-radius: 4px; color: var(--primary); }
+    .checklist .sub { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+    table { width: 100%; border-collapse: collapse; background: var(--bg2); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+    th { background: var(--primary-light); color: var(--primary); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    tr:last-child td { border-bottom: 0; }
+
+    .result-pass { color: var(--ok); font-weight: 700; }
+    .result-fail { color: var(--high); font-weight: 700; }
+    .result-skip { color: var(--text2); font-weight: 700; }
+
+    .impact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .impact-card {
+      background: var(--ok-bg);
+      border: 1px solid var(--ok);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .impact-card .impact-dim { font-size: 11px; color: var(--ok); text-transform: uppercase; font-weight: 700; letter-spacing: .05em; }
+    .impact-card .impact-status { font-size: 16px; font-weight: 700; color: var(--text); margin-top: 2px; }
+    .impact-card .impact-note { font-size: 12px; color: var(--text2); margin-top: 6px; }
+
+    .risk-card {
+      background: var(--low-bg);
+      border: 1px solid var(--low);
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 10px;
+    }
+    .risk-card .risk-title { font-size: 13px; font-weight: 700; color: var(--low); }
+    .risk-card .risk-body { font-size: 13px; color: var(--text); margin-top: 4px; }
+
+    .next-step {
+      background: var(--primary-light);
+      border: 1px solid var(--primary);
+      border-radius: 12px;
+      padding: 18px 22px;
+    }
+    .next-step .label { font-size: 11px; color: var(--primary); font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    .next-step .body { font-size: 14px; color: var(--text); margin-top: 4px; }
+    .next-step ul { margin: 10px 0 0 18px; }
+    .next-step li { font-size: 13px; color: var(--text2); margin-bottom: 3px; }
+
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+    .footer {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text3);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="header">
+      <h1>API Review — Overall Implementation Progress</h1>
+      <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
+      <div class="meta">
+        <span>Last updated: 2026-05-13</span>
+        <span>Current phase: Phase 0 (closed)</span>
+        <span>Overall: ~12.5%</span>
+      </div>
+    </header>
+
+    <section class="progress-shell">
+      <h2>Overall roadmap completion</h2>
+      <div class="progress-row">
+        <div class="progress-bar"><div class="progress-fill" style="width: 12.5%"></div></div>
+        <div class="progress-pct">12.5%</div>
+      </div>
+      <p class="progress-meta">1 of 8 phases complete · Phase 0 is closed; ready to start Phase 1</p>
+    </section>
+
+    <div class="kpi-row">
+      <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
+      <div class="kpi-card done"><div class="kpi-value">1</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">7</div><div class="kpi-label">Pending</div></div>
+    </div>
+
+    <section class="section">
+      <h2 class="section-title">Phase status</h2>
+      <div class="phase-grid">
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
+          <div class="phase-id">Phase 0</div>
+          <div class="phase-title">Cleanups (API-only, low risk)</div>
+          <span class="badge complete">Complete</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 1</div>
+          <div class="phase-title">Dashboard trend SQL &amp; imports parallelism</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 2</div>
+          <div class="phase-title">Transactions list projection &amp; calendar range</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 3</div>
+          <div class="phase-title">Background classification</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 4</div>
+          <div class="phase-title">Pagination response shape standardization</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 5</div>
+          <div class="phase-title">Paginate residents / overdue / resident statement</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 6</div>
+          <div class="phase-title">Paginate collection matrix</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 7</div>
+          <div class="phase-title">Paginate calendar / inventory / common-areas / petty-cash</div>
+          <span class="badge pending">Pending</span>
+        </div>
+        <div class="phase-card">
+          <span class="phase-pct">0%</span>
+          <div class="phase-id">Phase 8</div>
+          <div class="phase-title">Index hardening (DB migration, deferred)</div>
+          <span class="badge pending">Pending</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 0 task breakdown</h2>
+      <ul class="checklist">
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P0.1</strong> — Replaced 13 <code>console.*</code> calls with NestJS <code>Logger</code> in <code>src/modules/imports/imports.service.ts</code>.
+            <div class="sub">Added <code>Logger</code> import + <code>private readonly logger = new Logger(ImportsService.name)</code>. Redundant <code>[ImportsService]</code> prefix dropped — Nest adds context automatically.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P0.2</strong> — Verified <code>@Throttle(...)</code> on <code>POST transactions/bulk-reconcile</code> at <code>src/modules/classification/classification.controller.ts:146-150</code>.
+            <div class="sub">Burst 5/10s, sustained 20/min. No code change required.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P0.3</strong> — Wrapped Swagger registration in <code>NODE_ENV !== 'production'</code> guard at <code>src/main.ts:42</code>.
+            <div class="sub">In production, <code>/docs</code> returns 404. Dev/staging behavior unchanged. Web app does not consume <code>/docs</code>, so no web impact.</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Files reviewed &amp; modified</h2>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Action</th><th>Phase</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>docs/api-review/implementation-roadmap.md</code></td><td>Reviewed</td><td>0</td></tr>
+          <tr><td><code>docs/api-review/risk-analysis.md</code></td><td>Reviewed</td><td>0</td></tr>
+          <tr><td><code>docs/api-review/performance-analysis.md</code></td><td>Reviewed</td><td>0</td></tr>
+          <tr><td><code>docs/api-review/web-impact-review.md</code></td><td>Reviewed</td><td>0</td></tr>
+          <tr><td><code>src/modules/imports/imports.service.ts</code></td><td><strong>Modified</strong></td><td>0</td></tr>
+          <tr><td><code>src/modules/classification/classification.controller.ts</code></td><td>Reviewed (no edit)</td><td>0</td></tr>
+          <tr><td><code>src/main.ts</code></td><td><strong>Modified</strong></td><td>0</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Created</td><td>0</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Created</td><td>0</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validation</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nest build</code> ran clean; TypeScript compiled.</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>2 suites, 65 tests passed.</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="result-fail">FAIL (pre-existing)</td>
+            <td>ESLint 9 requires <code>eslint.config.js</code>; repo still uses legacy <code>.eslintrc.*</code>. Not introduced by Phase 0; logged as repo-level migration debt.</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td class="result-skip">SKIPPED</td>
+            <td><code>test/</code> folder does not exist; e2e harness not configured.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "console\." src/modules/imports/imports.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>0 hits.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -c "this.logger\." src/modules/imports/imports.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>13 hits.</td>
+          </tr>
+          <tr>
+            <td>Manual: Swagger gate in <code>main.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>if (process.env.NODE_ENV !== 'production')</code> wraps the Swagger block at line 42.</td>
+          </tr>
+          <tr>
+            <td>Manual: bulk-reconcile <code>@Throttle</code></td>
+            <td class="result-pass">PASS</td>
+            <td>Present at <code>classification.controller.ts:148</code>.</td>
+          </tr>
+          <tr>
+            <td>Manual: git status</td>
+            <td class="result-pass">PASS</td>
+            <td>Only 2 modified + 1 untracked <code>progress/</code> folder in API repo; web repo unchanged.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Impact summary (Phase 0)</h2>
+      <div class="impact-grid">
+        <div class="impact-card">
+          <div class="impact-dim">Web app</div>
+          <div class="impact-status">None required</div>
+          <div class="impact-note">No proxy route, page, or wrapper change.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">API contract</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">Response envelopes, routes, error shape preserved. Only delta: <code>/docs</code> 404 in prod.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Database</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No schema, migration, or query edits.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Tenant isolation</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">Guards, JWT, RBAC untouched.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Risks / blockers</h2>
+      <div class="risk-card">
+        <div class="risk-title">Pre-existing ESLint v9 incompatibility</div>
+        <div class="risk-body">Repo uses legacy <code>.eslintrc.*</code> while installed ESLint is 9.39.4 (which requires <code>eslint.config.js</code>). This is not introduced by Phase 0 and does not affect runtime. Recommended for a separate repo-hygiene PR.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">No e2e test harness</div>
+        <div class="risk-body"><code>test/</code> folder is absent; <code>npm run test:e2e</code> cannot run. Manual verifications + build + unit tests act as the validation surface for Phase 0.</div>
+      </div>
+    </section>
+
+    <section class="section next-step">
+      <div class="label">Recommended next step</div>
+      <div class="body">Proceed to <strong>Phase 1 — Dashboard trend SQL &amp; imports parallelism</strong> (API-only, no contract change).</div>
+      <ul>
+        <li>P2.1 / Q5 — Move per-month distinct-paid-resident count to SQL <code>GROUP BY</code> in <code>dashboard.service.ts:84-153</code>.</li>
+        <li>P3.1 / Q6 — Parallelize per-file dedup lookups in <code>imports.upload</code>; batch with <code>findMany({ where: { fileHash: { in: [...] } } })</code>.</li>
+        <li>P3.2 / R4.1 — Add retry-on-<code>P2002</code> to petty-cash create.</li>
+        <li>Optional: stream uploads to R2 instead of buffering up to 100 MB.</li>
+      </ul>
+    </section>
+
+    <p class="footer">Standalone report · no runtime dependencies · light/dark via <code>prefers-color-scheme</code></p>
+  </div>
+</body>
+</html>
