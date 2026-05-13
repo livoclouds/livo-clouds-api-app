@@ -91,38 +91,72 @@ export class ImportsService {
       throw new BadRequestException('Maximum 5 files per upload');
     }
 
-    const results = [];
+    type FilePlan =
+      | { kind: 'error'; result: Record<string, unknown> }
+      | {
+          kind: 'eligible';
+          file: { buffer: Buffer; originalname: string; mimetype: string; size: number };
+          fileHash: string;
+        };
 
-    for (const file of files) {
+    const plans: FilePlan[] = files.map((file) => {
       if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-        results.push({
-          fileName: file.originalname,
-          status: 'error',
-          message: 'Invalid file type. Only PDF and XLSX are allowed.',
-        });
-        continue;
+        return {
+          kind: 'error',
+          result: {
+            fileName: file.originalname,
+            status: 'error',
+            message: 'Invalid file type. Only PDF and XLSX are allowed.',
+          },
+        };
       }
-
       if (file.size > MAX_FILE_SIZE_BYTES) {
-        results.push({
-          fileName: file.originalname,
-          status: 'error',
-          message: 'File exceeds 20MB limit',
-        });
-        continue;
+        return {
+          kind: 'error',
+          result: {
+            fileName: file.originalname,
+            status: 'error',
+            message: 'File exceeds 20MB limit',
+          },
+        };
       }
-
-      this.logger.log(`upload: file=${file.originalname}, size=${file.size}B, mime=${file.mimetype}`);
-
       const fileHash = crypto
         .createHash('sha256')
         .update(file.buffer)
         .digest('hex');
+      return { kind: 'eligible', file, fileHash };
+    });
 
-      const duplicate = await this.prisma.importBatch.findFirst({
-        where: { condominiumId, fileHash },
-        include: { _count: { select: { transactions: true } } },
-      });
+    const eligibleHashes = plans
+      .filter((p): p is Extract<FilePlan, { kind: 'eligible' }> => p.kind === 'eligible')
+      .map((p) => p.fileHash);
+
+    const existingBatches =
+      eligibleHashes.length > 0
+        ? await this.prisma.importBatch.findMany({
+            where: { condominiumId, fileHash: { in: eligibleHashes } },
+            include: { _count: { select: { transactions: true } } },
+          })
+        : [];
+
+    type BatchWithCount = (typeof existingBatches)[number];
+    const dedupByHash = new Map<string, BatchWithCount>();
+    for (const batch of existingBatches) {
+      dedupByHash.set(batch.fileHash, batch);
+    }
+
+    const results: Record<string, unknown>[] = [];
+
+    for (const plan of plans) {
+      if (plan.kind === 'error') {
+        results.push(plan.result);
+        continue;
+      }
+
+      const { file, fileHash } = plan;
+      this.logger.log(`upload: file=${file.originalname}, size=${file.size}B, mime=${file.mimetype}`);
+
+      const duplicate = dedupByHash.get(fileHash);
 
       if (duplicate?.status === 'COMPLETED' && duplicate._count.transactions > 0) {
         this.logger.log('upload: COMPLETED duplicate found, skipping');
@@ -136,10 +170,9 @@ export class ImportsService {
       }
 
       if (duplicate?.status === 'COMPLETED' && duplicate._count.transactions === 0) {
-        // Stale COMPLETED batch with no transactions (e.g. transactions table was reset).
-        // Delete it so a clean PENDING batch can be created below.
         this.logger.log(`upload: stale COMPLETED batch with 0 transactions, deleting id=${duplicate.id}`);
         await this.prisma.importBatch.delete({ where: { id: duplicate.id } });
+        dedupByHash.delete(fileHash);
       } else if (duplicate?.status === 'PENDING') {
         this.logger.log(`upload: PENDING batch found, returning existing batchId=${duplicate.id}`);
         results.push({
@@ -163,7 +196,10 @@ export class ImportsService {
           fileHash,
           status: 'PENDING',
         },
+        include: { _count: { select: { transactions: true } } },
       });
+
+      dedupByHash.set(fileHash, batch);
 
       this.logger.log(`upload: created PENDING batch id=${batch.id}, R2 configured=${this.storage.isConfigured()}`);
 

@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+
+const PAID_STATUSES = ['PAID_ON_TIME', 'PAID_LATE', 'PARTIAL'] as const;
 
 @Injectable()
 export class DashboardService {
@@ -82,7 +85,9 @@ export class DashboardService {
   }
 
   async getMonthlyTrend(condominiumId: string, year: number) {
-    const [summaries, totalResidents, collectionRecords] = await Promise.all([
+    type PaidCountRow = { month: number; paidCount: number };
+
+    const [summaries, totalResidents, paidCountRows] = await Promise.all([
       this.prisma.financialMonthlySummary.findMany({
         where: { condominiumId, year },
         orderBy: { month: 'asc' },
@@ -90,25 +95,26 @@ export class DashboardService {
       this.prisma.resident.count({
         where: { condominiumId, deletedAt: null },
       }),
-      this.prisma.collectionRecord.findMany({
-        where: {
-          condominiumId,
-          year,
-          status: { in: ['PAID_ON_TIME', 'PAID_LATE', 'PARTIAL'] },
-        },
-        select: { month: true, residentId: true },
-      }),
+      this.prisma.$queryRaw<PaidCountRow[]>`
+        SELECT
+          "month"::int AS month,
+          COUNT(DISTINCT "residentId")::int AS "paidCount"
+        FROM "collection_records"
+        WHERE "condominiumId" = ${condominiumId}
+          AND "year" = ${year}
+          AND "status"::text IN (${Prisma.join([...PAID_STATUSES])})
+        GROUP BY "month"
+      `,
     ]);
 
-    const paidByMonth = new Map<number, Set<string>>();
-    for (const record of collectionRecords) {
-      if (!paidByMonth.has(record.month)) paidByMonth.set(record.month, new Set());
-      paidByMonth.get(record.month)!.add(record.residentId);
+    const paidByMonth = new Map<number, number>();
+    for (const row of paidCountRows) {
+      paidByMonth.set(row.month, Number(row.paidCount));
     }
 
     const getCollectionRate = (m: number) =>
       totalResidents > 0
-        ? Math.round(((paidByMonth.get(m)?.size ?? 0) / totalResidents) * 1000) / 10
+        ? Math.round(((paidByMonth.get(m) ?? 0) / totalResidents) * 1000) / 10
         : 0;
 
     if (summaries.length > 0) {

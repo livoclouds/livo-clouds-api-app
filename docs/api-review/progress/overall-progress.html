@@ -325,25 +325,25 @@
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
         <span>Last updated: 2026-05-13</span>
-        <span>Current phase: Phase 0 (closed)</span>
-        <span>Overall: ~12.5%</span>
+        <span>Current phase: Phase 1 (closed)</span>
+        <span>Overall: ~25%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 12.5%"></div></div>
-        <div class="progress-pct">12.5%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 25%"></div></div>
+        <div class="progress-pct">25%</div>
       </div>
-      <p class="progress-meta">1 of 8 phases complete · Phase 0 is closed; ready to start Phase 1</p>
+      <p class="progress-meta">2 of 8 phases complete · Phase 1 closed (P1.D deferred by user decision) · ready to start Phase 2</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">1</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">2</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">7</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">6</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -355,11 +355,11 @@
           <div class="phase-title">Cleanups (API-only, low risk)</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 1</div>
           <div class="phase-title">Dashboard trend SQL &amp; imports parallelism</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -434,6 +434,40 @@
     </section>
 
     <section class="section">
+      <h2 class="section-title">Phase 1 task breakdown</h2>
+      <ul class="checklist">
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P1.A</strong> — Per-month distinct-paid-resident count moved to SQL <code>GROUP BY</code> in <code>src/modules/dashboard/dashboard.service.ts:87-118</code>.
+            <div class="sub">Replaced JS <code>Map&lt;month, Set&lt;residentId&gt;&gt;</code> with a typed <code>$queryRaw&lt;{ month, paidCount }[]&gt;</code> using <code>COUNT(DISTINCT "residentId")</code>. Added <code>Prisma</code> import and <code>PAID_STATUSES</code> constant. Column names quoted as camelCase (actual DB casing confirmed via migration file). Response shape preserved.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P1.B</strong> — Per-file dedup lookups in <code>src/modules/imports/imports.service.ts</code> <code>upload()</code> batched into one <code>findMany</code>.
+            <div class="sub">Refactored into 3 passes (validate+hash, batched findMany, sequential process). <code>condominiumId</code> kept in the where clause to avoid cross-tenant collisions. <code>dedupByHash</code> map is mutated after each create so the same-hash-twice-in-one-call edge case stays correct. Response shape preserved.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P1.C</strong> — Bounded retry on Prisma <code>P2002</code> in <code>src/modules/petty-cash/petty-cash.service.ts</code> <code>create()</code>.
+            <div class="sub">Wrapped <code>count + folio + create</code> in a <code>MAX_FOLIO_RETRIES = 5</code> loop. P2002 on <code>folio</code> retries with <code>count + 1 + attempt</code>; any other Prisma error rethrows. After exhaustion throws <code>ConflictException</code> (HTTP 409) instead of bare HTTP 500.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check">&nbsp;</span>
+          <div>
+            <strong>P1.D</strong> — <em>Deferred by user decision.</em> Streaming uploads to R2 (<code>main.ts:25</code>, <code>imports.service.ts</code>).
+            <div class="sub">Optional in roadmap (medium risk). Recommendation: schedule as a standalone PR with snapshot + load test.</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section">
       <h2 class="section-title">Files reviewed &amp; modified</h2>
       <table>
         <thead>
@@ -449,12 +483,20 @@
           <tr><td><code>src/main.ts</code></td><td><strong>Modified</strong></td><td>0</td></tr>
           <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Created</td><td>0</td></tr>
           <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Created</td><td>0</td></tr>
+          <tr><td><code>docs/api-review/database-query-review.md</code></td><td>Reviewed (Q5, Q6)</td><td>1</td></tr>
+          <tr><td><code>prisma/schema.prisma</code></td><td>Reviewed (CollectionRecord, PettyCashMovement)</td><td>1</td></tr>
+          <tr><td><code>prisma/migrations/20260509080015_initial_migration/migration.sql</code></td><td>Reviewed (column casing check)</td><td>1</td></tr>
+          <tr><td><code>src/modules/dashboard/dashboard.service.ts</code></td><td><strong>Modified</strong> (P1.A)</td><td>1</td></tr>
+          <tr><td><code>src/modules/imports/imports.service.ts</code></td><td><strong>Modified</strong> (P1.B)</td><td>1</td></tr>
+          <tr><td><code>src/modules/petty-cash/petty-cash.service.ts</code></td><td><strong>Modified</strong> (P1.C)</td><td>1</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Updated</td><td>1</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Updated</td><td>1</td></tr>
         </tbody>
       </table>
     </section>
 
     <section class="section">
-      <h2 class="section-title">Validation</h2>
+      <h2 class="section-title">Validation — Phase 0</h2>
       <table>
         <thead>
           <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
@@ -510,27 +552,83 @@
     </section>
 
     <section class="section">
-      <h2 class="section-title">Impact summary (Phase 0)</h2>
+      <h2 class="section-title">Validation — Phase 1</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nest build</code> clean. New <code>Prisma</code> imports and <code>$queryRaw</code> typing compile without issues.</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>2 suites, 65 tests passed — same baseline as Phase 0 (modified services have no dedicated unit suite yet).</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="result-fail">FAIL (pre-existing)</td>
+            <td>Same ESLint v9 config gap as Phase 0; not introduced by Phase 1.</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td class="result-skip">SKIPPED</td>
+            <td>No <code>test/</code> harness.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "paidByMonth\|Set&lt;\|COUNT(DISTINCT" src/modules/dashboard/dashboard.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>paidByMonth</code> is now <code>Map&lt;number, number&gt;</code>; <code>Set&lt;…&gt;</code> constructor gone; <code>COUNT(DISTINCT "residentId")</code> present in SQL.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "findFirst\|findMany" src/modules/imports/imports.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>Upload-flow per-file <code>findFirst</code> removed; new batched <code>findMany</code> at line 136. <code>findFirst</code> calls in <code>findOne</code> and <code>confirm</code> are unrelated paths and untouched.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "P2002\|MAX_FOLIO_RETRIES\|ConflictException" src/modules/petty-cash/petty-cash.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>Retry constant, P2002 guard, and 409 throw all present.</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (API repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>Exactly 5 modified files (3 src + 2 progress).</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (web repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>No Phase-1-related changes.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Impact summary (Phase 0 + Phase 1)</h2>
       <div class="impact-grid">
         <div class="impact-card">
           <div class="impact-dim">Web app</div>
           <div class="impact-status">None required</div>
-          <div class="impact-note">No proxy route, page, or wrapper change.</div>
+          <div class="impact-note">No proxy route, page, or wrapper change. <code>/dashboard/trend</code>, <code>/imports/upload</code>, and <code>/petty-cash</code> response shapes preserved.</div>
         </div>
         <div class="impact-card">
           <div class="impact-dim">API contract</div>
           <div class="impact-status">Unchanged</div>
-          <div class="impact-note">Response envelopes, routes, error shape preserved. Only delta: <code>/docs</code> 404 in prod.</div>
+          <div class="impact-note">Response envelopes, routes, DTOs preserved. Only behavioral deltas: <code>/docs</code> returns 404 in prod (Phase 0); petty-cash now returns 409 on exhausted folio retries instead of bare 500 (Phase 1) — strictly an improvement.</div>
         </div>
         <div class="impact-card">
           <div class="impact-dim">Database</div>
           <div class="impact-status">Unchanged</div>
-          <div class="impact-note">No schema, migration, or query edits.</div>
+          <div class="impact-note">No schema edits, no migrations, no new indexes. P1.A uses existing <code>collection_records</code> columns via <code>$queryRaw</code>.</div>
         </div>
         <div class="impact-card">
           <div class="impact-dim">Tenant isolation</div>
           <div class="impact-status">Unchanged</div>
-          <div class="impact-note">Guards, JWT, RBAC untouched.</div>
+          <div class="impact-note">P1.B explicitly keeps <code>condominiumId</code> in the batched <code>findMany</code> filter (deviating from the roadmap snippet to avoid cross-tenant collisions).</div>
         </div>
       </div>
     </section>
@@ -539,22 +637,33 @@
       <h2 class="section-title">Risks / blockers</h2>
       <div class="risk-card">
         <div class="risk-title">Pre-existing ESLint v9 incompatibility</div>
-        <div class="risk-body">Repo uses legacy <code>.eslintrc.*</code> while installed ESLint is 9.39.4 (which requires <code>eslint.config.js</code>). This is not introduced by Phase 0 and does not affect runtime. Recommended for a separate repo-hygiene PR.</div>
+        <div class="risk-body">Repo uses legacy <code>.eslintrc.*</code> while installed ESLint is 9.39.4 (which requires <code>eslint.config.js</code>). Carried over from Phase 0. Not introduced by Phase 1; recommended for a separate repo-hygiene PR.</div>
       </div>
       <div class="risk-card">
         <div class="risk-title">No e2e test harness</div>
-        <div class="risk-body"><code>test/</code> folder is absent; <code>npm run test:e2e</code> cannot run. Manual verifications + build + unit tests act as the validation surface for Phase 0.</div>
+        <div class="risk-body"><code>test/</code> folder is absent; <code>npm run test:e2e</code> cannot run. Manual verifications + build + unit tests act as the validation surface for Phase 0 and Phase 1.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Pre-existing bug in dashboard fallback raw query (discovered during P1.A)</div>
+        <div class="risk-body"><code>dashboard.service.ts:136-146</code> (the <code>summaries.length === 0</code> fallback) references <code>condominium_id</code>, <code>transaction_date</code>, and <code>flow_type</code> in <strong>snake_case</strong>, but the actual Postgres columns are camelCase identifiers (<code>"condominiumId"</code>, <code>"transactionDate"</code>, <code>"flowType"</code>). This fallback will throw "column does not exist" if exercised. <strong>Out of scope for Phase 1</strong> (the roadmap targeted only the <code>Set</code>→SQL conversion). Path is rarely hit because <code>FinancialMonthlySummary</code> rows usually exist for any year with transactions. Recommend a follow-up correctness fix.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">R4.2 unmitigated</div>
+        <div class="risk-body">Petty-cash <code>runningBalance</code> is still computed from the last row (concurrent creates can produce divergent balances). The roadmap defers this to a dedicated correctness phase; flagged here so it isn't forgotten.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Petty-cash parallel reads not bundled</div>
+        <div class="risk-body">The perf-only suggestion to wrap <code>findFirst</code> + <code>count</code> in <code>Promise.all</code> was scoped out of Phase 1. Documented as a follow-up.</div>
       </div>
     </section>
 
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 1 — Dashboard trend SQL &amp; imports parallelism</strong> (API-only, no contract change).</div>
+      <div class="body">Proceed to <strong>Phase 2 — Transactions list projection &amp; calendar range enforcement</strong> (API-only, low blast).</div>
       <ul>
-        <li>P2.1 / Q5 — Move per-month distinct-paid-resident count to SQL <code>GROUP BY</code> in <code>dashboard.service.ts:84-153</code>.</li>
-        <li>P3.1 / Q6 — Parallelize per-file dedup lookups in <code>imports.upload</code>; batch with <code>findMany({ where: { fileHash: { in: [...] } } })</code>.</li>
-        <li>P3.2 / R4.1 — Add retry-on-<code>P2002</code> to petty-cash create.</li>
-        <li>Optional: stream uploads to R2 instead of buffering up to 100 MB.</li>
+        <li>P3.3 / Q3 — Audit web consumers to confirm <code>matchedCalendarEvent.resident</code>, <code>importBatch</code>, <code>matchedRule</code>, <code>reconciledBy</code> are needed on each list variant; trim to <code>select</code> projections where not. <strong>Cross-repo verification required.</strong></li>
+        <li>P3.4 — Require <code>from</code>/<code>to</code> on calendar list; cap span at 12 months.</li>
+        <li>Web is not required to change for Phase 2 — the cross-repo audit is read-only.</li>
       </ul>
     </section>
 

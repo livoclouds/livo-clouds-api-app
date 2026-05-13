@@ -1,11 +1,15 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateMovementDto } from './dto/create-movement.dto';
+
+const MAX_FOLIO_RETRIES = 5;
 
 @Injectable()
 export class PettyCashService {
@@ -51,31 +55,46 @@ export class PettyCashService {
       ? prevBalance - dto.amount
       : prevBalance + dto.amount;
 
-    const count = await this.prisma.pettyCashMovement.count({
-      where: { condominiumId },
-    });
-    const folio = `PC-${String(count + 1).padStart(4, '0')}`;
+    for (let attempt = 0; attempt < MAX_FOLIO_RETRIES; attempt++) {
+      const count = await this.prisma.pettyCashMovement.count({
+        where: { condominiumId },
+      });
+      const folio = `PC-${String(count + 1 + attempt).padStart(4, '0')}`;
 
-    return this.prisma.pettyCashMovement.create({
-      data: {
-        condominiumId,
-        folio,
-        date: new Date(dto.date),
-        movementType: dto.movementType,
-        category: dto.category,
-        concept: dto.concept,
-        amount: dto.amount,
-        runningBalance,
-        deliveryMethod: dto.deliveryMethod,
-        responsible: dto.responsible,
-        supplier: dto.supplier,
-        hasReceipt: dto.hasReceipt ?? false,
-        receiptNumber: dto.receiptNumber,
-        authorizedBy: dto.authorizedBy,
-        notes: dto.notes,
-        registeredById: user.sub,
-      },
-    });
+      try {
+        return await this.prisma.pettyCashMovement.create({
+          data: {
+            condominiumId,
+            folio,
+            date: new Date(dto.date),
+            movementType: dto.movementType,
+            category: dto.category,
+            concept: dto.concept,
+            amount: dto.amount,
+            runningBalance,
+            deliveryMethod: dto.deliveryMethod,
+            responsible: dto.responsible,
+            supplier: dto.supplier,
+            hasReceipt: dto.hasReceipt ?? false,
+            receiptNumber: dto.receiptNumber,
+            authorizedBy: dto.authorizedBy,
+            notes: dto.notes,
+            registeredById: user.sub,
+          },
+        });
+      } catch (err) {
+        const isUniqueFolioViolation =
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === 'P2002' &&
+          Array.isArray(err.meta?.target) &&
+          (err.meta!.target as string[]).includes('folio');
+        if (!isUniqueFolioViolation) throw err;
+      }
+    }
+
+    throw new ConflictException(
+      'Could not generate unique folio after retries',
+    );
   }
 
   async approve(condominiumId: string, id: string, userId: string) {
