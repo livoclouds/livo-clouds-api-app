@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Performance &amp; Risk Review — livo-clouds-api-app</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8fafc;
+      --bg2: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text2: #475569;
+      --text3: #94a3b8;
+      --critical: #b91c1c;
+      --critical-bg: #fee2e2;
+      --high: #dc2626;
+      --high-bg: #fef2f2;
+      --medium: #ea580c;
+      --medium-bg: #fff7ed;
+      --low: #d97706;
+      --low-bg: #fffbeb;
+      --ok: #16a34a;
+      --ok-bg: #f0fdf4;
+      --primary: #4f46e5;
+      --primary-light: #eef2ff;
+      --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      --shadow-md: 0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --bg2: #1e293b;
+        --border: #334155;
+        --text: #f1f5f9;
+        --text2: #94a3b8;
+        --text3: #64748b;
+        --critical-bg: #450a0a;
+        --high-bg: #450a0a;
+        --medium-bg: #431407;
+        --low-bg: #451a03;
+        --ok-bg: #052e16;
+        --primary-light: #1e1b4b;
+        --shadow: 0 1px 3px rgba(0,0,0,.4);
+        --shadow-md: 0 4px 6px rgba(0,0,0,.4);
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+
+    .header {
+      background: linear-gradient(135deg, #1e1b4b, #4f46e5, #6d28d9);
+      color: white;
+      padding: 40px 32px;
+      border-radius: 16px;
+      margin-bottom: 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .header::after {
+      content: ""; position: absolute;
+      top: -60px; right: -60px;
+      width: 220px; height: 220px;
+      background: rgba(255,255,255,.05);
+      border-radius: 50%;
+    }
+    .header::before {
+      content: ""; position: absolute;
+      bottom: -40px; left: 40%;
+      width: 160px; height: 160px;
+      background: rgba(255,255,255,.03);
+      border-radius: 50%;
+    }
+    .header h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; position: relative; }
+    .header p { font-size: 14px; opacity: .85; position: relative; }
+    .header .meta { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; position: relative; }
+    .header .meta span {
+      font-size: 12px; opacity: .8;
+      background: rgba(255,255,255,.12);
+      padding: 4px 12px; border-radius: 20px;
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .kpi-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 16px;
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+    .kpi-card .kpi-value { font-size: 36px; font-weight: 800; line-height: 1; margin-bottom: 6px; }
+    .kpi-card .kpi-label { font-size: 11px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .kpi-card.total    .kpi-value { color: var(--primary); }
+    .kpi-card.crit     .kpi-value { color: var(--critical); }
+    .kpi-card.high     .kpi-value { color: var(--high); }
+    .kpi-card.medium   .kpi-value { color: var(--medium); }
+    .kpi-card.ok       .kpi-value { color: var(--ok); }
+
+    .section { margin-bottom: 36px; }
+    .section-title {
+      font-size: 17px; font-weight: 700;
+      margin-bottom: 16px; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::before {
+      content: ""; width: 4px; height: 20px;
+      background: var(--primary); border-radius: 2px;
+      display: inline-block; flex-shrink: 0;
+    }
+    .section-intro { font-size: 13px; color: var(--text2); margin-bottom: 16px; max-width: 800px; }
+
+    .badge {
+      display: inline-flex; align-items: center;
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .04em;
+      padding: 2px 8px; border-radius: 20px;
+    }
+    .badge.critical { background: var(--critical-bg); color: var(--critical); }
+    .badge.high     { background: var(--high-bg);     color: var(--high); }
+    .badge.medium   { background: var(--medium-bg);   color: var(--medium); }
+    .badge.low      { background: var(--low-bg);      color: var(--low); }
+    .badge.ok       { background: var(--ok-bg);       color: var(--ok); }
+    .badge.info     { background: var(--primary-light); color: var(--primary); }
+
+    .table-wrap {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      background: var(--primary-light);
+      color: var(--primary);
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .06em;
+      padding: 11px 16px; text-align: left;
+    }
+    td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--primary-light); }
+    .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 11px; color: var(--text3); }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .matrix-cell {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    .matrix-cell .mc-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    }
+    .mc-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .mc-dot.critical { background: var(--critical); }
+    .mc-dot.high     { background: var(--high); }
+    .mc-dot.medium   { background: var(--medium); }
+    .mc-dot.low      { background: var(--low); }
+    .mc-dot.ok       { background: var(--ok); }
+    .matrix-cell h4 { font-size: 13px; font-weight: 700; }
+    .matrix-cell ul { list-style: none; }
+    .matrix-cell ul li {
+      font-size: 12px; color: var(--text2);
+      padding: 4px 0; border-bottom: 1px solid var(--border);
+      display: flex; align-items: flex-start; gap: 6px;
+    }
+    .matrix-cell ul li:last-child { border-bottom: none; }
+    .matrix-cell ul li::before { content: "→"; color: var(--text3); flex-shrink: 0; }
+    .matrix-cell .count {
+      font-size: 12px; color: var(--text3);
+      margin-left: auto; font-variant-numeric: tabular-nums;
+    }
+
+    .phases-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .phase-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .phase-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .phase-num {
+      width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 800; color: white; flex-shrink: 0;
+    }
+    .phase-num.p0 { background: #6d28d9; }
+    .phase-num.p1 { background: var(--ok); }
+    .phase-num.p2 { background: #0ea5e9; }
+    .phase-num.p3 { background: var(--low); }
+    .phase-num.p4 { background: var(--medium); }
+    .phase-num.p5 { background: var(--high); }
+    .phase-num.p6 { background: var(--critical); }
+    .phase-card h3 { font-size: 14px; font-weight: 700; }
+    .phase-card .ph-sub { font-size: 11px; color: var(--text3); }
+    .phase-card ul { list-style: none; margin-top: 10px; }
+    .phase-card ul li {
+      font-size: 12px; color: var(--text2);
+      padding: 4px 0; display: flex; gap: 6px;
+    }
+    .phase-card ul li::before { content: "•"; color: var(--primary); flex-shrink: 0; }
+    .phase-card .ph-tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .finding {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--text3);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow);
+    }
+    .finding.critical { border-left-color: var(--critical); }
+    .finding.high     { border-left-color: var(--high); }
+    .finding.medium   { border-left-color: var(--medium); }
+    .finding.low      { border-left-color: var(--low); }
+    .finding h4 {
+      font-size: 14px; font-weight: 700;
+      margin-bottom: 6px; display: flex;
+      align-items: center; gap: 8px;
+    }
+    .finding .fid { font-family: "SF Mono", "Fira Code", monospace; color: var(--text3); font-size: 11px; }
+    .finding p { font-size: 13px; color: var(--text2); margin-top: 4px; }
+    .finding .meta { font-size: 11px; color: var(--text3); margin-top: 8px; }
+    .finding .meta .mono { color: var(--text2); }
+
+    .footer {
+      margin-top: 48px; padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 12px; color: var(--text3);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <h1>API Performance &amp; Risk Review</h1>
+      <p>livo-clouds-api-app · Read-only audit, no source changes</p>
+      <div class="meta">
+        <span>2026-05-13</span>
+        <span>NestJS · Fastify · Prisma · Postgres</span>
+        <span>17 modules · ~106 endpoints</span>
+        <span>Analysis only</span>
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="kpi-row">
+      <div class="kpi-card total">
+        <div class="kpi-value">~106</div>
+        <div class="kpi-label">Endpoints</div>
+      </div>
+      <div class="kpi-card crit">
+        <div class="kpi-value">5</div>
+        <div class="kpi-label">Critical findings</div>
+      </div>
+      <div class="kpi-card high">
+        <div class="kpi-value">9</div>
+        <div class="kpi-label">High findings</div>
+      </div>
+      <div class="kpi-card medium">
+        <div class="kpi-value">12</div>
+        <div class="kpi-label">Medium findings</div>
+      </div>
+      <div class="kpi-card ok">
+        <div class="kpi-value">0</div>
+        <div class="kpi-label">Code changes made</div>
+      </div>
+    </div>
+
+    <!-- Executive summary -->
+    <div class="section">
+      <h2 class="section-title">Executive summary</h2>
+      <p class="section-intro">
+        The API is structurally sound. Tenant isolation, authentication,
+        and Prisma index coverage are all in good shape. The dominant
+        risks are <strong>payload size</strong> from ten unbounded list
+        endpoints and a handful of <strong>in-memory aggregations</strong>
+        that should be SQL. None of these would break the system today,
+        but they will all degrade together as tenant data volume grows.
+        See <span class="mono">README.md</span> for navigation.
+      </p>
+
+      <div class="matrix">
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot critical"></div>
+            <h4>Top critical risks</h4>
+          </div>
+          <ul>
+            <li>Residents list unbounded <span class="count">P1.1</span></li>
+            <li>Collection year matrix unbounded <span class="count">P1.2</span></li>
+            <li>Resident account statement unbounded <span class="count">P1.3</span></li>
+            <li>Overdue report unbounded <span class="count">P1.4</span></li>
+            <li>Collection matrix report unbounded <span class="count">P1.5</span></li>
+          </ul>
+        </div>
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot high"></div>
+            <h4>Top high-impact opportunities</h4>
+          </div>
+          <ul>
+            <li>Dashboard trend → SQL aggregate <span class="count">P2.1</span></li>
+            <li>classifyBatch batched UPDATE <span class="count">P2.2</span></li>
+            <li>Imports upload parallelism <span class="count">P3.1</span></li>
+            <li>Calendar list require date range <span class="count">P3.4</span></li>
+          </ul>
+        </div>
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot ok"></div>
+            <h4>Acceptable as-is — do not change</h4>
+          </div>
+          <ul>
+            <li>Tenant isolation guard <span class="count">R1</span></li>
+            <li>Response &amp; error envelopes <span class="count">R3.1 R3.3</span></li>
+            <li>Index coverage on hot models</li>
+            <li>Append-only transaction flow</li>
+            <li>Soft-delete pattern</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Endpoint risk matrix -->
+    <div class="section">
+      <h2 class="section-title">Endpoint risk matrix</h2>
+      <p class="section-intro">
+        Risk distribution across the 17 NestJS modules. See
+        <span class="mono">endpoint-inventory.md</span> for the full
+        per-endpoint table.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Endpoints</th>
+              <th>Critical</th>
+              <th>High</th>
+              <th>Medium</th>
+              <th>Risk level</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>residents</td><td>11</td><td>1</td><td>0</td><td>1</td><td><span class="badge critical">critical</span></td></tr>
+            <tr><td>collection</td><td>4</td><td>2</td><td>1</td><td>0</td><td><span class="badge critical">critical</span></td></tr>
+            <tr><td>reports</td><td>3</td><td>2</td><td>0</td><td>0</td><td><span class="badge critical">critical</span></td></tr>
+            <tr><td>dashboard</td><td>2</td><td>0</td><td>1</td><td>1</td><td><span class="badge high">high</span></td></tr>
+            <tr><td>classification</td><td>8</td><td>0</td><td>2</td><td>3</td><td><span class="badge high">high</span></td></tr>
+            <tr><td>imports</td><td>5</td><td>0</td><td>2</td><td>1</td><td><span class="badge high">high</span></td></tr>
+            <tr><td>calendar</td><td>5</td><td>0</td><td>1</td><td>2</td><td><span class="badge medium">medium</span></td></tr>
+            <tr><td>inventory</td><td>8</td><td>0</td><td>2</td><td>0</td><td><span class="badge medium">medium</span></td></tr>
+            <tr><td>petty-cash</td><td>5</td><td>0</td><td>1</td><td>1</td><td><span class="badge medium">medium</span></td></tr>
+            <tr><td>transactions</td><td>4</td><td>0</td><td>0</td><td>4</td><td><span class="badge medium">medium</span></td></tr>
+            <tr><td>audit</td><td>2</td><td>0</td><td>0</td><td>0</td><td><span class="badge low">low</span></td></tr>
+            <tr><td>users</td><td>5</td><td>0</td><td>0</td><td>0</td><td><span class="badge low">low</span></td></tr>
+            <tr><td>settings</td><td>9</td><td>0</td><td>0</td><td>0</td><td><span class="badge ok">acceptable</span></td></tr>
+            <tr><td>reconciliation-rules</td><td>5</td><td>0</td><td>0</td><td>0</td><td><span class="badge ok">acceptable</span></td></tr>
+            <tr><td>condominiums</td><td>5</td><td>0</td><td>0</td><td>0</td><td><span class="badge ok">acceptable</span></td></tr>
+            <tr><td>auth</td><td>5</td><td>0</td><td>0</td><td>0</td><td><span class="badge ok">acceptable</span></td></tr>
+            <tr><td>notifications</td><td>2</td><td>0</td><td>0</td><td>0</td><td><span class="badge ok">acceptable</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Top performance findings -->
+    <div class="section">
+      <h2 class="section-title">Top performance findings</h2>
+      <p class="section-intro">
+        Each finding cites <span class="mono">file:line</span> in the
+        API repo. Full detail in
+        <span class="mono">performance-analysis.md</span>.
+      </p>
+
+      <div class="finding critical">
+        <h4>
+          <span class="badge critical">critical</span>
+          <span class="fid">P1.1</span>
+          Residents list returns full roster with 3-level include
+        </h4>
+        <p>
+          <code class="mono">residents.service.ts:15-25</code> —
+          <code>findMany({ include: { vehicles, pets, additionalResidents } })</code>
+          with no <code>take</code>. Payload grows linearly with tenant
+          size; today acceptable, will not survive a 500-unit tenant.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (rolling)</span>
+          <span class="mono">fix later · Phase 5</span>
+        </div>
+      </div>
+
+      <div class="finding critical">
+        <h4>
+          <span class="badge critical">critical</span>
+          <span class="fid">P1.2 / P1.5</span>
+          Collection matrix endpoints unbounded
+        </h4>
+        <p>
+          <code class="mono">collection.service.ts:16</code> and
+          <code class="mono">reports.service.ts:31</code> — return all
+          residents × 12 months per request. Today ~3,600 rows for a
+          300-unit tenant; doubles each fiscal year if multi-year matrix
+          is added.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (lockstep)</span>
+          <span class="mono">fix later · Phase 6</span>
+        </div>
+      </div>
+
+      <div class="finding critical">
+        <h4>
+          <span class="badge critical">critical</span>
+          <span class="fid">P1.3</span>
+          Resident account statement loads every transaction in memory
+        </h4>
+        <p>
+          <code class="mono">collection.service.ts:35-117</code> — all
+          transactions for a resident, all collection records, then
+          totals via JS <code>.reduce</code>. No date-range default, no
+          pagination.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (rolling)</span>
+          <span class="mono">fix later · Phase 5</span>
+        </div>
+      </div>
+
+      <div class="finding critical">
+        <h4>
+          <span class="badge critical">critical</span>
+          <span class="fid">P1.4</span>
+          Overdue report unbounded with nested includes
+        </h4>
+        <p>
+          <code class="mono">reports.service.ts:8-29</code> — all
+          overdue residents + nested unpaid collection records, then
+          <code>.map()</code>. Grows with delinquent base and overdue
+          months.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (rolling)</span>
+          <span class="mono">fix later · Phase 5</span>
+        </div>
+      </div>
+
+      <div class="finding high">
+        <h4>
+          <span class="badge high">high</span>
+          <span class="fid">P2.1</span>
+          Dashboard trend builds Map&lt;month, Set&gt; in JavaScript
+        </h4>
+        <p>
+          <code class="mono">dashboard.service.ts:84-153</code> — loads
+          every paid collection record for the year, builds a per-month
+          set of residentIds in JS. Equivalent SQL is a single
+          <code>COUNT(DISTINCT)</code> query.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 1</span>
+        </div>
+      </div>
+
+      <div class="finding high">
+        <h4>
+          <span class="badge high">high</span>
+          <span class="fid">P2.2</span>
+          classifyBatch issues per-row UPDATE in chunks of 200
+        </h4>
+        <p>
+          <code class="mono">classification.service.ts:389-477</code> —
+          200 concurrent <code>prisma.transaction.update(...)</code> per
+          chunk. A 1,000-row import = 1,000 round-trips. Bounded by
+          connection-pool size.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 3</span>
+        </div>
+      </div>
+
+      <div class="finding medium">
+        <h4>
+          <span class="badge medium">medium</span>
+          <span class="fid">P3.1</span>
+          Imports upload performs sequential I/O per file
+        </h4>
+        <p>
+          <code class="mono">imports.service.ts:78-191</code> — for each
+          of up to 5 files: hash, dedup lookup, optional delete, create,
+          R2 upload, all serialized. Multiple <code>console.log</code>
+          statements in production code.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 1</span>
+        </div>
+      </div>
+
+      <div class="finding medium">
+        <h4>
+          <span class="badge medium">medium</span>
+          <span class="fid">P3.4</span>
+          Calendar list has optional date range
+        </h4>
+        <p>
+          <code class="mono">calendar.service.ts:32-71</code> — without
+          <code>from</code>/<code>to</code> returns every non-deleted
+          event for the condominium. Web always sends a range today;
+          the API does not require it.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 2</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Risk findings -->
+    <div class="section">
+      <h2 class="section-title">Top risk findings (non-performance)</h2>
+      <p class="section-intro">
+        Tenant isolation, authorization, contract stability, data
+        consistency, and operational risks. Full detail in
+        <span class="mono">risk-analysis.md</span>.
+      </p>
+
+      <div class="finding medium">
+        <h4>
+          <span class="badge medium">medium</span>
+          <span class="fid">R3.2</span>
+          Pagination response shape is inconsistent across modules
+        </h4>
+        <p>
+          Transactions / imports return a <strong>flat</strong> shape
+          (<code>{ data, total, page, ... }</code>); audit returns an
+          <strong>envelope</strong> (<code>{ data, meta: {...} }</code>).
+          The declared <code>PaginatedResult</code> type matches the
+          envelope but services drift from it.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (lockstep)</span>
+          <span class="mono">fix later · Phase 4</span>
+        </div>
+      </div>
+
+      <div class="finding medium">
+        <h4>
+          <span class="badge medium">medium</span>
+          <span class="fid">R5.3</span>
+          R2 upload failures are silently swallowed
+        </h4>
+        <p>
+          <code class="mono">imports.service.ts:177-179</code> — storage
+          failure is logged but the batch is still returned as "queued".
+          User has no signal that the bank statement file was not
+          retained.
+        </p>
+        <div class="meta">
+          <span class="badge info">API+web (lockstep)</span>
+          <span class="mono">fix later · Phase 5</span>
+        </div>
+      </div>
+
+      <div class="finding medium">
+        <h4>
+          <span class="badge medium">medium</span>
+          <span class="fid">R5.2</span>
+          File buffering up to 100 MB per request
+        </h4>
+        <p>
+          Fastify multipart configured for 20 MB × 5 files; SHA-256 is
+          computed over the in-memory buffer. Memory pressure under
+          concurrent uploads.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 1 (stretch)</span>
+        </div>
+      </div>
+
+      <div class="finding low">
+        <h4>
+          <span class="badge low">low</span>
+          <span class="fid">R4.1</span>
+          Petty-cash folio uses non-atomic count+1
+        </h4>
+        <p>
+          DB constraint <code>@@unique([condominiumId, folio])</code>
+          prevents corruption — but concurrent writes produce a
+          <code>P2002</code> error rather than a retried success. UX
+          issue, not a data issue.
+        </p>
+        <div class="meta">
+          <span class="badge info">API-only</span>
+          <span class="mono">fix later · Phase 1</span>
+        </div>
+      </div>
+
+      <div class="finding low">
+        <h4>
+          <span class="badge ok">acceptable</span>
+          <span class="fid">R1.x · R6</span>
+          Tenant isolation is solid — do not change without dedicated
+          plan
+        </h4>
+        <p>
+          <code class="mono">condominium-access.guard.ts:12-53</code> —
+          validates slug → resolves condominiumId → enforces session
+          match (ROOT bypass). Bulk reconcile and manual match both
+          re-verify ownership.
+        </p>
+        <div class="meta">
+          <span class="badge info">no action</span>
+          <span class="mono">acceptable as-is</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Web impact -->
+    <div class="section">
+      <h2 class="section-title">Web impact summary</h2>
+      <p class="section-intro">
+        For every recommended API change, the web work required is
+        catalogued in <span class="mono">web-impact-review.md</span>.
+        Most fixes fall into three coordination buckets:
+      </p>
+
+      <div class="matrix">
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot ok"></div>
+            <h4>API-only — no web work</h4>
+          </div>
+          <ul>
+            <li>P2.1 dashboard trend SQL</li>
+            <li>P2.2 classifyBatch batching</li>
+            <li>P3.1 imports parallelism</li>
+            <li>P3.2 petty-cash retry</li>
+            <li>P3.4 calendar range (web already sends)</li>
+            <li>R5.1, R5.2 cleanups</li>
+          </ul>
+        </div>
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot medium"></div>
+            <h4>API+web (rolling)</h4>
+          </div>
+          <ul>
+            <li>P1.1 residents pagination</li>
+            <li>P1.3 statement defaults + pagination</li>
+            <li>P1.4 overdue pagination</li>
+            <li>P3.3 transactions slim select</li>
+            <li>Inventory, petty-cash pagination</li>
+          </ul>
+        </div>
+        <div class="matrix-cell">
+          <div class="mc-header">
+            <div class="mc-dot critical"></div>
+            <h4>API+web (lockstep)</h4>
+          </div>
+          <ul>
+            <li>P1.2 / P1.5 collection matrix</li>
+            <li>R3.2 pagination shape standardization</li>
+            <li>R5.3 R2 retention warnings</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Roadmap -->
+    <div class="section">
+      <h2 class="section-title">Recommended roadmap</h2>
+      <p class="section-intro">
+        Eight phases sized for shippable PR pairs. Phases 0–3 are
+        API-only and unlock immediate latency wins. Phases 4+ require
+        web coordination. Full detail in
+        <span class="mono">implementation-roadmap.md</span>.
+      </p>
+
+      <div class="phases-grid">
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p0">0</div>
+            <div>
+              <h3>Cleanups</h3>
+              <div class="ph-sub">API-only · low risk</div>
+            </div>
+          </div>
+          <ul>
+            <li>Replace console.log in imports</li>
+            <li>Verify bulk-reconcile throttle</li>
+            <li>Decide Swagger gating</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge ok">no breakage</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p1">1</div>
+            <div>
+              <h3>Dashboard SQL + imports parallelism</h3>
+              <div class="ph-sub">API-only</div>
+            </div>
+          </div>
+          <ul>
+            <li>P2.1 dashboard trend SQL aggregate</li>
+            <li>P3.1 parallel dedup lookups</li>
+            <li>P3.2 / R4.1 petty-cash retry</li>
+            <li>R5.2 (stretch) stream R2 uploads</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge ok">no breakage</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p2">2</div>
+            <div>
+              <h3>Transactions projection + calendar range</h3>
+              <div class="ph-sub">API-only · web verification</div>
+            </div>
+          </div>
+          <ul>
+            <li>P3.3 transactions slim select</li>
+            <li>P3.4 require calendar from/to</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge info">verify web first</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p3">3</div>
+            <div>
+              <h3>Background classification</h3>
+              <div class="ph-sub">API-only</div>
+            </div>
+          </div>
+          <ul>
+            <li>P2.2 batched classifyBatch UPDATE</li>
+            <li>Stretch: queue-based processing</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge medium">semantic risk</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p4">4</div>
+            <div>
+              <h3>Standardize pagination shape</h3>
+              <div class="ph-sub">API + web (lockstep)</div>
+            </div>
+          </div>
+          <ul>
+            <li>R3.2 universal { data, meta } envelope</li>
+            <li>Update web wrappers in same release</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge medium">coordinated</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p5">5</div>
+            <div>
+              <h3>Paginate residents, overdue, statement</h3>
+              <div class="ph-sub">API + web (rolling)</div>
+            </div>
+          </div>
+          <ul>
+            <li>P1.1 residents</li>
+            <li>P1.3 resident statement</li>
+            <li>P1.4 overdue report</li>
+            <li>R5.3 R2 warnings surfaced</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge high">high value</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p6">6</div>
+            <div>
+              <h3>Paginate collection matrix</h3>
+              <div class="ph-sub">API + web (lockstep)</div>
+            </div>
+          </div>
+          <ul>
+            <li>P1.2 collection year matrix</li>
+            <li>P1.5 reports collection matrix</li>
+            <li>Architectural choice: paginate vs. virtualize</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge critical">largest UX change</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p4">7</div>
+            <div>
+              <h3>Long-tail pagination</h3>
+              <div class="ph-sub">API + web (rolling)</div>
+            </div>
+          </div>
+          <ul>
+            <li>Calendar list</li>
+            <li>Inventory + common areas</li>
+            <li>Petty-cash list</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge low">low complexity</span>
+          </div>
+        </div>
+
+        <div class="phase-card">
+          <div class="phase-header">
+            <div class="phase-num p0">8</div>
+            <div>
+              <h3>Index hardening (deferred)</h3>
+              <div class="ph-sub">DB migration · only if needed</div>
+            </div>
+          </div>
+          <ul>
+            <li>AuditLog (condominiumId, createdAt)</li>
+            <li>ImportBatch (condominiumId, fileHash)</li>
+            <li>Petty-cash folio sequence</li>
+          </ul>
+          <div class="ph-tags">
+            <span class="badge info">data-driven</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      Generated 2026-05-13 · livo-clouds-api-app · read-only analysis ·
+      no source code modified · see
+      <span class="mono">docs/api-review/README.md</span> for full
+      navigation
+    </div>
+
+  </div>
+</body>
+</html>
