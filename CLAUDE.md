@@ -96,6 +96,24 @@ NestJS exception classes map to HTTP codes: `NotFoundException` → 404, `Confli
 - **Password hashing** — bcrypt with `SALT_ROUNDS = 12` (defined inline in auth + users services)
 - **Refresh token storage** — `RefreshToken` model; revocation via `revokedAt` field
 
+## Endpoint & Data Access Standards
+
+Invariants from the v1 API Performance & Risk Review (see `docs/api-review/v1/2026-05-13/`). Every new endpoint and every modification to an existing one must satisfy each of these — they are the contract that keeps the API ready to grow.
+
+- **List endpoint shape.** Every collection-returning endpoint returns `{ data: T[], meta: { total, page, limit, totalPages } }` via `PaginatedResult<T>` from `src/common/types/index.ts`. The controller binds a `List<Name>Dto` with optional `page` (`@IsInt @Min(1)`, default `1`) and `limit` (`@IsInt @Min(1) @Max(N)`, sensible default — never `Infinity`). The service runs `Promise.all([findMany({ where, select|include, orderBy, skip, take }), count({ where })])`. Live default/max templates: residents 200/500, collection 200/1000, calendar 500/2000, audit & imports 50/200.
+- **Tenant scoping.** Every `where` clause on a tenant-scoped endpoint derives `condominiumId` from `request.condominiumId` set by `CondominiumAccessGuard`. Never from query params, body, or path beyond the validated slug. `ROOT` bypass lives inside the guard — services do not re-implement it.
+- **Projection.** Use Prisma `select` or `include` to return only the columns the response needs. No `findMany()` without an explicit projection on unbounded tables (`Transaction`, `AuditLog`, `ImportBatch`, `CalendarEvent`, `PettyCashMovement`).
+- **Time-bounded endpoints** (`/calendar/events`, `/transactions`, `/audit/logs`) require validated `from`/`to` in the DTO; the service enforces the overlap predicate (`startDate < to AND endDate > from`).
+- **Batched DB access.** When N items each need a DB lookup (e.g. SHA-256 dedup during import), issue ONE `findMany({ where: { x: { in: [...] } } })` and resolve from an in-memory map. Never loop with sequential `await` lookups.
+- **Concurrency on unique constraints.** Tenant-scoped sequential identifiers (e.g. `PettyCashMovement.folio` with `@@unique([condominiumId, folio])`) wrap `count + create` in a bounded retry that catches `Prisma.PrismaClientKnownRequestError` with `code === 'P2002'` and throws `ConflictException` after the cap. Reference: `petty-cash.service.ts:82-117` (`MAX_FOLIO_RETRIES = 5`).
+- **Throttling.** `@Throttle({ burst, sustained })` on endpoints whose work scales with payload (bulk reconcile, bulk classify, import process). Reference: `classification.controller.ts:146-150`.
+- **Logging.** NestJS `Logger` only — never `console.*`. Instantiate per service: `private readonly logger = new Logger(ServiceName.name);`.
+- **Swagger.** Off in production (`if (process.env.NODE_ENV !== 'production')` in `main.ts`).
+
+## Schema & Migration Discipline
+
+Schema changes are **evidence-driven**. Do NOT add composite indexes, new constraints, or migrations speculatively. Each change must be backed by one of: (a) representative `EXPLAIN ANALYZE` showing the current plan is the bottleneck, (b) production slow-query log evidence, or (c) measured row-count thresholds (e.g. `audit_logs > ~500k` per tenant, `import_batches > ~250k`). When the measurement infrastructure is missing, document the gap and defer — never guess. Write the smallest delta that solves the problem; use `CREATE INDEX CONCURRENTLY` on populated tables; never remove an `@@index` / `@@unique` without measured evidence its dependent query was retired. Reference: Phase 8 evaluation in `docs/api-review/v1/2026-05-13/progress/overall-progress.md`.
+
 ## Environment Variables
 ```
 PORT                    default 3001
@@ -159,4 +177,4 @@ The Next.js frontend lives at `~/Code/github/livoclouds/livo-clouds-web-app`.
 - No rate limiting
 - No dedicated logging library (NestJS built-in Logger + Fastify `logger: true`)
 - Zero test files exist (Jest configured but no specs written)
-- No pagination enforcement — `PaginationQuery` type defined but inconsistently applied
+- No APM / slow-query log / `pg_stat_statements` / Prisma `$on('query')` instrumentation. Phase 8 (deferred index hardening) re-opens only when one of these provides measurement signal.
