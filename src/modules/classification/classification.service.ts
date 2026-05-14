@@ -195,6 +195,16 @@ function applyDbRules(
   return null;
 }
 
+function deriveResidentIdFromUnit(
+  unitNumberDetected: string | null,
+  residents: ResidentData[],
+): string | null {
+  if (!unitNumberDetected) return null;
+  const target = normalizeText(unitNumberDetected);
+  const matches = residents.filter((r) => normalizeText(r.unitNumber) === target);
+  return matches.length === 1 ? matches[0].id : null;
+}
+
 function matchToResident(
   extraction: TextExtraction,
   residents: ResidentData[],
@@ -359,7 +369,9 @@ export class ClassificationService {
           amount: terraceContext.amount,
           transactionDate: terraceContext.transactionDate,
           description,
-          detectedResidentId: terraceContext.detectedResidentId ?? null,
+          detectedResidentId:
+            terraceContext.detectedResidentId
+            ?? deriveResidentIdFromUnit(extraction.unitNumberDetected, residents),
           detectedUnitNumber: extraction.unitNumberDetected,
         },
         terraceContext.events,
