@@ -165,15 +165,23 @@ See `implementation-roadmap.md` for phasing.
 
 ```
 docs/api-review/
-├── README.md                  ← you are here
-├── endpoint-inventory.md      ← every endpoint, risk-tagged
-├── performance-analysis.md    ← P1..P4 findings with severity & scope
-├── risk-analysis.md           ← R1..R6 findings with severity & action
-├── database-query-review.md   ← Prisma patterns, indexes, recommendations
-├── web-impact-review.md       ← cross-repo coordination matrix
-├── implementation-roadmap.md  ← phased plan (no implementation)
-└── findings-summary.html      ← single-page visual summary
+├── README.md                                ← version index (root)
+└── v1/
+    └── 2026-05-13/
+        ├── README.md                        ← you are here (v1 scope/methodology)
+        ├── endpoint-inventory.md            ← every endpoint, risk-tagged
+        ├── performance-analysis.md          ← P1..P4 findings with severity & scope
+        ├── risk-analysis.md                 ← R1..R6 findings with severity & action
+        ├── database-query-review.md         ← Prisma patterns, indexes, recommendations
+        ├── web-impact-review.md             ← cross-repo coordination matrix
+        ├── implementation-roadmap.md        ← phased plan (no implementation)
+        ├── findings-summary.html            ← single-page visual summary
+        └── progress/
+            ├── overall-progress.md          ← v1 living tracker (Phases 0–7 closed, Phase 8 evaluated)
+            └── overall-progress.html        ← visual companion of the tracker
 ```
+
+> See [`docs/api-review/README.md`](../../README.md) for the cross-version index and the `<version>/YYYY-MM-DD/` convention used to organize successive review rounds.
 
 ---
 

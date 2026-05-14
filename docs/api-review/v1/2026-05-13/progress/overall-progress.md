@@ -1,7 +1,7 @@
 # API Review — Overall Implementation Progress
 
 **Last updated**: 2026-05-13 (UTC) — Phase 8 evaluated (deferred)
-**Tracking source of truth**: `docs/api-review/implementation-roadmap.md`
+**Tracking source of truth**: `docs/api-review/v1/2026-05-13/implementation-roadmap.md`
 **Companion HTML report**: [`overall-progress.html`](./overall-progress.html)
 
 ---
@@ -125,10 +125,10 @@ left open. Expressed two ways for clarity:
 
 ## Files reviewed (Phase 0)
 
-- `docs/api-review/implementation-roadmap.md`
-- `docs/api-review/risk-analysis.md`
-- `docs/api-review/performance-analysis.md`
-- `docs/api-review/web-impact-review.md`
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md`
+- `docs/api-review/v1/2026-05-13/risk-analysis.md`
+- `docs/api-review/v1/2026-05-13/performance-analysis.md`
+- `docs/api-review/v1/2026-05-13/web-impact-review.md`
 - `src/modules/imports/imports.service.ts`
 - `src/modules/classification/classification.controller.ts`
 - `src/main.ts`
@@ -144,17 +144,17 @@ left open. Expressed two ways for clarity:
 
 | File | Purpose |
 |---|---|
-| `docs/api-review/progress/overall-progress.md` | This file — central progress tracker across all phases. |
-| `docs/api-review/progress/overall-progress.html` | Visual companion. Standalone, no JS, no runtime deps. |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | This file — central progress tracker across all phases. |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Visual companion. Standalone, no JS, no runtime deps. |
 
 ---
 
 ## Files reviewed (Phase 1)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 1 scope, lines 31–49)
-- `docs/api-review/performance-analysis.md` (P2.1, P3.1, P3.2)
-- `docs/api-review/database-query-review.md` (Q5, Q6)
-- `docs/api-review/risk-analysis.md` (R4.1, R4.2)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 1 scope, lines 31–49)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (P2.1, P3.1, P3.2)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q5, Q6)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (R4.1, R4.2)
 - `src/modules/dashboard/dashboard.service.ts`
 - `src/modules/imports/imports.service.ts`
 - `src/modules/petty-cash/petty-cash.service.ts`
@@ -168,8 +168,8 @@ left open. Expressed two ways for clarity:
 | `src/modules/dashboard/dashboard.service.ts` | P1.A — Replaced JS `Map<month, Set<residentId>>` in `getMonthlyTrend` with a typed `$queryRaw` returning `COUNT(DISTINCT "residentId")` grouped by `"month"`. Added `Prisma` import and `PAID_STATUSES` constant. Response shape preserved. |
 | `src/modules/imports/imports.service.ts` | P1.B — Refactored `upload()` to batch per-file dedup lookups into a single `findMany`. Added `include: { _count: ... }` to `create` so the new batch slots into the same `BatchWithCount` map type. Mutates `dedupByHash` after each create to preserve same-hash-in-same-call semantics. Response shape preserved. |
 | `src/modules/petty-cash/petty-cash.service.ts` | P1.C — Wrapped folio generation + `create` in a bounded retry loop (`MAX_FOLIO_RETRIES = 5`). Recovers from Prisma `P2002` on `folio` by retrying with `count + 1 + attempt`. Throws `ConflictException` (HTTP 409) on exhaustion instead of bubbling raw 500. |
-| `docs/api-review/progress/overall-progress.md` | Phase 1 status updates (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 1 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 1 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 1 status updates (kickoff + close). |
 
 ---
 
@@ -266,12 +266,12 @@ Calendar list audit:
 
 ## Files reviewed (Phase 2)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 2 scope, lines 53–74)
-- `docs/api-review/performance-analysis.md` (P3.3, P3.4)
-- `docs/api-review/database-query-review.md` (Q3)
-- `docs/api-review/risk-analysis.md` (R3.4 unbounded list responses)
-- `docs/api-review/web-impact-review.md` (transactions + calendar consumer notes)
-- `docs/api-review/endpoint-inventory.md` (high-risk endpoint flags)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 2 scope, lines 53–74)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (P3.3, P3.4)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q3)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (R3.4 unbounded list responses)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (transactions + calendar consumer notes)
+- `docs/api-review/v1/2026-05-13/endpoint-inventory.md` (high-risk endpoint flags)
 - `src/main.ts` (global `ValidationPipe` confirmation)
 - `src/modules/transactions/transactions.service.ts` (all four list methods)
 - `src/modules/transactions/transactions.controller.ts`
@@ -295,8 +295,8 @@ Calendar list audit:
 | `src/modules/calendar/dto/list-calendar-events.dto.ts` | **NEW** — P2.B class-validator DTO: `from`/`to` `@IsDateString() @IsNotEmpty()`; `type`/`status` `@IsOptional() @IsString()`. Swagger decorators included. |
 | `src/modules/calendar/calendar.service.ts` | P2.B — Removed `export interface CalendarEventQuery`. `findAll` now accepts `ListCalendarEventsDto`. Added `MAX_CALENDAR_RANGE_MS = 365 days`. Added `to >= from` and span guards; both throw `BadRequestException`. Simplified the overlap filter (always present now that range is required). Include block and `orderBy` unchanged. |
 | `src/modules/calendar/calendar.controller.ts` | P2.B — Replaced `CalendarEventQuery` import with `ListCalendarEventsDto`. `@Query()` binds the new DTO so the global `ValidationPipe` enforces required + format. |
-| `docs/api-review/progress/overall-progress.md` | Phase 2 status (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 2 status (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 2 status (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 2 status (kickoff + close). |
 
 ---
 
@@ -385,11 +385,11 @@ Carryovers from Phase 0 and Phase 1 remain (ESLint v9 config gap, missing e2e ha
 
 ## Files reviewed (Phase 3)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 3 scope, lines 76–96)
-- `docs/api-review/performance-analysis.md` (P2.2, lines 112–127)
-- `docs/api-review/database-query-review.md` (Q4, lines 238–251)
-- `docs/api-review/risk-analysis.md` (R1.3, R1.4 — tenant isolation pattern)
-- `docs/api-review/web-impact-review.md` (line 37 — API-only, response shape preserved)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 3 scope, lines 76–96)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (P2.2, lines 112–127)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q4, lines 238–251)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (R1.3, R1.4 — tenant isolation pattern)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (line 37 — API-only, response shape preserved)
 - `src/modules/classification/classification.service.ts` (full file, `classifyBatch` + helpers)
 - `src/modules/imports/imports.service.ts:372` (caller: `confirm` inlines the summary)
 - `src/modules/classification/classification.controller.ts:33-45` (caller: `reclassifyBatch`)
@@ -399,8 +399,8 @@ Carryovers from Phase 0 and Phase 1 remain (ESLint v9 config gap, missing e2e ha
 | File | Change |
 |---|---|
 | `src/modules/classification/classification.service.ts` | P3.A — Replaced per-row `Promise.all(chunk.map(update))` loop (lines 436–476 of the pre-edit file) with a two-stage flow: classify in memory, group by stable-serialized payload, run one `updateMany` per group in parallel. Added `nowForChunk` for per-chunk `matchedAt` normalization. Typed `data` as `Prisma.TransactionUncheckedUpdateManyInput`. Return shape and counters unchanged. |
-| `docs/api-review/progress/overall-progress.md` | Phase 3 status updates (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 3 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 3 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 3 status updates (kickoff + close). |
 
 ---
 
@@ -484,12 +484,12 @@ The outer `{ data }` envelope is the global interceptor (unchanged); the inner s
 
 ## Files reviewed (Phase 4)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 4 scope, lines 99-118)
-- `docs/api-review/risk-analysis.md` (R3.2 — pagination shape inconsistency)
-- `docs/api-review/database-query-review.md` (Q2 — paginated endpoints)
-- `docs/api-review/web-impact-review.md` (lockstep pair requirement, line 37)
-- `docs/api-review/performance-analysis.md` (cross-reference for paginated list endpoints)
-- `docs/api-review/endpoint-inventory.md` (cross-reference for paginated list endpoints)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 4 scope, lines 99-118)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (R3.2 — pagination shape inconsistency)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q2 — paginated endpoints)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (lockstep pair requirement, line 37)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (cross-reference for paginated list endpoints)
+- `docs/api-review/v1/2026-05-13/endpoint-inventory.md` (cross-reference for paginated list endpoints)
 - `src/common/interceptors/response.interceptor.ts` (global success envelope)
 - `src/common/types/index.ts` (existing `PaginatedResult<T>` shape at lines 28-36 — reused as the target shape; not imported to keep edits minimal)
 - `src/modules/transactions/transactions.service.ts` (4 paginated methods)
@@ -521,8 +521,8 @@ The outer `{ data }` envelope is the global interceptor (unchanged); the inner s
 | `livo-clouds-web-app/src/components/imports/ImportReviewTab/index.tsx` | P4.D — same rewrite (pendingTotal access + setTotalPages). |
 | `livo-clouds-web-app/src/components/imports/ImportClassifiedTab/index.tsx` | P4.D — same. |
 | `livo-clouds-web-app/src/components/imports/ImportReconciledTab/index.tsx` | P4.D — same. |
-| `docs/api-review/progress/overall-progress.md` | Phase 4 status updates (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 4 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 4 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 4 status updates (kickoff + close). |
 
 ---
 
@@ -693,11 +693,11 @@ Carryovers from Phase 0/1/2/3 remain (ESLint v9 config gap, missing e2e harness,
 
 ## Files reviewed (Phase 5)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 5 scope, lines 121–141)
-- `docs/api-review/performance-analysis.md` (P1.1, P1.3, P1.4)
-- `docs/api-review/risk-analysis.md` (R5.3 — R2 upload swallowing)
-- `docs/api-review/web-impact-review.md` (rolling-coordination rows for residents / overdue / statement / upload UI)
-- `docs/api-review/database-query-review.md` (Q1, Q2)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 5 scope, lines 121–141)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (P1.1, P1.3, P1.4)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (R5.3 — R2 upload swallowing)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (rolling-coordination rows for residents / overdue / statement / upload UI)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q1, Q2)
 - `src/common/types/index.ts` (`PaginatedResult<T>` target shape)
 - `src/modules/residents/residents.{service,controller}.ts` + `dto/`
 - `src/modules/reports/reports.{service,controller}.ts`
@@ -734,8 +734,8 @@ Carryovers from Phase 0/1/2/3 remain (ESLint v9 config gap, missing e2e harness,
 | `src/types/import.types.ts` (web) | `ClientFileEntry` gains optional `warnings?: string[]`. |
 | `messages/en/imports.json` (web) | Added `imports.upload.warnings.storageRetentionFailed{,Title}` keys. |
 | `messages/es/imports.json` (web) | Added the same keys in Spanish. |
-| `docs/api-review/progress/overall-progress.md` | Phase 5 status updates (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 5 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 5 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 5 status updates (kickoff + close). |
 
 ---
 
@@ -846,10 +846,10 @@ endpoints are unbounded today:
 
 ### Files to review (Phase 6)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 6 scope, lines 144–158)
-- `docs/api-review/performance-analysis.md` (P1.2, P1.5)
-- `docs/api-review/web-impact-review.md` (Wave 3 lockstep rows)
-- `docs/api-review/database-query-review.md` (Q1, Q2)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 6 scope, lines 144–158)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md` (P1.2, P1.5)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (Wave 3 lockstep rows)
+- `docs/api-review/v1/2026-05-13/database-query-review.md` (Q1, Q2)
 - `src/common/types/index.ts` (`PaginatedResult<T>` target shape)
 - `src/modules/collection/collection.{service,controller}.ts`
 - `src/modules/reports/reports.{service,controller}.ts`
@@ -1242,11 +1242,11 @@ as a contradiction with the calendar update.
 
 ## Files reviewed (Phase 7)
 
-- `docs/api-review/implementation-roadmap.md` (Phase 7 scope, lines 162–176)
-- `docs/api-review/performance-analysis.md`, `database-query-review.md` (Q1)
-- `docs/api-review/web-impact-review.md` (Wave 4 — rolling)
-- `docs/api-review/risk-analysis.md` (no new risks introduced)
-- `docs/api-review/progress/overall-progress.md` (Phase 6 close confirmation)
+- `docs/api-review/v1/2026-05-13/implementation-roadmap.md` (Phase 7 scope, lines 162–176)
+- `docs/api-review/v1/2026-05-13/performance-analysis.md`, `database-query-review.md` (Q1)
+- `docs/api-review/v1/2026-05-13/web-impact-review.md` (Wave 4 — rolling)
+- `docs/api-review/v1/2026-05-13/risk-analysis.md` (no new risks introduced)
+- `docs/api-review/v1/2026-05-13/progress/overall-progress.md` (Phase 6 close confirmation)
 - `src/common/types/index.ts` (`PaginatedResult<T>` template)
 - `src/modules/residents/dto/list-residents.dto.ts`, `src/modules/collection/dto/list-collection.dto.ts` (DTO templates)
 - `src/modules/calendar/calendar.service.ts`, `calendar.controller.ts`, `dto/list-calendar-events.dto.ts`
@@ -1269,8 +1269,8 @@ as a contradiction with the calendar update.
 | **NEW** `src/modules/petty-cash/dto/list-petty-cash.dto.ts` | `ListPettyCashDto` with `page?` (default 1) and `limit?` (`@Max(1000)`, default 200). |
 | `src/modules/petty-cash/petty-cash.service.ts` | `findAll` accepts the DTO, computes skip/take, runs `Promise.all([findMany, count])`, returns `PaginatedResult`. Existing `include` (`registeredBy: { select: ... }`) and `orderBy: { date: 'desc' }` preserved. Added `PaginatedResult` + DTO imports. |
 | `src/modules/petty-cash/petty-cash.controller.ts` | List `@Get()` binds `@Query() query: ListPettyCashDto`. Added `Query` to `@nestjs/common` import + DTO import. |
-| `docs/api-review/progress/overall-progress.md` | Phase 7 status updates (kickoff + close). |
-| `docs/api-review/progress/overall-progress.html` | Phase 7 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.md` | Phase 7 status updates (kickoff + close). |
+| `docs/api-review/v1/2026-05-13/progress/overall-progress.html` | Phase 7 status updates (kickoff + close). |
 
 ### Web repo
 
@@ -1464,15 +1464,15 @@ explicitly set.*
 
 ### Evaluation work performed
 
-- Read `docs/api-review/implementation-roadmap.md` Phase 8 section
+- Read `docs/api-review/v1/2026-05-13/implementation-roadmap.md` Phase 8 section
   (verbatim Phase 8 scope; the roadmap's "opportunistic" framing on
   line 208).
-- Read `docs/api-review/performance-analysis.md` P2.3, P3.1, P3.2 to
+- Read `docs/api-review/v1/2026-05-13/performance-analysis.md` P2.3, P3.1, P3.2 to
   re-confirm each candidate finding's severity remains low and that
   no new measurement has been added since prior phases closed.
-- Read `docs/api-review/risk-analysis.md` R4.1 (folio race — low) and
+- Read `docs/api-review/v1/2026-05-13/risk-analysis.md` R4.1 (folio race — low) and
   R4.2 (`runningBalance` race — medium, separate workstream).
-- Read `docs/api-review/database-query-review.md` lines 102-132 +
+- Read `docs/api-review/v1/2026-05-13/database-query-review.md` lines 102-132 +
   migration-recommendations (lines 294-295) to confirm the trigger
   thresholds are documented but not met.
 - Re-read `prisma/schema.prisma` for the three target models to
@@ -1497,7 +1497,7 @@ explicitly set.*
 | Tenant isolation | **Unchanged** | No guard, no `where`-clause sourcing modification. |
 | AuthN / AuthZ | **Unchanged** | No identity-layer file touched. |
 | Web app | **Unchanged** | No file in the web repo touched. |
-| Documentation | **Updated** | Only `docs/api-review/progress/overall-progress.md` and `overall-progress.html` modified to record the evaluation. |
+| Documentation | **Updated** | Only `docs/api-review/v1/2026-05-13/progress/overall-progress.md` and `overall-progress.html` modified to record the evaluation. |
 
 ### Validation performed (Phase 8)
 
