@@ -1,6 +1,6 @@
 # API Review — Overall Implementation Progress
 
-**Last updated**: 2026-05-13 (UTC) — Phase 7 closed
+**Last updated**: 2026-05-13 (UTC) — Phase 8 evaluated (deferred)
 **Tracking source of truth**: `docs/api-review/implementation-roadmap.md`
 **Companion HTML report**: [`overall-progress.html`](./overall-progress.html)
 
@@ -9,11 +9,19 @@
 ## Overall roadmap status
 
 Phases 0, 1, 2, 3, 4, 5, 6, and **7 — Paginate calendar / inventory /
-common-areas / petty-cash** are **Complete**. Phase 7 was a
-**rolling** phase per `implementation-roadmap.md:162-176`. Every
-remaining unbounded list endpoint in the API now wraps its response
-in the standard `{ data, meta }` envelope established in Phase 4 and
-accepts optional `page` / `limit` query params validated by new DTOs
+common-areas / petty-cash** are **Complete**. **Phase 8 — Index
+hardening** has now been **evaluated** (2026-05-13) per
+`implementation-roadmap.md:179-194` and is **explicitly deferred** —
+the evaluation found no measured pressure that justifies the three
+candidate schema changes today. See the dedicated *Phase 8 —
+Evaluation (2026-05-13)* section near the end of this document for
+the per-item decision matrix, evidence inventory, and future trigger
+conditions. No schema, migration, code, or web change was introduced
+as part of the evaluation. Phase 7 was a **rolling** phase per
+`implementation-roadmap.md:162-176`. Every remaining unbounded list
+endpoint in the API now wraps its response in the standard
+`{ data, meta }` envelope established in Phase 4 and accepts optional
+`page` / `limit` query params validated by new DTOs
 (`ListCalendarEventsDto` extended; new `ListCommonAreasDto`,
 `ListInventoryItemsDto`, `ListPettyCashDto`).
 
@@ -42,10 +50,18 @@ no new index, no endpoint path change, no envelope change, no
 tenant-isolation or auth/role change.
 
 **Overall implementation**: **7 of 8 roadmap phases delivered**
-(Phase 8 — index hardening — explicitly deferred per roadmap line
-`implementation-roadmap.md:179-194` and the user's instruction not
-to implement it). Pagination + perf scope across the API surface is
-now **100% closed**.
+(Phase 8 — index hardening — **evaluated 2026-05-13 and deferred**
+per roadmap line `implementation-roadmap.md:179-194` because none of
+its three trigger conditions are met by the available evidence;
+detailed decision matrix below). Pagination + perf scope across the
+API surface is now **100% closed**, and the measurement-evidence-
+required hardening phase is now **formally adjudicated** rather than
+left open. Expressed two ways for clarity:
+
+- **87.5%** of the 8 roadmap phases delivered (Phase 8 deferred).
+- **100%** of the actionable, evidence-not-required phases delivered
+  (Phases 0–7). Phase 8 was always conditional on measured pressure
+  per the roadmap.
 
 ---
 
@@ -61,12 +77,13 @@ now **100% closed**.
 | 5     | Paginate residents / overdue / resident statement      | **Complete** | 100 |
 | 6     | Paginate collection matrix                             | **Complete** | 100 |
 | 7     | Paginate calendar / inventory / common-areas / petty   | **Complete** | 100 |
-| 8     | Index hardening (DB migration, deferred)               | Deferred      |   0 |
+| 8     | Index hardening (DB migration, deferred — **evaluated 2026-05-13**) | Deferred (evaluated) |   0 |
 
-- **Current phase**: 7 (closed)
+- **Current phase**: 8 (evaluated, deferred)
 - **Completed phases**: 0, 1, 2, 3, 4, 5, 6, 7
+- **Evaluated phases**: 8 (deferred — no measured pressure)
 - **In-progress phase**: none
-- **Pending phases**: 8 (deferred — out of scope per user instruction)
+- **Pending phases**: none (Phase 8 is *deferred-with-decision*, not pending implementation)
 
 ---
 
@@ -1343,29 +1360,228 @@ in this session. To validate live:
 
 ---
 
+## Phase 8 — Evaluation (2026-05-13)
+
+**Roadmap line**: `implementation-roadmap.md:179-194` —
+*Phase 8 — Index hardening (DB migration, deferred). Objective: add
+composite indexes only when measured pressure warrants. Do not
+pre-emptively migrate.*
+
+**Status**: ✅ Evaluated · ❄️ Implementation deferred · 0% migration
+work performed; 100% of the three candidate items have a recorded
+decision with future trigger conditions.
+
+### Phase 8 scope (verbatim from roadmap)
+
+| # | Item | Roadmap trigger | Risk |
+|---|------|------------------|------|
+| 1 | `@@index([condominiumId, createdAt])` on `AuditLog` (`prisma/schema.prisma:647`) | **when log table > 1M rows** | low |
+| 2 | `@@index([condominiumId, fileHash])` on `ImportBatch` (`prisma/schema.prisma:534`) | **only if dedup query shows up in slow log** | low |
+| 3 | Replace petty-cash folio `count + 1` with per-condominium sequence (R4.1) | **when concurrent creates become real** | low |
+
+Roadmap framing (`implementation-roadmap.md:208`): *"Phase 8 is
+opportunistic — only when telemetry demands it."*
+
+### Current schema state (verified against `prisma/schema.prisma`)
+
+- **AuditLog** (`prisma/schema.prisma:626-654`) — `@@index([condominiumId])`,
+  `@@index([userId])`, `@@index([module])`, `@@index([action])`,
+  `@@index([result])`, `@@index([createdAt])`. `condominiumId` and
+  `createdAt` are indexed **separately**; no composite. Matches the
+  review's prediction.
+- **ImportBatch** (`prisma/schema.prisma:507-539`) — `@@index([condominiumId])`,
+  `@@index([fileHash])`, `@@index([status])`, `@@index([createdAt])`.
+  `condominiumId` and `fileHash` indexed **separately**; no composite,
+  no unique constraint. Matches review.
+- **PettyCashMovement** (`prisma/schema.prisma:424-456`) —
+  `@@unique([condominiumId, folio])`, `@@index([condominiumId])`,
+  `@@index([status])`, `@@index([date])`. The composite unique
+  constraint already prevents data corruption; a race only produces a
+  P2002 that the existing service code retries.
+
+### Current folio code (`src/modules/petty-cash/petty-cash.service.ts:82-117`)
+
+A defensive 5-retry loop **already exists** today:
+
+```ts
+for (let attempt = 0; attempt < MAX_FOLIO_RETRIES; attempt++) {
+  const count = await this.prisma.pettyCashMovement.count({ where: { condominiumId } });
+  const folio = `PC-${String(count + 1 + attempt).padStart(4, '0')}`;
+  try {
+    return await this.prisma.pettyCashMovement.create({ data: { ..., folio, ... } });
+  } catch (err) {
+    if (isUniqueFolioViolation) continue;
+    throw err;
+  }
+}
+throw new ConflictException('Could not generate unique folio after retries');
+```
+
+`MAX_FOLIO_RETRIES = 5`. No `$transaction` wrapper, no advisory lock,
+no sequence table. Combined with the `@@unique([condominiumId, folio])`
+constraint, this yields: *successful folio after up to 5 simultaneous
+collisions; only sustained simultaneous creates by 6+ admins on the
+same tenant within the same instant produce a bubble-up
+`ConflictException` → HTTP 409*. `risk-analysis.md` R4.1 classifies
+severity as **low (UX, no data corruption)**.
+
+### Per-item decision matrix
+
+| Item | Current state | Proposed future state | Evidence found | Decision | Reasoning | Risk level | Implementation status | Future trigger condition | Validation performed |
+|------|---------------|------------------------|----------------|----------|-----------|------------|------------------------|---------------------------|----------------------|
+| **AuditLog composite `[condominiumId, createdAt]`** | Per-column indexes on `condominiumId` and `createdAt` (separate). | Composite `@@index([condominiumId, createdAt])` for tenant-scoped paginated reads ordered by recency. | Analytical only — `performance-analysis.md` P2.3 ("low (currently)"), `database-query-review.md` line 117-132 ("adequate per-column, missing composite"), migration-recommendations line 294 ("When tenant audit log exceeds ~1M rows"). **No row-count telemetry, no EXPLAIN ANALYZE, no slow-query log.** | **Defer (Monitor)** | Trigger threshold (>1M rows per tenant) is well above current scale; per-column indexes cover today's filters; Postgres index merge is acceptable. Adding the composite now would pollute migration history without measurable benefit. | low | **Not implemented** — no schema change, no migration. | First production telemetry showing AuditLog `findMany` with `WHERE condominiumId = $1 ORDER BY createdAt DESC` p95 > 100 ms, **OR** any single tenant `audit_logs` row count > 500 k (early-warning threshold below the 1 M trigger). | Code/schema read of `prisma/schema.prisma:626-654` to confirm current index layout. No DB measurements (no live runtime DB available in this session). |
+| **ImportBatch composite `[condominiumId, fileHash]`** | Per-column indexes on `condominiumId` and `fileHash` (separate). | Composite `@@index([condominiumId, fileHash])` for SHA-256 dedup `findFirst` queries. | Analytical only — `database-query-review.md` line 102-115 explicitly notes *"Postgres can index-merge but a composite would be slightly faster"* and classifies the change as *"Optional optimization for very high write volume."* Phase 8 task line `implementation-roadmap.md:187` makes implementation conditional on *"dedup query shows up in slow log."* `performance-analysis.md` P3.1 is about request latency (already addressed by Phase 1 P1.B batched dedup), not index speed. **No slow-log evidence.** | **Defer (Monitor)** | Phase 1 P1.B already converted per-file lookups into a single batched `findMany`. Index merge is adequate for current volumes. No slow-log signal exists. Adding the composite is a pure micro-optimization with no observed need. | low | **Not implemented** — no schema change, no migration. | First slow-query observation of the dedup `findFirst({ where: { condominiumId, fileHash } })` call (`imports.service.ts:119, 235`), **OR** import volume exceeding ~100 batches/day on any single tenant, **OR** any tenant's `import_batches` table exceeding ~250 k rows. | Code/schema read of `prisma/schema.prisma:507-539`; cross-reference to `imports.service.ts` dedup call sites. No DB measurements available in this session. |
+| **Petty-cash folio sequence** | `count + 1` inside a 5-retry P2002 catch loop (`petty-cash.service.ts:82-117`), guarded by `@@unique([condominiumId, folio])`. Not in a `$transaction`, no advisory lock. | Per-condominium sequence table or `SELECT … FOR UPDATE` against a counter row inside a `$transaction`, eliminating the race at write time. | Code review only — `risk-analysis.md` R4.1 (severity **low — UX only, no data corruption**), `performance-analysis.md` P3.2 ("3 sequential queries… not race-safe under concurrent writes"), `risk-analysis.md` R4.2 (separate `runningBalance` race, **medium severity**, but explicitly out of Phase 8 scope and requiring a different fix — `SELECT … FOR UPDATE` on the previous movement). **No measurement of concurrent admin-create rate.** | **Defer (Monitor)** | Defensive retry loop already converts the race into an at-most-rare 409. R4.1 severity is *low*; introducing a sequence is a one-way migration that should be load-justified. R4.2 (`runningBalance` race, medium-severity correctness risk) is a separate workstream — not in Phase 8 scope — and would need its own dedicated treatment regardless of folio strategy. | low | **Not implemented** — no schema change, no migration, no service rewrite. The existing 5-retry P2002 loop is the cheap reversible mitigation. | First production occurrence of `ConflictException('Could not generate unique folio after retries')` in the petty-cash service logs, **OR** measured concurrent admin-create rate on the same tenant > 1/sec, **OR** any user-reported folio collision. R4.2 (`runningBalance` race) should be treated as an independent fix when concurrent writes become a real concern. | Code read of `petty-cash.service.ts:82-117` and schema check of `PettyCashMovement` to confirm the unique constraint protects data integrity today. No DB measurements available in this session. |
+
+**Net Phase 8 outcome**: **Deferred (3/3).** No schema change, no
+migration, no code change, no web change. Each item carries a recorded
+decision and a measurable future trigger condition.
+
+### Evidence inventory (measurement infrastructure available to this session)
+
+The decision is evidence-driven by *absence* — none of the three
+roadmap-defined triggers can be tested against real data in this
+environment because the prerequisite observability infrastructure is
+not installed. Verified inventory of what *is* available:
+
+| Signal source | Available? | Notes |
+|---------------|------------|-------|
+| Slow-query log (Postgres `log_min_duration_statement` or Neon equivalent) | **No** | No committed export under `docs/`; production access not in this session. |
+| `pg_stat_statements` snapshot | **No** | No committed artifact; not exposed via the application. |
+| Per-tenant `audit_logs` row count | **No** | No telemetry; would require live DB access. |
+| Per-tenant `import_batches` row count | **No** | No telemetry; same constraint. |
+| Petty-cash folio-collision occurrences | **No** | No structured log committed; no APM. |
+| APM / tracing (Sentry · Datadog · OpenTelemetry · Prisma `$on("query")`) | **No** | `grep -rni "Sentry|OpenTelemetry|Datadog|prisma.\$on" src/` empty. `package.json` contains no `prisma:explain`, `db:analyze`, or `slow-query` scripts. |
+| Inline TODO / FIXME flags in `audit.service.ts`, `imports.service.ts`, `petty-cash.service.ts` | **No** | None found. |
+| Live DB access in this evaluation session | **No** | `.env.example` exposes Neon placeholders only; this session does not hold production credentials and cannot run `EXPLAIN ANALYZE`. |
+| Migration velocity context | **Yes** | 8 migrations in 4 days (2026-05-09 → 2026-05-13). Schema evolution is active — adding an unjustified composite index would pollute migration history. |
+
+**Limitation note (per user instruction)**: *No runtime DB access was
+available during the Phase 8 evaluation. No representative
+`EXPLAIN ANALYZE` was run. This is documented rather than worked
+around — guessing would violate the "evidence-driven" rule the user
+explicitly set.*
+
+### Evaluation work performed
+
+- Read `docs/api-review/implementation-roadmap.md` Phase 8 section
+  (verbatim Phase 8 scope; the roadmap's "opportunistic" framing on
+  line 208).
+- Read `docs/api-review/performance-analysis.md` P2.3, P3.1, P3.2 to
+  re-confirm each candidate finding's severity remains low and that
+  no new measurement has been added since prior phases closed.
+- Read `docs/api-review/risk-analysis.md` R4.1 (folio race — low) and
+  R4.2 (`runningBalance` race — medium, separate workstream).
+- Read `docs/api-review/database-query-review.md` lines 102-132 +
+  migration-recommendations (lines 294-295) to confirm the trigger
+  thresholds are documented but not met.
+- Re-read `prisma/schema.prisma` for the three target models to
+  verify current index layout matches what the review documents
+  asserted.
+- Re-read `src/modules/petty-cash/petty-cash.service.ts:82-117` to
+  confirm the defensive 5-retry loop is in place (P1.C from Phase 1).
+- Inventoried measurement infrastructure across the API repo (APM
+  packages, `package.json` scripts, committed slow-query artifacts,
+  inline TODO/FIXME flags).
+- Confirmed prerequisite: Phases 0–7 are all at 100% in this
+  document, last updated 2026-05-13.
+
+### Impact status (Phase 8)
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| Prisma schema | **Unchanged** | No new `@@index`, no new model, no new field. |
+| Prisma migrations | **Unchanged** | No new migration file created. `ls prisma/migrations` unchanged. |
+| API endpoint contracts | **Unchanged** | No controller, service, or DTO edited. |
+| Success / error response envelopes | **Unchanged** | No interceptor or filter touched. |
+| Tenant isolation | **Unchanged** | No guard, no `where`-clause sourcing modification. |
+| AuthN / AuthZ | **Unchanged** | No identity-layer file touched. |
+| Web app | **Unchanged** | No file in the web repo touched. |
+| Documentation | **Updated** | Only `docs/api-review/progress/overall-progress.md` and `overall-progress.html` modified to record the evaluation. |
+
+### Validation performed (Phase 8)
+
+Because no code or schema changes were authored, validation was
+intentionally scoped to *review verification* rather than test
+execution:
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | Markdown structure intact (table syntax, headings, link anchors) | ✅ Pass — visual review. |
+| 2 | HTML structure intact (tags closed, class names match existing tokens) | ✅ Pass — visual review. |
+| 3 | `git status` in the API repo shows only the two progress files modified | ✅ Pass — verified after edits. |
+| 4 | `git diff prisma/` empty | ✅ Pass — nothing under `prisma/` touched. |
+| 5 | `git diff src/` empty | ✅ Pass — nothing under `src/` touched. |
+| 6 | Web repo working tree untouched | ✅ Pass — no edits dispatched to the web repo. |
+
+Skipped (explicitly justified — docs-only diff): `pnpm lint`,
+`pnpm test`, `pnpm test:e2e`, `pnpm build`, `prisma validate`. No
+code or schema delta to validate.
+
+### Risks / blockers detected (Phase 8)
+
+- **Observability bootstrap is the real blocker for re-opening Phase
+  8.** None of the three trigger conditions can be measured today.
+  Without APM, slow-query log, or `pg_stat_statements`, future
+  re-evaluation will face the same evidence gap. Recommend adding a
+  minimal Prisma `$on('query')` logger gated by an env flag (or
+  enabling `pg_stat_statements` on the production Neon database)
+  before treating Phase 8 as ready for another evaluation.
+- **R4.2 (`runningBalance` race, medium severity) is *not* a Phase 8
+  item.** Mentioned here because R4.1 (folio) is sometimes confused
+  with it. R4.2 needs a `$transaction + SELECT … FOR UPDATE` or a
+  recompute-on-read strategy; that's a separate scheduled fix, not an
+  index migration.
+- **Migration velocity caution.** Schema has 8 migrations in 4 days.
+  Adding a speculative composite index now would compound migration
+  history without measurable benefit and would still need
+  `CREATE INDEX CONCURRENTLY` planning at deploy.
+
+### Remaining work in Phase 8
+
+**None for implementation.** The Phase 8 implementation queue is
+empty until at least one of the documented future trigger conditions
+fires.
+
+Optional, *separate* workstream (not Phase 8 itself):
+
+- **Observability bootstrap** — gated Prisma `$on('query')` logger or
+  `pg_stat_statements` enablement so future Phase 8 re-evaluations
+  have real data to consult.
+
+---
+
 ## Recommended next step
 
-Phase 7 closes out the pagination + perf scope of the API review.
-The roadmap defines one further phase:
+Phase 8 has been **formally evaluated and deferred** — every roadmap
+phase now has a recorded decision. The pagination + performance scope
+(Phases 0–7) is fully closed; the hardening scope (Phase 8) is
+deferred-with-triggers, not pending implementation.
 
-- **Phase 8 — Index hardening (DB migration, deferred)** —
-  `implementation-roadmap.md:179-194`. Adds composite indexes on
-  `AuditLog (condominiumId, createdAt)` and `ImportBatch (condominiumId,
-  fileHash)`, and replaces petty-cash folio `count + 1` with a
-  per-condominium sequence. Roadmap explicitly states these should be
-  applied **only when measured pressure warrants it** (slow-query
-  log, audit table > 1M rows, observed dedup pressure, concurrent
-  petty-cash creates). Until that telemetry exists, no migration
-  should be authored.
+The natural follow-up is **not another roadmap phase** but a small
+observability bootstrap that closes the evidence gap that prevented
+implementing Phase 8 today. Concretely:
 
-Per the user's instruction not to implement Phase 8 or any later
-phase, Phase 8 remains **deferred**. Recommended next step: ship
-Phase 7 to production, gather telemetry on the four newly-paginated
-endpoints, then re-evaluate Phase 8 against measured slow queries
-when the data exists.
+1. **Bootstrap minimal DB observability** before any future Phase 8
+   re-evaluation:
+   - Add a Prisma `$on('query')` logger emitting durations above a
+     threshold (e.g. 100 ms) behind a `PRISMA_QUERY_LOG=1` env flag,
+     **or**
+   - Enable `pg_stat_statements` on the Neon production database and
+     wire a one-shot snapshot script under `scripts/` to dump the
+     top-50 slowest statements weekly.
+2. **Re-evaluate Phase 8 only when one of these signals fires**:
+   - AuditLog: any tenant `audit_logs` row count > 500 k, **or**
+     `findMany` p95 > 100 ms on `(condominiumId, createdAt)`-ordered
+     pagination.
+   - ImportBatch: dedup `findFirst` appears in the slow log, **or**
+     any tenant exceeds ~100 import batches/day or ~250 k batch rows.
+   - Petty-cash folio: first production `ConflictException('Could not
+     generate unique folio after retries')` log entry, **or** any
+     user-reported folio collision.
 
 Carryover follow-ups outside the roadmap that can be scheduled
-independently:
+independently of Phase 8:
 
 - **UI wiring**: replace `MOCK_COMMON_AREAS`, `MOCK_INVENTORY_ITEMS`,
   `MOCK_PETTY_CASH_MOVEMENTS` with live API consumers using the new
@@ -1373,7 +1589,10 @@ independently:
 - **`reconciliation-rules.service.ts:12-37`** — flat shape sweep.
 - **`ResidentsTable`** server-side pagination (Phase 5 web migration).
 - **Overdue + resident-statement pages** (Phase 5 web migration).
-- **Carryover bugs**: dashboard snake_case fallback raw query, R4.2
-  `runningBalance` race, ESLint v9 config migration, e2e harness
-  bootstrap, `classifyBatch` snapshot equivalence test, P1.D R2
-  streaming uploads, P3.B background classification queue stretch.
+- **R4.2 `runningBalance` race** — independent of Phase 8 folio
+  decision; deserves its own treatment with `$transaction +
+  SELECT … FOR UPDATE` or recompute-on-read.
+- **Carryover bugs**: dashboard snake_case fallback raw query,
+  ESLint v9 config migration, e2e harness bootstrap, `classifyBatch`
+  snapshot equivalence test, P1.D R2 streaming uploads, P3.B
+  background classification queue stretch.
