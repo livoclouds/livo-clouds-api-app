@@ -763,35 +763,40 @@ model ReconciliationCorrectionPattern {
 }
 
 model CalendarEvent {
-  id            String      @id @default(uuid())
-  condominiumId String
-  title         String
-  description   String?
-  eventType     EventType
-  startDate     DateTime
-  endDate       DateTime
-  allDay        Boolean     @default(false)
-  location      String?
-  unitNumber    String?
-  residentId    String?
-  createdById   String
-  updatedById   String?
-  status        EventStatus @default(PENDING)
-  notes         String?
-  metadata      Json?
-  deletedAt     DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  id             String      @id @default(uuid())
+  condominiumId  String
+  title          String
+  description    String?
+  eventType      EventType
+  startDate      DateTime
+  endDate        DateTime
+  allDay         Boolean     @default(false)
+  location       String?
+  unitNumber     String?
+  residentId     String?
+  createdById    String
+  updatedById    String?
+  status         EventStatus @default(PENDING)
+  notes          String?
+  metadata       Json?
+  recurrenceRule String?
+  parentEventId  String?
+  deletedAt      DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
-  condominium         Condominium   @relation(fields: [condominiumId], references: [id])
-  resident            Resident?     @relation(fields: [residentId], references: [id])
-  createdBy           User          @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
-  updatedBy           User?         @relation("UpdatedCalendarEvents", fields: [updatedById], references: [id])
-  matchedTransactions Transaction[] @relation("MatchedTransaction")
+  condominium         Condominium     @relation(fields: [condominiumId], references: [id])
+  resident            Resident?       @relation(fields: [residentId], references: [id])
+  createdBy           User            @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
+  updatedBy           User?           @relation("UpdatedCalendarEvents", fields: [updatedById], references: [id])
+  parentEvent         CalendarEvent?  @relation("CalendarEventParent", fields: [parentEventId], references: [id], onDelete: Cascade)
+  childEvents         CalendarEvent[] @relation("CalendarEventParent")
+  matchedTransactions Transaction[]   @relation("MatchedTransaction")
 
   @@index([condominiumId])
   @@index([condominiumId, startDate, endDate])
   @@index([condominiumId, eventType])
+  @@index([condominiumId, parentEventId])
   @@index([deletedAt])
   @@map("calendar_events")
 }

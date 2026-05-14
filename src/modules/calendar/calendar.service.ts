@@ -16,8 +16,33 @@ import {
   TERRACE_BOOKING_DEFAULTS,
   type TerraceBookingMetadata,
 } from './terrace-metadata.validator';
+import {
+  MAX_TOTAL_OCCURRENCES,
+  RecurrenceValidationError,
+  expandRecurrence,
+  validateRecurrenceRule,
+} from './recurrence';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
+
+function assertRecurrenceAllowed(
+  eventType: EventType,
+  recurrenceRule: string | null | undefined,
+  startDate: Date,
+): void {
+  if (recurrenceRule == null || recurrenceRule.length === 0) return;
+  if (eventType === EventType.TERRACE_BOOKING) {
+    throw new BadRequestException('recurrenceTerraceUnsupported');
+  }
+  try {
+    validateRecurrenceRule(recurrenceRule, startDate);
+  } catch (err) {
+    if (err instanceof RecurrenceValidationError) {
+      throw new BadRequestException(err.code);
+    }
+    throw err;
+  }
+}
 
 @Injectable()
 export class CalendarService {
@@ -56,33 +81,84 @@ export class CalendarService {
       throw new BadRequestException('Calendar range cannot exceed 365 days.');
     }
 
-    const where: Record<string, unknown> = { condominiumId, deletedAt: null };
+    const baseFilter: Record<string, unknown> = { condominiumId, deletedAt: null };
+    if (query.type) baseFilter.eventType = query.type;
+    if (query.status) baseFilter.status = query.status;
 
-    if (query.type) where.eventType = query.type;
-    if (query.status) where.status = query.status;
-    where.AND = [
-      { startDate: { lt: toDate } },
-      { endDate: { gt: fromDate } },
-    ];
+    const singleWhere: Record<string, unknown> = {
+      ...baseFilter,
+      recurrenceRule: null,
+      AND: [{ startDate: { lt: toDate } }, { endDate: { gt: fromDate } }],
+    };
+
+    const recurringWhere: Record<string, unknown> = {
+      ...baseFilter,
+      recurrenceRule: { not: null },
+      startDate: { lt: toDate },
+    };
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 500;
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
+    const include = {
+      resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
+      createdBy: { select: { id: true, firstName: true, lastName: true } },
+      updatedBy: { select: { id: true, firstName: true, lastName: true } },
+    };
+
+    const [singles, recurringParents] = await Promise.all([
       this.prisma.calendarEvent.findMany({
-        where,
-        include: {
-          resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          updatedBy: { select: { id: true, firstName: true, lastName: true } },
-        },
+        where: singleWhere,
+        include,
         orderBy: { startDate: 'asc' },
-        skip,
-        take: limit,
       }),
-      this.prisma.calendarEvent.count({ where }),
+      this.prisma.calendarEvent.findMany({
+        where: recurringWhere,
+        include,
+        orderBy: { startDate: 'asc' },
+      }),
     ]);
+
+    const expandedOccurrences: Record<string, unknown>[] = [];
+    for (const parent of recurringParents) {
+      const occurrences = expandRecurrence(
+        {
+          id: parent.id,
+          startDate: parent.startDate,
+          endDate: parent.endDate,
+          recurrenceRule: parent.recurrenceRule,
+        },
+        fromDate,
+        toDate,
+      );
+      for (const occ of occurrences) {
+        if (expandedOccurrences.length + singles.length >= MAX_TOTAL_OCCURRENCES) {
+          throw new BadRequestException('recurrenceTooMany');
+        }
+        expandedOccurrences.push({
+          ...parent,
+          id: occ.occurrenceId,
+          startDate: occ.occurrenceStart,
+          endDate: occ.occurrenceEnd,
+          originalEventId: parent.id,
+          isOccurrence: true,
+        });
+      }
+    }
+
+    const merged = [...singles, ...expandedOccurrences];
+    merged.sort((a, b) => {
+      const aStart = (a as { startDate: Date }).startDate.getTime();
+      const bStart = (b as { startDate: Date }).startDate.getTime();
+      if (aStart !== bStart) return aStart - bStart;
+      const aId = (a as { id: string }).id;
+      const bId = (b as { id: string }).id;
+      return aId.localeCompare(bId);
+    });
+
+    const total = merged.length;
+    const data = merged.slice(skip, skip + limit);
 
     return {
       data,
@@ -150,6 +226,8 @@ export class CalendarService {
       if (!resident) throw new NotFoundException('Resident not found');
     }
 
+    assertRecurrenceAllowed(dto.eventType, dto.recurrenceRule, start);
+
     if (dto.eventType === EventType.TERRACE_BOOKING) {
       const conflict = await this.prisma.calendarEvent.findFirst({
         where: {
@@ -182,6 +260,8 @@ export class CalendarService {
         unitNumber: dto.unitNumber,
         residentId: dto.residentId,
         notes: dto.notes,
+        recurrenceRule: dto.recurrenceRule ?? null,
+        parentEventId: dto.parentEventId ?? null,
         ...(resolvedMetadata !== undefined && { metadata: resolvedMetadata as unknown as object }),
       },
       include: {
@@ -224,6 +304,9 @@ export class CalendarService {
 
     const effectiveType = dto.eventType ?? existing.eventType;
     const effectiveStatus = dto.status ?? existing.status;
+    const effectiveRecurrence =
+      dto.recurrenceRule !== undefined ? dto.recurrenceRule : existing.recurrenceRule;
+    assertRecurrenceAllowed(effectiveType, effectiveRecurrence, start);
 
     if (
       effectiveType === EventType.TERRACE_BOOKING &&
@@ -259,6 +342,12 @@ export class CalendarService {
     if (dto.residentId !== undefined) data.residentId = dto.residentId;
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.notes !== undefined) data.notes = dto.notes;
+    if (dto.recurrenceRule !== undefined) {
+      data.recurrenceRule = dto.recurrenceRule == null || dto.recurrenceRule.length === 0
+        ? null
+        : dto.recurrenceRule;
+    }
+    if (dto.parentEventId !== undefined) data.parentEventId = dto.parentEventId;
     data.updatedById = userId;
 
     if (dto.metadata !== undefined) {

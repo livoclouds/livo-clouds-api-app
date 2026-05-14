@@ -61,6 +61,8 @@ function baseEvent(overrides: Record<string, unknown> = {}): Record<string, unkn
     status: EventStatus.PENDING,
     notes: null,
     metadata: null,
+    recurrenceRule: null,
+    parentEventId: null,
     deletedAt: null,
     createdAt: new Date('2026-06-01T00:00:00Z'),
     updatedAt: new Date('2026-06-01T00:00:00Z'),
@@ -151,5 +153,206 @@ describe('CalendarService.findOne — Phase 3 last-editor exposure', () => {
 
     expect(result.updatedById).toBeNull();
     expect(result.updatedBy).toBeNull();
+  });
+});
+
+describe('CalendarService — Phase 5A recurrence', () => {
+  const FROM = '2026-06-01T00:00:00.000Z';
+  const TO = '2026-06-30T23:59:59.999Z';
+  const PARENT_START = new Date('2026-06-01T18:00:00.000Z');
+  const PARENT_END = new Date('2026-06-01T20:00:00.000Z');
+
+  function listQuery(): { from: string; to: string } {
+    return { from: FROM, to: TO };
+  }
+
+  it('returns a single non-recurring event unchanged (regression)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([baseEvent({ startDate: PARENT_START, endDate: PARENT_END })])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+
+    expect(result.data).toHaveLength(1);
+    const data = result.data as Array<Record<string, unknown>>;
+    expect(data[0].id).toBe(EVENT_ID);
+    expect(data[0].isOccurrence).toBeUndefined();
+  });
+
+  it('expands a weekly recurring parent into 4 occurrences across a 28-day window', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        baseEvent({
+          id: 'parent-weekly',
+          startDate: PARENT_START,
+          endDate: PARENT_END,
+          recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+        }),
+      ]);
+
+    const result = await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+
+    expect(result.data).toHaveLength(4);
+    const data = result.data as Array<Record<string, unknown>>;
+    expect(data.every((occ) => occ.isOccurrence === true)).toBe(true);
+    expect(data.every((occ) => occ.originalEventId === 'parent-weekly')).toBe(true);
+    expect(new Set(data.map((occ) => occ.id)).size).toBe(4);
+    expect(data[0].id).toContain('parent-weekly::');
+  });
+
+  it('filters soft-deleted recurring events at the Prisma layer', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+
+    const singleArgs = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    const recurringArgs = prisma.calendarEvent.findMany.mock.calls[1][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(singleArgs.where.deletedAt).toBeNull();
+    expect(recurringArgs.where.deletedAt).toBeNull();
+    expect(singleArgs.where.recurrenceRule).toBeNull();
+    expect(recurringArgs.where.recurrenceRule).toEqual({ not: null });
+  });
+
+  it('rejects create when eventType is TERRACE_BOOKING and recurrenceRule is set', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+    prisma.condominiumSettings.findUnique.mockResolvedValueOnce({
+      terraceBookingEnabled: true,
+      terraceRentalAmount: 1500,
+      terraceSecurityDepositAmount: 500,
+    });
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Recurring booking',
+        eventType: EventType.TERRACE_BOOKING,
+        startDate: PARENT_START.toISOString(),
+        endDate: PARENT_END.toISOString(),
+        recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+      } as never),
+    ).rejects.toThrow('recurrenceTerraceUnsupported');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects create when recurrenceRule is unbounded', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Open-ended series',
+        eventType: EventType.GENERAL,
+        startDate: PARENT_START.toISOString(),
+        endDate: PARENT_END.toISOString(),
+        recurrenceRule: 'FREQ=DAILY',
+      } as never),
+    ).rejects.toThrow('recurrenceUnbounded');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('throws when expanded occurrences exceed MAX_TOTAL_OCCURRENCES', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    // 7 daily parents × 300 occurrences = 2100, just over the 2000 aggregate cap.
+    const bigParents = Array.from({ length: 7 }, (_, i) =>
+      baseEvent({
+        id: `big-${i}`,
+        startDate: PARENT_START,
+        endDate: PARENT_END,
+        recurrenceRule: 'FREQ=DAILY;COUNT=300',
+      }),
+    );
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(bigParents);
+
+    const yearQuery = { from: '2026-06-01T00:00:00.000Z', to: '2027-05-31T23:59:59.999Z' };
+
+    await expect(
+      service.findAll(CONDOMINIUM_ID, yearQuery as never),
+    ).rejects.toThrow('recurrenceTooMany');
+  });
+
+  it('persists recurrenceRule and updatedById on update (regression for Phase 3 audit)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent({ startDate: PARENT_START, endDate: PARENT_END }))
+      .mockResolvedValueOnce(
+        baseEvent({
+          startDate: PARENT_START,
+          endDate: PARENT_END,
+          recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+        }),
+      );
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+    } as never);
+
+    expect(prisma.calendarEvent.updateMany).toHaveBeenCalledTimes(1);
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.recurrenceRule).toBe('FREQ=WEEKLY;COUNT=4');
+    expect(args.data.updatedById).toBe(USER_ID);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    const auditArgs = audit.log.mock.calls[0][0] as Record<string, unknown>;
+    expect(auditArgs.action).toBe('CALENDAR_EVENT_UPDATED');
+    const after = auditArgs.afterState as Record<string, unknown>;
+    expect(after.recurrenceRule).toBe('FREQ=WEEKLY;COUNT=4');
+  });
+
+  it('clears recurrenceRule when update sends null (revert to single event)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(
+        baseEvent({
+          startDate: PARENT_START,
+          endDate: PARENT_END,
+          recurrenceRule: 'FREQ=DAILY;COUNT=10',
+        }),
+      )
+      .mockResolvedValueOnce(baseEvent({ startDate: PARENT_START, endDate: PARENT_END }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      recurrenceRule: null,
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.recurrenceRule).toBeNull();
   });
 });

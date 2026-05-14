@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   MinLength,
 } from 'class-validator';
 
@@ -71,4 +72,22 @@ export class CreateCalendarEventDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'RFC 5545 RRULE string defining a recurring series. Must include UNTIL or COUNT. Sub-daily frequencies and TERRACE_BOOKING events are rejected. Omit or send null for a single-occurrence event.',
+    example: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T235959Z',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  recurrenceRule?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Reserved for future per-occurrence exception support. Phase 5A does not read or write this field; consumers should leave it unset.',
+  })
+  @IsOptional()
+  @IsUUID()
+  parentEventId?: string | null;
 }
