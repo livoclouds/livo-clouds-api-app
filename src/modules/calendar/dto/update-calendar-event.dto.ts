@@ -95,4 +95,14 @@ export class UpdateCalendarEventDto {
   @IsOptional()
   @IsUUID()
   parentEventId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional IANA timezone override (Phase 5B). Send null to clear an override and revert to the condominium timezone.',
+    example: 'America/New_York',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  timezone?: string | null;
 }

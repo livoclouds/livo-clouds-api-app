@@ -22,6 +22,7 @@ import {
   expandRecurrence,
   validateRecurrenceRule,
 } from './recurrence';
+import { assertValidTimezone } from './timezone.util';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -227,6 +228,7 @@ export class CalendarService {
     }
 
     assertRecurrenceAllowed(dto.eventType, dto.recurrenceRule, start);
+    assertValidTimezone(dto.timezone);
 
     if (dto.eventType === EventType.TERRACE_BOOKING) {
       const conflict = await this.prisma.calendarEvent.findFirst({
@@ -262,6 +264,7 @@ export class CalendarService {
         notes: dto.notes,
         recurrenceRule: dto.recurrenceRule ?? null,
         parentEventId: dto.parentEventId ?? null,
+        timezone: dto.timezone ?? null,
         ...(resolvedMetadata !== undefined && { metadata: resolvedMetadata as unknown as object }),
       },
       include: {
@@ -307,6 +310,13 @@ export class CalendarService {
     const effectiveRecurrence =
       dto.recurrenceRule !== undefined ? dto.recurrenceRule : existing.recurrenceRule;
     assertRecurrenceAllowed(effectiveType, effectiveRecurrence, start);
+    if (
+      dto.timezone !== undefined &&
+      dto.timezone !== null &&
+      dto.timezone.length > 0
+    ) {
+      assertValidTimezone(dto.timezone);
+    }
 
     if (
       effectiveType === EventType.TERRACE_BOOKING &&
@@ -348,6 +358,12 @@ export class CalendarService {
         : dto.recurrenceRule;
     }
     if (dto.parentEventId !== undefined) data.parentEventId = dto.parentEventId;
+    if (dto.timezone !== undefined) {
+      data.timezone =
+        dto.timezone === null || (typeof dto.timezone === 'string' && dto.timezone.length === 0)
+          ? null
+          : dto.timezone;
+    }
     data.updatedById = userId;
 
     if (dto.metadata !== undefined) {

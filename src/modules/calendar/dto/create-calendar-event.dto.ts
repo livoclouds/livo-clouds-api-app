@@ -90,4 +90,14 @@ export class CreateCalendarEventDto {
   @IsOptional()
   @IsUUID()
   parentEventId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional IANA timezone override (Phase 5B). When set, list/detail rendering uses this zone instead of the condominium timezone. Omit or send null to inherit the condominium timezone.',
+    example: 'America/New_York',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  timezone?: string | null;
 }

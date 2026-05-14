@@ -782,6 +782,7 @@ model CalendarEvent {
   metadata       Json?
   recurrenceRule String?
   parentEventId  String?
+  timezone       String?
   deletedAt      DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt

@@ -63,6 +63,7 @@ function baseEvent(overrides: Record<string, unknown> = {}): Record<string, unkn
     metadata: null,
     recurrenceRule: null,
     parentEventId: null,
+    timezone: null,
     deletedAt: null,
     createdAt: new Date('2026-06-01T00:00:00Z'),
     updatedAt: new Date('2026-06-01T00:00:00Z'),
@@ -329,6 +330,141 @@ describe('CalendarService — Phase 5A recurrence', () => {
     expect(auditArgs.action).toBe('CALENDAR_EVENT_UPDATED');
     const after = auditArgs.afterState as Record<string, unknown>;
     expect(after.recurrenceRule).toBe('FREQ=WEEKLY;COUNT=4');
+  });
+
+  it('persists per-event timezone on create (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.create.mockResolvedValueOnce(
+      baseEvent({ timezone: 'America/New_York' }),
+    );
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'Cross-tz provider visit',
+      eventType: EventType.PROVIDER,
+      startDate: '2026-06-15T14:00:00.000Z',
+      endDate: '2026-06-15T15:00:00.000Z',
+      timezone: 'America/New_York',
+    } as never);
+
+    expect(prisma.calendarEvent.create).toHaveBeenCalledTimes(1);
+    const args = prisma.calendarEvent.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.timezone).toBe('America/New_York');
+  });
+
+  it('rejects create when timezone is not a valid IANA zone (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Bad tz',
+        eventType: EventType.GENERAL,
+        startDate: '2026-06-15T14:00:00.000Z',
+        endDate: '2026-06-15T15:00:00.000Z',
+        timezone: 'Mars/Olympus_Mons',
+      } as never),
+    ).rejects.toThrow('invalidTimezone');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('updates per-event timezone (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent())
+      .mockResolvedValueOnce(baseEvent({ timezone: 'Europe/Madrid' }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      timezone: 'Europe/Madrid',
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.timezone).toBe('Europe/Madrid');
+    expect(args.data.updatedById).toBe(USER_ID);
+  });
+
+  it('clears per-event timezone when update sends null (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent({ timezone: 'America/New_York' }))
+      .mockResolvedValueOnce(baseEvent({ timezone: null }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      timezone: null,
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.timezone).toBeNull();
+  });
+
+  it('treats an empty-string timezone in update as a clear (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent({ timezone: 'America/New_York' }))
+      .mockResolvedValueOnce(baseEvent({ timezone: null }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      timezone: '',
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.timezone).toBeNull();
+  });
+
+  it('rejects update when timezone is not a valid IANA zone (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(baseEvent());
+
+    await expect(
+      service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+        timezone: 'not-a-timezone',
+      } as never),
+    ).rejects.toThrow('invalidTimezone');
+
+    expect(prisma.calendarEvent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('omits timezone from update payload when the field is absent (Phase 5B)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent({ timezone: 'America/New_York' }))
+      .mockResolvedValueOnce(baseEvent({ timezone: 'America/New_York' }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      title: 'Renamed',
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect('timezone' in args.data).toBe(false);
   });
 
   it('clears recurrenceRule when update sends null (revert to single event)', async () => {
