@@ -75,6 +75,7 @@ export class CalendarService {
         include: {
           resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
+          updatedBy: { select: { id: true, firstName: true, lastName: true } },
         },
         orderBy: { startDate: 'asc' },
         skip,
@@ -100,6 +101,7 @@ export class CalendarService {
       include: {
         resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
         createdBy: { select: { id: true, firstName: true, lastName: true } },
+        updatedBy: { select: { id: true, firstName: true, lastName: true } },
       },
     });
 
@@ -185,6 +187,7 @@ export class CalendarService {
       include: {
         resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
         createdBy: { select: { id: true, firstName: true, lastName: true } },
+        updatedBy: { select: { id: true, firstName: true, lastName: true } },
       },
     });
 
@@ -256,6 +259,7 @@ export class CalendarService {
     if (dto.residentId !== undefined) data.residentId = dto.residentId;
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.notes !== undefined) data.notes = dto.notes;
+    data.updatedById = userId;
 
     if (dto.metadata !== undefined) {
       if (effectiveType === EventType.TERRACE_BOOKING) {

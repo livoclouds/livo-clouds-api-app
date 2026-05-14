@@ -305,6 +305,7 @@ model User {
   notifications      Notification[]
   reconciledTransactions    Transaction[]   @relation("ReconciledBy")
   createdCalendarEvents     CalendarEvent[] @relation("CreatedCalendarEvents")
+  updatedCalendarEvents     CalendarEvent[] @relation("UpdatedCalendarEvents")
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -774,6 +775,7 @@ model CalendarEvent {
   unitNumber    String?
   residentId    String?
   createdById   String
+  updatedById   String?
   status        EventStatus @default(PENDING)
   notes         String?
   metadata      Json?
@@ -784,6 +786,7 @@ model CalendarEvent {
   condominium         Condominium   @relation(fields: [condominiumId], references: [id])
   resident            Resident?     @relation(fields: [residentId], references: [id])
   createdBy           User          @relation("CreatedCalendarEvents", fields: [createdById], references: [id])
+  updatedBy           User?         @relation("UpdatedCalendarEvents", fields: [updatedById], references: [id])
   matchedTransactions Transaction[] @relation("MatchedTransaction")
 
   @@index([condominiumId])
