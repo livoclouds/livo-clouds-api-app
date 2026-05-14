@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
+import { ListCollectionMatrixDto } from './dto/list-collection-matrix.dto';
 import { ListOverdueDto } from './dto/list-overdue.dto';
 
 @Injectable()
@@ -69,19 +70,34 @@ export class ReportsService {
     };
   }
 
-  async getCollectionMatrix(condominiumId: string, year: number) {
-    const residents = await this.prisma.resident.findMany({
-      where: { condominiumId, deletedAt: null },
-      include: {
-        collectionRecords: {
-          where: { year },
-          orderBy: { month: 'asc' },
-        },
-      },
-      orderBy: { unitNumber: 'asc' },
-    });
+  async getCollectionMatrix(
+    condominiumId: string,
+    dto: ListCollectionMatrixDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const year = dto.year ?? new Date().getFullYear();
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 500;
+    const skip = (page - 1) * limit;
 
-    return residents.map((r) => ({
+    const where: Prisma.ResidentWhereInput = { condominiumId, deletedAt: null };
+
+    const [residents, total] = await Promise.all([
+      this.prisma.resident.findMany({
+        where,
+        include: {
+          collectionRecords: {
+            where: { year },
+            orderBy: { month: 'asc' },
+          },
+        },
+        orderBy: { unitNumber: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.resident.count({ where }),
+    ]);
+
+    const data = residents.map((r) => ({
       residentId: r.id,
       unitNumber: r.unitNumber,
       name: `${r.firstName} ${r.lastName}`,
@@ -90,6 +106,16 @@ export class ReportsService {
       debt: Number(r.debt),
       months: r.collectionRecords,
     }));
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async getExecutiveSummary(condominiumId: string, year: number, month: number) {

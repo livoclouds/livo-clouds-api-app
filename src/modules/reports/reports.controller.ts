@@ -1,6 +1,7 @@
 import { Controller, Get, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { ListCollectionMatrixDto } from './dto/list-collection-matrix.dto';
 import { ListOverdueDto } from './dto/list-overdue.dto';
 import { ReportsService } from './reports.service';
 
@@ -20,13 +21,12 @@ export class ReportsController {
   }
 
   @Get('collection-matrix')
-  @ApiOperation({ summary: 'Get annual collection matrix' })
+  @ApiOperation({ summary: 'Get annual collection matrix (paginated by resident)' })
   getCollectionMatrix(
     @Request() req: { condominiumId: string },
-    @Query('year') year?: string,
+    @Query() dto: ListCollectionMatrixDto,
   ) {
-    const y = year ? parseInt(year, 10) : new Date().getFullYear();
-    return this.reportsService.getCollectionMatrix(req.condominiumId, y);
+    return this.reportsService.getCollectionMatrix(req.condominiumId, dto);
   }
 
   @Get('executive-summary')

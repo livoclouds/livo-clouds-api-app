@@ -6,6 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { CollectionService } from './collection.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
+import { ListCollectionDto } from './dto/list-collection.dto';
 
 @ApiTags('Collection')
 @Controller('condominiums/:condominiumSlug/collection')
@@ -14,13 +15,12 @@ export class CollectionController {
   constructor(private readonly collectionService: CollectionService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get collection matrix for a year' })
+  @ApiOperation({ summary: 'Get collection matrix for a year (paginated)' })
   findAll(
     @Request() req: { condominiumId: string },
-    @Query('year') year?: string,
+    @Query() dto: ListCollectionDto,
   ) {
-    const y = year ? parseInt(year, 10) : new Date().getFullYear();
-    return this.collectionService.findAll(req.condominiumId, y);
+    return this.collectionService.findAll(req.condominiumId, dto);
   }
 
   @Get('residents/:residentId')

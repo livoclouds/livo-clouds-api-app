@@ -374,26 +374,26 @@
       <h1>API Review — Overall Implementation Progress</h1>
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
-        <span>Last updated: 2026-05-13 — Phase 5 closed</span>
-        <span>Current phase: Phase 5 (closed)</span>
-        <span>Overall: ~75%</span>
+        <span>Last updated: 2026-05-13 — Phase 6 closed</span>
+        <span>Current phase: Phase 6 (closed)</span>
+        <span>Overall: ~87.5%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 75%"></div></div>
-        <div class="progress-pct">75%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 87.5%"></div></div>
+        <div class="progress-pct">87.5%</div>
       </div>
-      <p class="progress-meta">6 of 8 phases complete · Phase 5 closed — rolling pagination on <code>residents</code> / <code>/reports/overdue</code> / resident statement landed; <code>imports/upload</code> per-file response gained optional <code>warnings</code>; web wrappers + upload UI chip + EN/ES i18n shipped in the same window</p>
+      <p class="progress-meta">7 of 8 phases complete · Phase 6 closed — lockstep API+web change to bound the collection year matrix (<code>P1.2</code> + <code>P1.5</code>) landed. Server-side resident-range pagination with default-preserving limits; envelope <code>{ data, meta }</code> aligned with Phase 4. Web wrappers updated type-only (no live UI consumer; <code>CollectionControlReport</code> still on mock data).</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">6</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">7</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">2</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">1</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -435,11 +435,11 @@
           <div class="phase-title">Paginate residents / overdue / resident statement</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 6</div>
           <div class="phase-title">Paginate collection matrix</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -1329,15 +1329,216 @@
       </div>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 6 — Paginate collection matrix (in progress)</h2>
+      <p class="phase-meta">Lockstep API+web phase per <code>implementation-roadmap.md:144-158</code>. Bounds the largest per-tenant response: the collection year matrix.</p>
+
+      <h3 class="subsection-title">In-scope endpoints</h3>
+      <table class="data-table">
+        <thead><tr><th>Endpoint</th><th>File</th><th>Symptom</th><th>Severity</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /condominiums/:slug/collection?year=Y</code></td><td><code>collection.service.ts:10-20</code></td><td><code>findMany({ condominiumId, year })</code> + nested <code>resident.select</code> — up to <code>residents × 12</code> flat rows per call (<code>P1.2</code>)</td><td>critical</td></tr>
+          <tr><td><code>GET /condominiums/:slug/reports/collection-matrix?year=Y</code></td><td><code>reports.service.ts:72-93</code></td><td><code>findMany</code> residents + nested <code>collectionRecords (where: year)</code> — one row per resident with 12-month embedded array (<code>P1.5</code>)</td><td>critical</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Task breakdown</h3>
+      <ul class="task-list">
+        <li><strong>P6.A</strong> — Update progress files (kickoff). <em>(complete)</em></li>
+        <li><strong>P6.B</strong> — Document architecture decision (Options A/B/C; pick A). <em>(complete)</em></li>
+        <li><strong>P6.C</strong> — API: paginate <code>/collection</code> (<code>ListCollectionDto</code>, <code>collection.service.findAll</code>, controller). <em>(complete)</em></li>
+        <li><strong>P6.D</strong> — API: paginate <code>/reports/collection-matrix</code> (<code>ListCollectionMatrixDto</code>, <code>reports.service.getCollectionMatrix</code>, controller). <em>(complete)</em></li>
+        <li><strong>P6.E</strong> — Web: update wrapper return types in <code>src/lib/api/collection.ts</code> and <code>src/lib/api/reports.ts</code>. <em>(complete)</em></li>
+        <li><strong>P6.F</strong> — Run API and web validation suites. <em>(complete)</em></li>
+        <li><strong>P6.G</strong> — Close Phase 6 and recommend Phase 7. <em>(complete)</em></li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 6 — Architecture decision</h2>
+      <p class="phase-meta">Three pagination models were evaluated before any code change. <strong>Option A</strong> was selected.</p>
+
+      <h3 class="subsection-title">Option A — Server-side pagination by resident range (chosen)</h3>
+      <table class="data-table">
+        <thead><tr><th>Dimension</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>API impact</td><td><code>/reports/collection-matrix</code> adds <code>page</code> + <code>limit</code>; <code>/collection</code> adds <code>page</code> + <code>limit</code>. Both wrap response in <code>{ data, meta }</code>. Tenant isolation unchanged. No new dependency.</td></tr>
+          <tr><td>Web impact</td><td>Wrapper return types update to envelope. Two unused wrappers, no live UI to refactor.</td></tr>
+          <tr><td>UX impact</td><td>None today (no live consumer). When the matrix UI is wired up later, scrolling pages residents server-side; month columns stay full at 12 (resident row already bounds the per-row data).</td></tr>
+          <tr><td>Payload impact</td><td><strong>Bounded</strong> at <code>limit</code> residents × 12 months (matrix) or <code>limit</code> flat rows (collection). With default <code>limit=500</code>/<code>600</code> it covers every current tenant in one page.</td></tr>
+          <tr><td>Complexity</td><td>Low — direct reuse of Phases 4 &amp; 5 patterns.</td></tr>
+          <tr><td>Risk</td><td><strong>Low</strong> — type-only on web, mechanical on API, no new dep, no schema, no auth touch.</td></tr>
+          <tr><td>Compatibility</td><td>Preserves current behavior (single page covers full matrix for tenants &lt; 500 residents). Aligns with the <code>{ data, meta }</code> standard from Phase 4.</td></tr>
+          <tr><td>Validation</td><td>Snapshot test: capture <code>/collection-matrix?year=Y&amp;limit=10000</code> before and after; equality on <code>data[]</code> (modulo envelope). Same for <code>/collection</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Option B — Client-side virtualization, API keeps flat array</h3>
+      <table class="data-table">
+        <thead><tr><th>Dimension</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>API impact</td><td>None.</td></tr>
+          <tr><td>Web impact</td><td>Install <code>@tanstack/react-virtual</code> (or <code>react-window</code>); refactor <code>CollectionMatrix</code> to render only visible rows.</td></tr>
+          <tr><td>UX impact</td><td>Smooth scrolling for large grids; sticky header preserved.</td></tr>
+          <tr><td>Payload impact</td><td><strong>Not bounded</strong> — full matrix still on the wire. <strong>Fails Phase 6's objective.</strong></td></tr>
+          <tr><td>Complexity</td><td>Medium — new dep, refactor of matrix component.</td></tr>
+          <tr><td>Risk</td><td>Medium — DOM rendering changes; payload concern unresolved.</td></tr>
+          <tr><td>Disqualified</td><td>Phase 6 targets payload, not just rendering. Virtualization alone is insufficient.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Option C — Hybrid: server pagination + web virtualization</h3>
+      <table class="data-table">
+        <thead><tr><th>Dimension</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>API impact</td><td>Same as Option A.</td></tr>
+          <tr><td>Web impact</td><td>Option A + adding virtualization library.</td></tr>
+          <tr><td>UX impact</td><td>Optimal for very large tenants (&gt; 500 residents) if/when the UI is wired up.</td></tr>
+          <tr><td>Payload impact</td><td>Bounded.</td></tr>
+          <tr><td>Complexity</td><td>High — combines both options.</td></tr>
+          <tr><td>Risk</td><td>Medium — extra dep for hypothetical scale.</td></tr>
+          <tr><td>Out of scope today</td><td>No live UI consumer; no tenant approaches 500 residents. Documented as a follow-up if measurement justifies it.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Decision: <strong>Option A</strong></h3>
+      <ul class="task-list">
+        <li>Bounds the payload (the explicit Phase 6 goal in <code>performance-analysis.md:78-87</code>).</li>
+        <li>Mirrors Phases 4 &amp; 5 patterns exactly — same <code>{ data, meta }</code> envelope, same DTO style, same defaults strategy.</li>
+        <li><strong>No live UI consumer</strong>: <code>fetchCollectionYear</code> and <code>fetchCollectionMatrix</code> have zero callers; the matrix UI consumes <code>MOCK_COLLECTION_RECORDS</code>. Lockstep cost is minimal: type-only on the web side.</li>
+        <li><code>limit=500</code> (matrix) and <code>limit=600</code> (flat collection) preserve today's behavior for every current tenant (largest seed &lt; 300 residents).</li>
+        <li>Matrix correctness is trivially preserved — see the equivalence proof below.</li>
+      </ul>
+
+      <h3 class="subsection-title">Matrix equivalence proof</h3>
+      <p class="phase-meta">Let <code>M(year)</code> be the full logical matrix for a tenant: rows are residents ordered by <code>unitNumber asc</code>; columns are 12 months.</p>
+      <ul class="task-list">
+        <li><strong>Single-page case</strong> (<code>limit ≥ |R|</code>): new response has <code>data.length === |R|</code>, same order, identical per-row content. <code>JSON.stringify(oldResponse) === JSON.stringify(newResponse.data)</code>.</li>
+        <li><strong>Multi-page case</strong>: <code>M = concat(page1.data, page2.data, …)</code> over pages ordered by <code>unitNumber asc</code>. Each <code>page.data</code> is a contiguous slice because <code>skip</code>/<code>take</code> preserves order.</li>
+        <li><strong>Per-row month payload</strong>: <code>months[]</code> bounded at 12 entries by construction (<code>where: { year }, orderBy: { month: 'asc' }</code>).</li>
+        <li><strong>Flat endpoint <code>/collection</code></strong>: same logic — <code>data</code> is a row-paginated slice ordered by <code>month asc</code>.</li>
+      </ul>
+      <p class="phase-meta">Manual snapshot validation is deferred to post-deploy because the working environment has no live API at planning time. Documented commands: capture <code>before.json</code> from current main, deploy Phase 6, capture <code>after.json</code> with <code>limit=10000</code>, then <code>jq '.data' after.json | diff - &lt;(jq '.' before.json)</code>.</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 6 — API implementation (P6.C + P6.D)</h2>
+
+      <h3 class="subsection-title">Wire shape change</h3>
+      <table class="data-table">
+        <thead><tr><th>Endpoint</th><th>Old shape</th><th>New shape</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /condominiums/:slug/collection?year=Y</code></td><td><code>CollectionRecord[]</code> (flat, with nested <code>resident.select</code>)</td><td><code>{ data: CollectionRecord[], meta: { total, page, limit, totalPages } }</code></td></tr>
+          <tr><td><code>GET /condominiums/:slug/reports/collection-matrix?year=Y</code></td><td><code>CollectionMatrixRow[]</code> (per-resident, with 12-month embedded <code>months[]</code>)</td><td><code>{ data: CollectionMatrixRow[], meta: { total, page, limit, totalPages } }</code></td></tr>
+        </tbody>
+      </table>
+      <p class="phase-meta">Both responses are still wrapped by the global <code>{ data: ... }</code> envelope from <code>ResponseInterceptor</code>. Per-row <code>months[]</code> payload unchanged. Order preserved: <code>month asc</code> for <code>/collection</code>, <code>unitNumber asc</code> for <code>/reports/collection-matrix</code>.</p>
+
+      <h3 class="subsection-title">Files modified (API side)</h3>
+      <table class="data-table">
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><strong>NEW</strong> <code>src/modules/collection/dto/list-collection.dto.ts</code></td><td><code>ListCollectionDto</code> — <code>year?</code> (2000–2100), <code>page?</code> (≥1, default 1), <code>limit?</code> (1–1200, default 600).</td></tr>
+          <tr><td><code>src/modules/collection/collection.service.ts</code></td><td><code>findAll</code> accepts <code>ListCollectionDto</code>; <code>Promise.all([findMany, count])</code>; returns <code>PaginatedResult</code>. Imports <code>PaginatedResult</code> + <code>ListCollectionDto</code>.</td></tr>
+          <tr><td><code>src/modules/collection/collection.controller.ts</code></td><td><code>@Get()</code> binds <code>@Query() dto: ListCollectionDto</code>; <code>parseInt</code> removed.</td></tr>
+          <tr><td><strong>NEW</strong> <code>src/modules/reports/dto/list-collection-matrix.dto.ts</code></td><td><code>ListCollectionMatrixDto</code> — same shape as <code>ListCollectionDto</code> but <code>limit?</code> 1–1000 default 500 (pagination unit is residents).</td></tr>
+          <tr><td><code>src/modules/reports/reports.service.ts</code></td><td><code>getCollectionMatrix</code> accepts <code>ListCollectionMatrixDto</code>; <code>Promise.all([resident.findMany, resident.count])</code>; <code>.map(...)</code> runs on page only; returns <code>PaginatedResult</code>. Imports <code>ListCollectionMatrixDto</code>.</td></tr>
+          <tr><td><code>src/modules/reports/reports.controller.ts</code></td><td><code>@Get('collection-matrix')</code> binds <code>@Query() dto: ListCollectionMatrixDto</code>; <code>parseInt</code> removed.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Validation (API side)</h3>
+      <table class="data-table">
+        <thead><tr><th>Command</th><th>Result</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>npm run build</code></td><td>PASS</td><td><code>nest build</code> clean.</td></tr>
+          <tr><td><code>npm test</code></td><td>PASS</td><td>2 suites, 65 unit tests — same baseline as Phases 0–5.</td></tr>
+          <tr><td>grep <code>findMany</code> / <code>Promise.all</code> / <code>count</code></td><td>PASS</td><td>Both list services wrap their <code>findMany</code> in <code>Promise.all([findMany({ skip, take, where, … }), count({ where })])</code>.</td></tr>
+          <tr><td>grep <code>ListCollectionDto</code> / <code>ListCollectionMatrixDto</code></td><td>PASS</td><td>Each DTO imported in both controller and service.</td></tr>
+          <tr><td><code>npm run lint</code></td><td>FAIL (pre-existing)</td><td>ESLint v9 vs legacy <code>.eslintrc</code> mismatch carried over from Phase 0.</td></tr>
+          <tr><td><code>npm run test:e2e</code></td><td>SKIPPED</td><td><code>test/</code> folder absent; e2e harness not configured.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 6 — Web implementation (P6.E)</h2>
+
+      <h3 class="subsection-title">Files modified (web side)</h3>
+      <table class="data-table">
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/lib/api/collection.ts</code></td><td>New types <code>CollectionYearResponse</code>, <code>CollectionYearParams</code>. <code>fetchCollectionYear(slug, token, params?)</code> returns the envelope; URL built with <code>URLSearchParams</code>. <code>PaginationMeta</code> imported <code>type</code>-only from <code>./reports</code>.</td></tr>
+          <tr><td><code>src/lib/api/reports.ts</code></td><td>New types <code>CollectionMatrixResponse</code>, <code>CollectionMatrixParams</code>. <code>fetchCollectionMatrix(slug, token, params?)</code> returns the envelope; URL built with <code>URLSearchParams</code>.</td></tr>
+          <tr><td><code>tsconfig.tsbuildinfo</code></td><td>Regenerated by <code>pnpm typecheck</code> / <code>pnpm build</code>.</td></tr>
+        </tbody>
+      </table>
+      <p class="phase-meta">No changes to any component file (no live consumer), proxy routes (none exist for these endpoints today), mock data, the <code>CollectionControlReport</code> tree, i18n, the <code>/api/residents</code> proxy route, the upload UI. No new dependency installed.</p>
+
+      <h3 class="subsection-title">Validation (web side)</h3>
+      <table class="data-table">
+        <thead><tr><th>Command</th><th>Result</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>pnpm typecheck</code></td><td>PASS</td><td><code>tsc --noEmit</code> clean. New wrapper return shapes resolve.</td></tr>
+          <tr><td><code>pnpm test</code></td><td>PASS</td><td>6 vitest suites, 125 tests — same baseline as Phase 5.</td></tr>
+          <tr><td><code>pnpm build</code></td><td>PASS</td><td><code>next build</code> clean.</td></tr>
+          <tr><td>grep <code>fetchCollectionYear</code> / <code>fetchCollectionMatrix</code></td><td>PASS</td><td>Only the two declarations remain; no live caller is broken.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Cross-repo lockstep checklist</h3>
+      <ul class="task-list">
+        <li>API now returns <code>{ data, meta }</code> on both endpoints. ✅</li>
+        <li>Web wrappers consume <code>{ data, meta }</code>. ✅</li>
+        <li>No live UI consumer needs migration (matrix UI reads mock data; the two wrappers had zero callers in the codebase). ✅</li>
+        <li>Defaults preserve current behavior (<code>limit=500</code> matrix / <code>limit=600</code> flat) for every current tenant. ✅</li>
+        <li>Tenant isolation, auth/role guards, response/error envelope, Prisma schema, migrations, indexes — all unchanged. ✅</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Impact status (cumulative through Phase 6)</h2>
+      <table class="data-table">
+        <thead><tr><th>Dimension</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>Web app changes</td><td>Required &amp; completed (type-only this phase)</td><td>Phase 6 updated 2 wrapper files only. No component refactor, no proxy-route addition, no new dependency. Earlier-phase web changes remain in place.</td></tr>
+          <tr><td>API contract</td><td>Changed — <code>/collection</code> &amp; <code>/reports/collection-matrix</code></td><td>Both endpoints now return <code>{ data, meta: { total, page, limit, totalPages } }</code> wrapped by the global <code>{ data: ... }</code> envelope. Optional <code>page</code> / <code>limit</code> query params accepted. <code>year</code> is DTO-validated (2000–2100).</td></tr>
+          <tr><td>Database / Prisma</td><td>Unchanged</td><td>No schema edits, no migrations, no new indexes.</td></tr>
+          <tr><td>Tenant isolation</td><td>Unchanged</td><td><code>condominiumId</code> from <code>CondominiumAccessGuard</code> flows into every <code>where</code>. No tenant data accepted from query params.</td></tr>
+          <tr><td>AuthN / AuthZ</td><td>Unchanged</td><td>No identity-layer code touched.</td></tr>
+          <tr><td>Audit behavior</td><td>Unchanged</td><td>Matrix endpoints write no audit logs.</td></tr>
+          <tr><td>Matrix correctness</td><td>Preserved</td><td>Single-page case is structurally identical to today's response. Multi-page case is order-stable and reconstructs the full matrix on concatenation. Proof + manual snapshot commands documented above.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 6 risks / follow-ups</h2>
+      <div class="risk-card">
+        <div class="risk-title">Default <code>limit</code> ceilings (500 matrix, 600 flat)</div>
+        <div class="risk-body">A future tenant with &gt; 500 residents will see paginated data on first call to <code>/reports/collection-matrix</code>. Options: raise the DTO default, pass a higher <code>limit</code> from the caller, layer Option C (client-side virtualization), or paginate client-side over the existing <code>meta</code>. Never expose <code>Infinity</code> (DoS surface).</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">No live UI consumer for matrix wrappers</div>
+        <div class="risk-body">The matrix UI in <code>CollectionControlReport</code> still consumes <code>MOCK_COLLECTION_RECORDS</code>. Wiring the live API is a separate follow-up: call <code>fetchCollectionMatrix(slug, token, { year, page, limit })</code>, read <code>.data</code> / <code>.meta</code>, optionally add filter params later.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Year DTO tightening</div>
+        <div class="risk-body"><code>year</code> is now strictly an integer between 2000 and 2100; old <code>parseInt(year, 10)</code> would silently coerce invalid strings. New validator returns HTTP 400 with a clear message. Documented as intentional tightening; no known caller passes invalid years today.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Carryovers from earlier phases</div>
+        <div class="risk-body">ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug, R4.2 <code>runningBalance</code> race, deferred <code>id</code> trims on inner selects, P3.B queue-based classification stretch, live-seed equivalence test for <code>classifyBatch</code>, <code>reconciliation-rules</code> flat shape, external-consumer assumption, <code>ResidentsTable</code> server-side pagination, Phase 5 overdue + statement pages still placeholder.</div>
+      </div>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 6 — Paginate collection matrix</strong> per <code>implementation-roadmap.md:144-158</code>. Phase 6 is <strong>lockstep</strong>: the year matrix (<code>P1.2</code> in <code>collection.service.ts:16</code> + <code>P1.5</code> in <code>reports.service.ts:31</code>) is the largest per-tenant response and needs an architectural decision (server-side pagination by resident range vs. client-side virtualization) before the API change ships.</div>
+      <div class="body">Proceed to <strong>Phase 7 — Paginate calendar, inventory, common-areas, petty-cash</strong> per <code>implementation-roadmap.md:162-176</code>. Phase 7 is <strong>rolling</strong> (same pattern as Phase 5): API ships with default-preserving values; web migrates page-by-page.</div>
       <ul>
-        <li>Pre-requisite: decide the pagination model (server-side range vs. client-side virtualization).</li>
-        <li>Pre-requisite: audit the matrix consumer in <code>livo-clouds-web-app/src/app/[locale]/(app)/collection/</code>.</li>
-        <li>Pre-requisite: ensure the chosen shape conforms to the standardized <code>{ data, meta }</code> envelope from Phase 4.</li>
-        <li>Bundle opportunity: include <code>reconciliation-rules.service.ts findAll</code> standardization in either Phase 6 or Phase 7's sweep.</li>
-        <li>Carryover deferrals from earlier phases (P1.D streaming uploads, R4.2 race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test) remain open.</li>
+        <li>Endpoints: <code>calendar.service.ts:32</code> <code>findAll</code> (already requires <code>from</code>/<code>to</code> + 365-day cap), <code>inventory.service.ts:12, 50</code> (<code>/common-areas</code> + <code>/inventory</code>), <code>petty-cash.service.ts:14</code>.</li>
+        <li>Bundle opportunity: <code>reconciliation-rules.service.ts:12-37</code> still returns a non-standard flat shape (<code>{ data, total, page, limit, totalPages }</code>). Recommended to sweep in Phase 7 to close out pagination work in a single window.</li>
+        <li>Carryover deferrals remain open: P1.D streaming uploads, R4.2 race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test, <code>ResidentsTable</code> server-side pagination, building the overdue and resident-statement pages.</li>
       </ul>
     </section>
 

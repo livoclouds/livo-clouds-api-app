@@ -1,6 +1,6 @@
 # API Review — Overall Implementation Progress
 
-**Last updated**: 2026-05-13 (UTC) — Phase 5 closed
+**Last updated**: 2026-05-13 (UTC) — Phase 6 closed
 **Tracking source of truth**: `docs/api-review/implementation-roadmap.md`
 **Companion HTML report**: [`overall-progress.html`](./overall-progress.html)
 
@@ -8,31 +8,34 @@
 
 ## Overall roadmap status
 
-Phases 0, 1, 2, 3, 4, and **5 — Paginate residents / overdue /
-resident statement (+ R2 upload warnings)** are **Complete**. Phase 5
-was the first **API + web rolling** phase per
-`implementation-roadmap.md:121-141`. The API now bounds three of the
-four highest-risk unbounded list paths with default-preserving values:
-**residents** and **/reports/overdue** accept `page`/`limit`/`q` plus
-endpoint-specific filters (`paymentStatus` and `minDebt` respectively)
-with `limit=500` defaults; the **resident account statement** defaults
-to a trailing 12-month window when `from`/`to` are omitted and
-paginates its transactions (`txPage`/`txLimit`, default 200), while
-`summary.totalPaid` is now a Prisma `aggregate(_sum)` instead of a JS
-`.reduce()`. **Imports upload** surfaces an optional `warnings: string[]`
-per file when R2 retention fails (stable key
-`storage.retentionFailed`); the upload UI renders an amber chip and a
-Sonner toast in EN/ES. Web wrappers (`residents.ts`, `reports.ts`,
-`collection.ts`) updated for the new shape; the only live web consumer
-(`ResidentsTable`) keeps client-side filtering/pagination unchanged —
-server-side migration of that table is a rolling follow-up.
+Phases 0, 1, 2, 3, 4, 5, and **6 — Paginate collection matrix** are
+**Complete**. Phase 6 was the **lockstep** API+web phase per
+`implementation-roadmap.md:144-158`. The collection year matrix —
+the largest per-tenant response — is now bounded via server-side
+**resident-range pagination** wrapped in the standard `{ data, meta }`
+envelope from Phase 4. Defaults preserve today's behavior: `limit=500`
+on `/reports/collection-matrix` (one row per resident) covers every
+current tenant in a single response page; `limit=600` on the flat
+`/collection` endpoint covers a typical 50-resident × 12-month grid
+in a single response page. Both endpoints accept optional `page` /
+`limit` query params validated by new DTOs
+(`ListCollectionDto`, `ListCollectionMatrixDto`); the `year` filter
+is now also DTO-validated (2000–2100) instead of `parseInt`-coerced.
 
-API `npm run build` + 65 unit tests pass; web `pnpm typecheck` + `pnpm
-build` + 125 vitest tests pass. No schema change, no migration, no new
-index, no endpoint path change, no envelope change, no tenant-isolation
-or auth/role change.
+The two web wrappers (`fetchCollectionYear`, `fetchCollectionMatrix`)
+were updated to consume the envelope and accept optional pagination
+params. **No live UI consumer existed in the web app** at Phase 6
+time (the matrix UI in `CollectionControlReport` consumes mock data,
+not the API), so no component refactor, virtualization library
+install, or proxy-route addition was required. The lockstep cost was
+type-only on the web side.
 
-**Overall implementation**: 6 of 8 phases complete — **~75%**.
+API `npm run build` + 65 unit tests pass; web `pnpm typecheck` +
+`pnpm build` + 125 vitest tests pass. No schema change, no migration,
+no new index, no endpoint path change, no envelope change, no
+tenant-isolation or auth/role change.
+
+**Overall implementation**: 7 of 8 phases complete — **~87.5%**.
 
 ---
 
@@ -46,14 +49,14 @@ or auth/role change.
 | 3     | Background classification                              | **Complete**  | 100 |
 | 4     | Pagination response shape standardization              | **Complete**  | 100 |
 | 5     | Paginate residents / overdue / resident statement      | **Complete** | 100 |
-| 6     | Paginate collection matrix                             | Pending       |   0 |
+| 6     | Paginate collection matrix                             | **Complete** | 100 |
 | 7     | Paginate calendar / inventory / common-areas / petty   | Pending       |   0 |
 | 8     | Index hardening (DB migration, deferred)               | Pending       |   0 |
 
-- **Current phase**: 5 (closed)
-- **Completed phases**: 0, 1, 2, 3, 4, 5
+- **Current phase**: 6 (closed)
+- **Completed phases**: 0, 1, 2, 3, 4, 5, 6
 - **In-progress phase**: none
-- **Pending phases**: 6, 7, 8
+- **Pending phases**: 7, 8
 
 ---
 
@@ -783,18 +786,398 @@ not Phase 5 work.
 
 ---
 
+## Recommended next step (from Phase 5)
+
+Phase 6 has now started — see the Phase 6 sections below for the
+architecture decision, task breakdown, files modified, validation,
+and matrix-equivalence proof.
+
+---
+
+## Phase 6 — In progress (kickoff)
+
+### Scope (from `implementation-roadmap.md:144-158`)
+
+Phase 6 is the **lockstep** API+web phase that bounds the largest
+per-tenant response: the collection year matrix. Two related
+endpoints are unbounded today:
+
+| Endpoint | File | Symptom | Severity |
+|---|---|---|---|
+| `GET /condominiums/:slug/collection?year=Y` | `collection.service.ts:10-20` | `findMany({ condominiumId, year })` + nested `resident.select` — up to `residents × 12` flat rows per call (`P1.2`) | critical |
+| `GET /condominiums/:slug/reports/collection-matrix?year=Y` | `reports.service.ts:72-93` | `findMany` residents + nested `collectionRecords (where: year)` — one row per resident with 12-month embedded array (`P1.5`) | critical |
+
+### Phase 6 task breakdown
+
+- [⏳] **P6.A** — Update progress files (kickoff).
+- [ ] **P6.B** — Document architecture decision (Options A/B/C; pick A).
+- [ ] **P6.C** — API: paginate `/collection` (`ListCollectionDto`, `collection.service.findAll`, controller).
+- [ ] **P6.D** — API: paginate `/reports/collection-matrix` (`ListCollectionMatrixDto`, `reports.service.getCollectionMatrix`, controller).
+- [ ] **P6.E** — Web: update wrapper return types in `src/lib/api/collection.ts` and `src/lib/api/reports.ts`.
+- [ ] **P6.F** — Run API and web validation suites.
+- [ ] **P6.G** — Close Phase 6 and recommend Phase 7.
+
+### Files to review (Phase 6)
+
+- `docs/api-review/implementation-roadmap.md` (Phase 6 scope, lines 144–158)
+- `docs/api-review/performance-analysis.md` (P1.2, P1.5)
+- `docs/api-review/web-impact-review.md` (Wave 3 lockstep rows)
+- `docs/api-review/database-query-review.md` (Q1, Q2)
+- `src/common/types/index.ts` (`PaginatedResult<T>` target shape)
+- `src/modules/collection/collection.{service,controller}.ts`
+- `src/modules/reports/reports.{service,controller}.ts`
+- Phase 5 patterns: `src/modules/residents/dto/list-residents.dto.ts`, `src/modules/reports/dto/list-overdue.dto.ts`
+- Web: `src/lib/api/collection.ts` (wrapper `fetchCollectionYear`)
+- Web: `src/lib/api/reports.ts` (wrapper `fetchCollectionMatrix`)
+- Web: `src/components/reports/CollectionControlReport/*` (audited — consumes mock data, not the API)
+
+### Why not a separate progress file?
+
+Same convention as Phases 0–5: a single source of truth in
+`overall-progress.md` + the HTML companion. Per-phase files were
+explicitly out of scope per the user instruction starting at Phase 0.
+
+---
+
+## Phase 6 — Architecture decision
+
+Three pagination models were evaluated before any code change.
+
+### Option A — Server-side pagination by resident range (chosen)
+
+| Dimension | Detail |
+|---|---|
+| API impact | `/reports/collection-matrix` adds `page` + `limit`; `/collection` adds `page` + `limit`. Both wrap response in `{ data, meta }`. Tenant isolation unchanged. No new dependency. |
+| Web impact | Wrapper return types update to envelope. Two unused wrappers, no live UI to refactor. |
+| UX impact | None today (no live consumer). When the matrix UI is wired up later, scrolling pages residents server-side; month columns stay full at 12 (resident row already bounds the per-row data). |
+| Payload impact | **Bounded** at `limit` residents × 12 months (matrix) or `limit` flat rows (collection). With default `limit=500`/`600` it covers every current tenant in one page. |
+| Complexity | Low — direct reuse of Phases 4 & 5 patterns. |
+| Risk | **Low** — type-only on web, mechanical on API, no new dep, no schema, no auth touch. |
+| Compatibility | Preserves current behavior (single page covers full matrix for tenants < 500 residents). Aligns with the `{ data, meta }` standard set in Phase 4. |
+| Validation | Snapshot test: capture `/collection-matrix?year=Y&limit=10000` before and after; equality on `data[]` (modulo envelope). Same for `/collection`. |
+
+### Option B — Client-side virtualization, API keeps flat array
+
+| Dimension | Detail |
+|---|---|
+| API impact | None. |
+| Web impact | Install `@tanstack/react-virtual` (or `react-window`); refactor `CollectionMatrix` to render only visible rows. |
+| UX impact | Smooth scrolling for large grids; sticky header preserved. |
+| Payload impact | **Not bounded** — full matrix still on the wire. **Fails Phase 6's objective** of bounding the largest per-tenant response. |
+| Complexity | Medium — new dep, refactor of matrix component, sticky-header tricks. |
+| Risk | Medium — DOM rendering changes; payload concern unresolved. |
+| Compatibility | UI-only; doesn't address API growth as tenants scale. |
+| **Disqualified** | Phase 6 targets payload, not just rendering. Virtualization alone is insufficient and adds a dependency for no API benefit. |
+
+### Option C — Hybrid: server pagination + web virtualization
+
+| Dimension | Detail |
+|---|---|
+| API impact | Same as Option A. |
+| Web impact | Option A + adding virtualization library. |
+| UX impact | Optimal for very large tenants (> 500 residents) if/when the UI is wired up. |
+| Payload impact | Bounded. |
+| Complexity | High — combines both options. |
+| Risk | Medium — extra dep for hypothetical scale. |
+| **Out of scope today** | No live UI consumer exists, no tenant approaches 500 residents. Virtualization adds value when a real page is built and a real tenant exceeds the page size. Documented as a follow-up if measurement justifies it. |
+
+### Decision: **Option A**
+
+**Reasons**:
+1. It bounds the payload (the explicit Phase 6 goal in
+   `performance-analysis.md:78-87`).
+2. It mirrors Phases 4 & 5 patterns exactly — same `{ data, meta }`
+   envelope, same DTO style, same defaults strategy.
+3. **No live UI consumer** today: the two web wrappers
+   (`fetchCollectionYear`, `fetchCollectionMatrix`) have zero callers
+   in the codebase, and the matrix UI in
+   `src/components/reports/CollectionControlReport/*` consumes
+   `MOCK_COLLECTION_RECORDS`, not the API. The lockstep cost is
+   minimal: type-only on the web side, no UI refactor, no virtualization
+   library install.
+4. `limit=500` (matrix) and `limit=600` (flat collection) preserve
+   today's behavior for every current tenant (largest seed < 300
+   residents). If a real tenant ever exceeds 500 residents, the
+   options are: raise the DTO default, layer Option C virtualization
+   on top, or paginate client-side over the existing `meta`. None of
+   these require schema work.
+5. Matrix correctness is **trivially preserved** — see the
+   "Matrix equivalence" section below.
+
+### Matrix equivalence proof
+
+Let `M(year)` be the full logical matrix for a tenant: rows are
+residents ordered by `unitNumber asc`; columns are 12 months. Each
+cell is a `CollectionRecord` (or absent when a record does not exist).
+
+- **Single-page case** (`limit ≥ |R|`): the new response has
+  `data.length === |R|`, in the same order, with identical per-row
+  content. `JSON.stringify(oldResponse) === JSON.stringify(newResponse.data)`.
+  Matrix equality is trivial.
+- **Multi-page case**: `M = concat(page1.data, page2.data, …)` over
+  pages ordered by `unitNumber asc`. Each `page.data` is a contiguous
+  slice because `skip`/`take` preserves order. Concatenation reproduces
+  `M` exactly.
+- **Per-row month payload**: `months[]` is bounded at 12 entries per
+  row by construction (`where: { year }, orderBy: { month: 'asc' }`).
+  Unchanged from today.
+- **Flat endpoint `/collection`**: same logic — `data` is a
+  row-paginated slice of the same flat result, ordered by `month asc`.
+  Concatenation reproduces the flat list.
+
+**Manual validation steps** (deferred to post-deploy because the
+working environment has no live API at planning time):
+
+```bash
+# Pre-deploy (current main)
+curl "$BASE/condominiums/$SLUG/reports/collection-matrix?year=2026" \
+  -H "Authorization: Bearer $TOKEN" > before.json
+
+# Deploy Phase 6 → re-capture with a large limit
+curl "$BASE/condominiums/$SLUG/reports/collection-matrix?year=2026&limit=10000" \
+  -H "Authorization: Bearer $TOKEN" > after.json
+
+# Compare data[] vs the pre-deploy flat array
+jq '.data' after.json | diff - <(jq '.' before.json)
+
+# Multi-page reconstruction
+for p in 1 2 3 ...; do
+  curl "...?year=2026&page=$p&limit=50" | jq '.data[]'
+done | jq -s '.' > reconstructed.json
+diff reconstructed.json <(jq '.' before.json)
+```
+
+---
+
+## Phase 6 — API implementation (P6.C + P6.D)
+
+- [x] **P6.C** — `/condominiums/:slug/collection` paginated.
+  - **NEW** `src/modules/collection/dto/list-collection.dto.ts`:
+    `ListCollectionDto` with `year?` (2000–2100, default current
+    year), `page?` (≥1, default 1), `limit?` (1–1200, default
+    **600**). All optional with Swagger annotations.
+  - `src/modules/collection/collection.service.ts`:
+    `findAll(condominiumId, dto: ListCollectionDto)` derives `year`,
+    `page`, `limit`, `skip` from the DTO; builds
+    `where = { condominiumId, year }`; runs
+    `Promise.all([findMany({ where, include: { resident: { select } }, orderBy: [{ month: 'asc' }], skip, take }), count({ where })])`;
+    returns `PaginatedResult<unknown>` (`{ data, meta: { total, page, limit, totalPages } }`).
+    Imports `PaginatedResult` from `../../common/types` and
+    `ListCollectionDto`.
+  - `src/modules/collection/collection.controller.ts`: `@Get()` binds
+    `@Query() dto: ListCollectionDto` and forwards. Removed the
+    `parseInt(year)` step — DTO handles transform.
+- [x] **P6.D** — `/condominiums/:slug/reports/collection-matrix` paginated.
+  - **NEW** `src/modules/reports/dto/list-collection-matrix.dto.ts`:
+    `ListCollectionMatrixDto` with `year?` (2000–2100, default
+    current year), `page?` (≥1, default 1), `limit?` (1–1000,
+    default **500**). Pagination unit is **residents** (one matrix
+    row per resident).
+  - `src/modules/reports/reports.service.ts`:
+    `getCollectionMatrix(condominiumId, dto: ListCollectionMatrixDto)`
+    derives `year`, `page`, `limit`, `skip`; builds
+    `where = { condominiumId, deletedAt: null }`; runs
+    `Promise.all([resident.findMany({ where, include: { collectionRecords: { where: { year }, orderBy: { month: 'asc' } } }, orderBy: { unitNumber: 'asc' }, skip, take }), resident.count({ where })])`;
+    `.map(...)` reshape runs on the current page only; returns
+    `PaginatedResult<unknown>`. Added import of
+    `ListCollectionMatrixDto`.
+  - `src/modules/reports/reports.controller.ts`: `@Get('collection-matrix')`
+    binds `@Query() dto: ListCollectionMatrixDto`. Removed
+    `parseInt(year)`.
+
+### Wire shape change (per endpoint)
+
+| Endpoint | Old shape | New shape |
+|---|---|---|
+| `GET /condominiums/:slug/collection?year=Y` | `CollectionRecord[]` (flat, with nested `resident.select`) | `{ data: CollectionRecord[], meta: { total, page, limit, totalPages } }` |
+| `GET /condominiums/:slug/reports/collection-matrix?year=Y` | `CollectionMatrixRow[]` (per-resident, with 12-month embedded `months[]`) | `{ data: CollectionMatrixRow[], meta: { total, page, limit, totalPages } }` |
+
+Both responses are still wrapped by the global `{ data: ... }`
+envelope from `ResponseInterceptor`. Per-row `months[]` payload is
+unchanged. Order preserved: `month asc` for `/collection`,
+`unitNumber asc` for `/reports/collection-matrix`.
+
+### Files modified (Phase 6 — API side)
+
+| File | Change |
+|---|---|
+| **NEW** `src/modules/collection/dto/list-collection.dto.ts` | `ListCollectionDto` — `year?` (2000–2100), `page?` (≥1, default 1), `limit?` (1–1200, default 600). |
+| `src/modules/collection/collection.service.ts` | `findAll` accepts `ListCollectionDto`; `Promise.all([findMany, count])`; returns `PaginatedResult`. Imports `PaginatedResult` + `ListCollectionDto`. |
+| `src/modules/collection/collection.controller.ts` | `@Get()` binds `@Query() dto: ListCollectionDto`; `parseInt` removed. Imports `ListCollectionDto`. |
+| **NEW** `src/modules/reports/dto/list-collection-matrix.dto.ts` | `ListCollectionMatrixDto` — same shape as `ListCollectionDto` but `limit?` 1–1000 default 500 (pagination unit is residents). |
+| `src/modules/reports/reports.service.ts` | `getCollectionMatrix` accepts `ListCollectionMatrixDto`; `Promise.all([resident.findMany, resident.count])`; `.map(...)` runs on page only; returns `PaginatedResult`. Imports `ListCollectionMatrixDto`. |
+| `src/modules/reports/reports.controller.ts` | `@Get('collection-matrix')` binds `@Query() dto: ListCollectionMatrixDto`; `parseInt` removed. Imports `ListCollectionMatrixDto`. |
+
+### Validation performed (Phase 6 — API side)
+
+| Command | Result | Notes |
+|---|---|---|
+| `npm run build` | **PASS** | `nest build` clean. New DTOs + decorators compile; service signatures and `PaginatedResult` return types resolve. |
+| `npm test` | **PASS** | 2 suites, 65 unit tests — same baseline as Phases 0–5. No suite asserts pagination/filter shape. |
+| `grep "findMany\\|Promise.all\\|count" src/modules/collection/collection.service.ts src/modules/reports/reports.service.ts` | **PASS** | `collection.findAll` and `getCollectionMatrix` both wrap their `findMany` calls in `Promise.all([findMany({ skip, take, where, … }), count({ where })])`. |
+| `grep -rn "ListCollectionDto\\|ListCollectionMatrixDto" src/modules/collection/ src/modules/reports/` | **PASS** | Each DTO imported in both controller and service. |
+| `npm run lint` | **FAIL (pre-existing)** | Same ESLint v9 vs legacy `.eslintrc` mismatch carried over from Phase 0; not introduced here. |
+| `npm run test:e2e` | **SKIPPED** | `test/` folder still absent; e2e harness not configured. |
+
+### Risks introduced or surfaced — Phase 6 (API side)
+
+- **Default `limit` ceiling**: tenants with > 600 collection records
+  (i.e., > 50 residents × 12 months) on `/collection`, or > 500
+  residents on `/reports/collection-matrix`, will see paginated data
+  on first call. Raise the DTO default if the matrix UI is wired up
+  before a tenant of that size appears. **Do not** expose `Infinity`
+  (DoS surface).
+- **Year transform via DTO**: `year` is now parsed via
+  `@Type(() => Number) @IsInt() @Min(2000) @Max(2100)`. This is a
+  stricter accept-set than the old `parseInt(year, 10)` (which would
+  silently coerce "2.5" → 2 or "abc" → NaN). The new behavior rejects
+  invalid years with a 400. Documented as intentional tightening.
+- **No live UI consumer** (carried from the architecture decision
+  section): the matrix UI today consumes `MOCK_COLLECTION_RECORDS`.
+  Wiring the live API is a separate follow-up task, not Phase 6 work.
+
+---
+
+## Phase 6 — Web implementation (P6.E)
+
+- [x] **P6.E** — Wrapper return types updated.
+  - `src/lib/api/collection.ts`: imports
+    `PaginationMeta` (`type`-only) from `./reports`. Adds
+    `CollectionYearResponse = { data: CollectionRecord[], meta: PaginationMeta }`
+    and `CollectionYearParams = { year?, page?, limit? }`.
+    `fetchCollectionYear(slug, token, params?)` now builds a
+    `URLSearchParams` (`year` always set; `page`/`limit` only when
+    provided) and returns the envelope. Default `year` is
+    `new Date().getFullYear()` — same as before.
+  - `src/lib/api/reports.ts`: adds
+    `CollectionMatrixResponse = { data: CollectionMatrixRow[], meta: PaginationMeta }`
+    and `CollectionMatrixParams = { year?, page?, limit? }`.
+    `fetchCollectionMatrix(slug, token, params?)` builds the same
+    query-string shape and returns the envelope. `PaginationMeta`
+    interface is now re-exported via the same module that defined it
+    in Phase 5.
+
+### Files modified (Phase 6 — web side)
+
+| File | Change |
+|---|---|
+| `src/lib/api/collection.ts` | New types `CollectionYearResponse`, `CollectionYearParams`. `fetchCollectionYear(slug, token, params?)` returns the envelope; URL built with `URLSearchParams`. `PaginationMeta` imported `type`-only from `./reports`. |
+| `src/lib/api/reports.ts` | New types `CollectionMatrixResponse`, `CollectionMatrixParams`. `fetchCollectionMatrix(slug, token, params?)` returns the envelope; URL built with `URLSearchParams`. |
+| `tsconfig.tsbuildinfo` | Regenerated by `pnpm typecheck` / `pnpm build`. |
+
+**No changes to**: any component file (no live consumer), proxy
+routes (none exist for these endpoints today), mock data, the
+`CollectionControlReport` tree, i18n, the `/api/residents` proxy
+route, the upload UI. No new dependency installed.
+
+### Validation performed (Phase 6 — web side)
+
+| Command | Result | Notes |
+|---|---|---|
+| `pnpm typecheck` | **PASS** | `tsc --noEmit` clean. New wrapper return shapes resolve. |
+| `pnpm test` | **PASS** | 6 vitest suites, 125 tests — same baseline as Phase 5. |
+| `pnpm build` | **PASS** | `next build` clean. All routes + API proxies compile. |
+| `grep "fetchCollectionYear\\|fetchCollectionMatrix" src/` | **PASS** | Only the two declarations remain; no live caller is broken. |
+
+### Cross-repo lockstep checklist
+
+- API now returns `{ data, meta }` on both endpoints. ✅
+- Web wrappers consume `{ data, meta }`. ✅
+- No live UI consumer needs migration (matrix UI reads mock data; the
+  two wrappers had zero callers in the codebase). ✅
+- Defaults preserve current behavior (`limit=500` matrix /
+  `limit=600` flat) for every current tenant. ✅
+- Tenant isolation, auth/role guards, response/error envelope,
+  Prisma schema, migrations, indexes — **all unchanged**. ✅
+
+---
+
+## Impact status (cumulative through Phase 6)
+
+| Dimension | Status | Detail |
+|---|---|---|
+| Web app changes | **Required and completed** (type-only this phase) | Phase 6 updated 2 wrapper files only. No component refactor, no proxy-route addition, no new dependency. Earlier-phase web changes (Phase 5 wrappers + proxy + components, Phase 4 wrappers) remain in place. |
+| API contract | **Changed — `/collection` and `/reports/collection-matrix`** | Both endpoints now return `{ data, meta: { total, page, limit, totalPages } }` wrapped by the global `{ data: ... }` envelope. Optional `page` / `limit` query params accepted. `year` is now DTO-validated (2000–2100) instead of `parseInt`-coerced. Earlier-phase deltas (residents/overdue/account-statement pagination, imports/upload warnings, /docs 404 in prod, petty-cash 409, calendar `from`/`to` required + 365-day cap, `findReconciled` no longer ships `matchedCalendarEvent`, `classifyBatch` chunk-uniform `matchedAt`, transactions/imports nested `meta`) still apply. |
+| Database / Prisma | **Unchanged** | No schema edits, no migrations, no new indexes. New `where` clauses scan within `condominiumId`-indexed subsets. |
+| Tenant isolation | **Unchanged** | `condominiumId` (from `CondominiumAccessGuard`) flows into every `where`. No tenant data accepted from query params. |
+| AuthN / AuthZ | **Unchanged** | No identity-layer code touched. |
+| Audit behavior | **Unchanged** | Matrix endpoints write no audit logs. |
+| Matrix correctness | **Preserved** | Single-page case is structurally identical to today's response. Multi-page case is order-stable and reconstructs the full matrix on concatenation. Proof + manual snapshot commands documented above. |
+
+---
+
+## Risks / blockers detected — Phase 6
+
+- **Default `limit` ceilings** (`limit=500` matrix, `limit=600` flat):
+  not equivalent to `Infinity`. A future tenant with > 500 residents
+  will see paginated data on first call to `/reports/collection-matrix`.
+  When this surfaces, the options are: raise the DTO default (file
+  edit, no migration), pass a higher `limit` from the caller, layer
+  Option C (client-side virtualization) on top, or paginate
+  client-side over the existing `meta`. Do **not** expose `Infinity`
+  (DoS surface).
+- **No live UI consumer for the matrix wrappers** (deliberate, see
+  architecture decision section): the matrix UI in
+  `CollectionControlReport` still consumes
+  `MOCK_COLLECTION_RECORDS`. Wiring the live API is a separate
+  follow-up task — out of Phase 6 scope. When that work is done, the
+  consumer should: (a) call `fetchCollectionMatrix(slug, token, {
+  year, page, limit })`, (b) read `.data` / `.meta`, (c) optionally
+  add filter params (`q`, `paymentStatus`, …) that Phase 6 did not
+  introduce.
+- **Year DTO tightening**: `year` is now strictly an integer between
+  2000 and 2100. The old `parseInt(year, 10)` would silently coerce
+  invalid strings to `NaN` and produce a runtime error or unintended
+  default; the new validator returns HTTP 400 with a clear message
+  for any out-of-range or non-numeric value. Documented as
+  intentional tightening; no known caller passes invalid years today.
+- **Carryovers from earlier phases** remain open: ESLint v9 config
+  gap, missing e2e harness, dashboard snake_case fallback bug at
+  `dashboard.service.ts:136-146`, R4.2 `runningBalance` race,
+  petty-cash parallel reads opportunity, deferred `id` trims on inner
+  selects, deferred calendar enum tightening, generic `findAll`
+  defensive include, P3.B queue-based classification stretch,
+  live-seed equivalence test for `classifyBatch`,
+  `reconciliation-rules` flat shape, external API consumer
+  assumption, `ResidentsTable` rolling server-side pagination,
+  Phase 5 overdue + statement pages still placeholder.
+
+---
+
+## Remaining work in Phase 6
+
+**None.** P6.A through P6.G are complete. Out-of-scope items
+(wiring `CollectionControlReport` to live API, client-side
+virtualization, additional filter params, `findByResident`
+pagination, `reconciliation-rules` flat-shape standardization) are
+documented as follow-ups, not Phase 6 work.
+
+---
+
 ## Recommended next step
 
-Proceed to **Phase 6 — Paginate collection matrix** per
-`implementation-roadmap.md:144-158`. Phase 6 is **lockstep**: the
-collection year matrix (P1.2 in `collection.service.ts:16` and P1.5
-in `reports.service.ts:31`) is the largest per-tenant response and
-needs an architectural decision (server-side pagination by resident
-range vs. client-side virtualization) before the API change ships.
-Pre-requisites: (1) decide the pagination model; (2) audit the
-matrix consumer in
-`livo-clouds-web-app/src/app/[locale]/(app)/collection/`; (3) ensure
-the chosen shape conforms to the standardized `{ data, meta }`
-envelope from Phase 4. Suggested follow-ups to bundle: include
-`reconciliation-rules.service.ts findAll` standardization in either
-Phase 6 or Phase 7's sweep.
+Proceed to **Phase 7 — Paginate calendar, inventory, common-areas,
+petty-cash** per `implementation-roadmap.md:162-176`. Phase 7 is a
+**rolling** phase (same pattern as Phase 5): the API ships with
+default-preserving values; web migrates page-by-page. The endpoints
+involved are:
+
+- `calendar.service.ts:32` — `findAll`. Already requires `from`/`to`
+  with a 365-day cap (set in Phase 2); adding `page`/`limit` is the
+  remaining work.
+- `inventory.service.ts:12, 50` — `/common-areas` and `/inventory`.
+- `petty-cash.service.ts:14` — `/petty-cash`.
+
+Suggested bundle opportunity: `reconciliation-rules.service.ts:12-37`
+also returns a non-standard flat shape (`{ data, total, page, limit,
+totalPages }`) — Phase 4 envelope standardization recommended it be
+swept in either Phase 6 or Phase 7. Recommend including it in
+Phase 7 to close out the remaining pagination work in a single
+window.
+
+Carryover deferrals from earlier phases (P1.D streaming uploads,
+R4.2 race, dashboard snake_case fallback bug, ESLint v9 config
+migration, e2e harness bootstrap, `classifyBatch` snapshot
+equivalence test, `ResidentsTable` rolling server-side pagination,
+building the overdue and resident-statement pages) remain open and
+can be picked up alongside Phase 7 or scheduled independently.

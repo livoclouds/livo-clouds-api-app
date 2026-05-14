@@ -1,22 +1,49 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CollectionStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PaginatedResult } from '../../common/types';
 import { AccountStatementDto } from './dto/account-statement.dto';
+import { ListCollectionDto } from './dto/list-collection.dto';
 
 @Injectable()
 export class CollectionService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(condominiumId: string, year: number) {
-    return this.prisma.collectionRecord.findMany({
-      where: { condominiumId, year },
-      include: {
-        resident: {
-          select: { id: true, unitNumber: true, firstName: true, lastName: true },
+  async findAll(
+    condominiumId: string,
+    dto: ListCollectionDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const year = dto.year ?? new Date().getFullYear();
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 600;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.CollectionRecordWhereInput = { condominiumId, year };
+
+    const [data, total] = await Promise.all([
+      this.prisma.collectionRecord.findMany({
+        where,
+        include: {
+          resident: {
+            select: { id: true, unitNumber: true, firstName: true, lastName: true },
+          },
         },
+        orderBy: [{ month: 'asc' }],
+        skip,
+        take: limit,
+      }),
+      this.prisma.collectionRecord.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
-      orderBy: [{ month: 'asc' }],
-    });
+    };
   }
 
   async findByResident(condominiumId: string, residentId: string) {
