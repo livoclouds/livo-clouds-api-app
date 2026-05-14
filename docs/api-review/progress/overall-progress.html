@@ -325,25 +325,25 @@
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
         <span>Last updated: 2026-05-13</span>
-        <span>Current phase: Phase 2 (closed)</span>
-        <span>Overall: ~37.5%</span>
+        <span>Current phase: Phase 3 (closed)</span>
+        <span>Overall: ~50%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 37.5%"></div></div>
-        <div class="progress-pct">37.5%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 50%"></div></div>
+        <div class="progress-pct">50%</div>
       </div>
-      <p class="progress-meta">3 of 8 phases complete · Phase 2 closed (P2.A targeted trim shipped; P2.B calendar contract tightened)</p>
+      <p class="progress-meta">4 of 8 phases complete · Phase 3 closed (P3.A — <code>classifyBatch</code> now issues one <code>updateMany</code> per identical payload group, with tenant <code>condominiumId</code> preserved in the <code>where</code>)</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">3</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">4</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">5</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">4</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -367,11 +367,11 @@
           <div class="phase-title">Transactions list projection &amp; calendar range</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 3</div>
           <div class="phase-title">Background classification</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -817,9 +817,166 @@
       </table>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 3 task breakdown</h2>
+      <ul class="checklist">
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P3.A</strong> — Replaced per-row <code>prisma.transaction.update(...)</code> in <code>classifyBatch</code> with a grouped <code>updateMany</code> strategy at <code>src/modules/classification/classification.service.ts:433-499</code>.
+            <div class="sub">Two-stage per chunk: <strong>Stage A</strong> classifies in memory via the pre-existing pure <code>classifyTransaction</code> (no DB calls); <strong>Stage B</strong> groups rows by stable-serialized <code>data</code> payload (<code>JSON.stringify</code> with a <code>Prisma.Decimal → toString</code> replacer) and issues one <code>updateMany({ where: { condominiumId, id: { in } }, data })</code> per group, in parallel via <code>Promise.all</code>. <code>matchedAt</code> normalized to one timestamp per chunk for auto-matched rows; <code>null</code> stays <code>null</code> (roadmap-permitted). Tenant isolation kept via <code>condominiumId</code> in every <code>where</code>. Type widened to <code>Prisma.TransactionUncheckedUpdateManyInput</code> so FK scalars (<code>residentId</code>, <code>matchedRuleId</code>, <code>matchedCalendarEventId</code>) are accepted. Counter logic, <code>ClassificationSummary</code> shape, <code>upsertMonthlySummaries</code> call, and <code>reclassifyBatch</code>/manual paths all preserved.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check">&nbsp;</span>
+          <div>
+            <strong>P3.B (stretch — deferred per user)</strong> — Move classification to a background queue.
+            <div class="sub">Would change <code>POST /imports/confirm</code> to return <code>processingStatus</code> instead of the inline <code>ClassificationSummary</code> and force an API+web lockstep migration per <code>web-impact-review.md:37</code>. Pre-requisites: BullMQ or Vercel Queues dependency; worker module; web polling UX; idempotency for retried jobs; observability for stuck batches. Recommendation: defer until telemetry shows <code>/imports/confirm</code> P95 is unacceptable.</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 3 equivalence achieved</h2>
+      <table>
+        <thead>
+          <tr><th>Field on <code>Transaction</code></th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>unitNumberDetected</code>, <code>payerNameDetected</code>, <code>paymentConcept</code>, <code>paymentPeriodYear</code>, <code>paymentPeriodMonth</code></td><td>byte-for-byte equal</td></tr>
+          <tr><td><code>matchSource</code>, <code>confidenceScore</code>, <code>residentId</code>, <code>classificationStatus</code>, <code>requiresReviewReason</code>, <code>matchedRuleId</code>, <code>matchedCalendarEventId</code></td><td>byte-for-byte equal</td></tr>
+          <tr><td><code>matchedAt</code></td><td>equal up to chunk-level normalization (roadmap line 89 excludes <code>matchedAt</code>)</td></tr>
+          <tr><td><code>reconciliationStatus</code></td><td>untouched — equal</td></tr>
+          <tr><td><code>ClassificationSummary</code> (<code>{ total, classified, needsReview, unmatched }</code>)</td><td>byte-for-byte equal</td></tr>
+          <tr><td><code>ImportBatch</code> status</td><td>owned by <code>imports.service.confirm</code> — equal</td></tr>
+        </tbody>
+      </table>
+      <div class="risk-card" style="margin-top: 12px;">
+        <div class="risk-title">Equivalence validation limitation</div>
+        <div class="risk-body">No seed harness in this environment runs a 1,000-row import end-to-end through <code>/imports/upload</code> → <code>/imports/confirm</code>. Build + 65 unit tests + grep verifications are the validation surface. A snapshot-based pre/post equivalence test on a real condominium seed is recommended before the next imports-bearing production deploy.</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Files modified (Phase 3)</h2>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>src/modules/classification/classification.service.ts</code></td><td><strong>Modified</strong> (P3.A — grouped <code>updateMany</code> with chunk-scoped <code>matchedAt</code>; type widened to <code>UncheckedUpdateManyInput</code>)</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Updated (kickoff + close)</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Updated (kickoff + close)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validation — Phase 3</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nest build</code> clean after one-line type fix (<code>TransactionUpdateManyMutationInput</code> → <code>TransactionUncheckedUpdateManyInput</code>, required so FK scalars like <code>residentId</code> are accepted by <code>updateMany</code>).</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>2 suites, 65 tests passed — same baseline as Phase 0/1/2. <code>classifyBatch</code> has no dedicated unit suite yet.</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="result-fail">FAIL (pre-existing)</td>
+            <td>Same ESLint v9 vs legacy <code>.eslintrc</code> mismatch documented since Phase 0; not introduced by Phase 3.</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td class="result-skip">SKIPPED</td>
+            <td><code>test/</code> folder still absent; e2e harness not configured.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "updateMany\|nowForChunk\|groups\.set\|prisma\.transaction\.update(" classification.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nowForChunk</code> at <code>:440</code>; <code>groups.set</code> at <code>:480</code>; new <code>updateMany</code> at <code>:493</code>; pre-existing <code>updateMany</code> in <code>reclassifyBatch</code> at <code>:510</code> and bulk-reconcile at <code>:976</code>. Remaining per-row <code>update(</code> calls (<code>:537, :577, :626, :782, :883, :923</code>) are all in single-row manual / approve / ignore / reopen paths — none inside <code>classifyBatch</code>.</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (API repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>Exactly 3 modified files (1 src + 2 progress).</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (web repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>No Phase-3-related changes.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 3 impact summary</h2>
+      <div class="impact-grid">
+        <div class="impact-card">
+          <div class="impact-dim">Web app</div>
+          <div class="impact-status">None required</div>
+          <div class="impact-note"><code>POST /imports/confirm</code> still returns the inline <code>ClassificationSummary</code>; <code>POST /transactions/imports/:batchId/classify</code> (<code>reclassifyBatch</code>) also unchanged. The web wrapper at <code>livo-clouds-web-app/src/lib/api/imports.ts</code> consumes the same shape.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">API contract</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">Endpoint paths, response envelopes, and error envelopes preserved. Internal behavioral delta only: <code>matchedAt</code> is now uniform per chunk for auto-matched rows in a single <code>classifyBatch</code> run (roadmap-permitted).</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Database</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No schema edits, no migrations, no new indexes. The existing <code>@@index([condominiumId])</code> on <code>Transaction</code> + PK on <code>id</code> support the new <code>updateMany where</code>.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Tenant isolation</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">Every new <code>updateMany</code> <code>where</code> keeps <code>condominiumId</code> alongside <code>id: { in: [...] }</code> — defense-in-depth pattern matches <code>R1.3</code> bulk-reconcile.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">AuthN / AuthZ</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No identity-layer code touched.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Audit behavior</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note"><code>classifyBatch</code> writes no audit log inside the loop (and didn't before). Approve / ignore / reopen / bulk-reconcile audit writes (other methods) unchanged.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 3 risks / future work</h2>
+      <div class="risk-card">
+        <div class="risk-title">P3.B stretch deferred — queue-based classification</div>
+        <div class="risk-body">Would gain a <code>processingStatus</code> field on <code>POST /imports/confirm</code> and force an API+web lockstep migration per <code>web-impact-review.md:37</code>. Pre-requisites: BullMQ or Vercel Queues dependency; worker module; web polling UX; idempotency on retried jobs; observability for stuck batches. <strong>Recommendation</strong>: defer until telemetry shows P95 of <code>/imports/confirm</code> is unacceptable.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Live-seed equivalence test not executed in this session</div>
+        <div class="risk-body">Build + unit tests + greps pass, but a snapshot diff of <code>classifyBatch</code> output on a real 1,000-row import was not run in this environment. Recommended before the next imports-bearing prod deploy.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Payload key collisions (theoretical only)</div>
+        <div class="risk-body">Two <code>Prisma.Decimal</code> instances representing the same value serialize to the same string via <code>.toString()</code>. In <code>classifyBatch</code> the <code>confidenceScore</code> is always built via <code>.toFixed(4)</code>, so the textual form is canonical. No mitigation needed.</div>
+      </div>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Continue <strong>Phase 2</strong> implementation per the approved plan. After Phase 2 closes, the next phase is <strong>Phase 3 — Background classification</strong>.</div>
+      <div class="body">Proceed to <strong>Phase 4 — Pagination response shape standardization</strong> per <code>implementation-roadmap.md:99-118</code>. First API+web lockstep phase; coordinate the API change with web wrapper updates in <code>livo-clouds-web-app/src/lib/api/transactions.ts</code> and <code>imports.ts</code> in the same release window.</div>
+      <ul>
+        <li>Carryover deferrals from earlier phases (P1.D streaming uploads to R2, R4.2 <code>runningBalance</code> race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap) remain open.</li>
+        <li>Recommend writing the first <code>classifyBatch</code> snapshot equivalence test before any further changes to the classification pipeline.</li>
+      </ul>
     </section>
 
     <p class="footer">Standalone report · no runtime dependencies · light/dark via <code>prefers-color-scheme</code></p>

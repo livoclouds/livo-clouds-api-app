@@ -433,46 +433,68 @@ export class ClassificationService {
     const CHUNK = 200;
     for (let i = 0; i < transactions.length; i += CHUNK) {
       const chunk = transactions.slice(i, i + CHUNK);
+      // Single timestamp per chunk so auto-matched rows with identical
+      // payloads can collapse into the same updateMany group. The roadmap
+      // (Phase 3 validation) explicitly excludes matchedAt from the
+      // byte-for-byte equivalence requirement.
+      const nowForChunk = new Date();
+
+      const groups = new Map<string, { ids: string[]; data: Prisma.TransactionUncheckedUpdateManyInput }>();
+
+      for (const tx of chunk) {
+        const terraceContext = tx.flowType === 'INCOME' && terraceEvents.length > 0
+          ? {
+              events: terraceEvents,
+              amount: tx.credits ? Number(tx.credits) : null,
+              transactionDate: new Date(tx.transactionDate),
+            }
+          : undefined;
+
+        const result = this.classifyTransaction(tx.description, residents, activeRules, terraceContext);
+
+        const data: Prisma.TransactionUncheckedUpdateManyInput = {
+          unitNumberDetected: result.unitNumberDetected,
+          payerNameDetected: result.payerNameDetected,
+          paymentConcept: result.paymentConcept,
+          paymentPeriodYear: result.paymentPeriodYear,
+          paymentPeriodMonth: result.paymentPeriodMonth,
+          matchSource: result.matchSource,
+          confidenceScore: result.confidenceScore
+            ? new Prisma.Decimal(result.confidenceScore.toFixed(4))
+            : null,
+          matchedAt: result.matchedAt ? nowForChunk : null,
+          residentId: result.residentId,
+          classificationStatus: result.classificationStatus,
+          requiresReviewReason: result.requiresReviewReason ?? null,
+          matchedRuleId: result.matchedRuleId ?? null,
+          matchedCalendarEventId: result.matchedCalendarEventId ?? null,
+        };
+
+        const key = JSON.stringify(data, (_k, v) =>
+          v instanceof Prisma.Decimal ? v.toString() : v,
+        );
+        const existing = groups.get(key);
+        if (existing) {
+          existing.ids.push(tx.id);
+        } else {
+          groups.set(key, { ids: [tx.id], data });
+        }
+
+        if (result.classificationStatus === ClassificationStatus.AUTO) {
+          classified++;
+        } else {
+          needsReview++;
+          if (!result.residentId) unmatched++;
+        }
+      }
+
       await Promise.all(
-        chunk.map(async (tx) => {
-          // Terrace pass only runs for INCOME transactions (terrace rentals are received payments).
-          const terraceContext = tx.flowType === 'INCOME' && terraceEvents.length > 0
-            ? {
-                events: terraceEvents,
-                amount: tx.credits ? Number(tx.credits) : null,
-                transactionDate: new Date(tx.transactionDate),
-              }
-            : undefined;
-
-          const result = this.classifyTransaction(tx.description, residents, activeRules, terraceContext);
-          await this.prisma.transaction.update({
-            where: { id: tx.id },
-            data: {
-              unitNumberDetected: result.unitNumberDetected,
-              payerNameDetected: result.payerNameDetected,
-              paymentConcept: result.paymentConcept,
-              paymentPeriodYear: result.paymentPeriodYear,
-              paymentPeriodMonth: result.paymentPeriodMonth,
-              matchSource: result.matchSource,
-              confidenceScore: result.confidenceScore
-                ? new Prisma.Decimal(result.confidenceScore.toFixed(4))
-                : null,
-              matchedAt: result.matchedAt,
-              residentId: result.residentId,
-              classificationStatus: result.classificationStatus,
-              requiresReviewReason: result.requiresReviewReason ?? null,
-              matchedRuleId: result.matchedRuleId ?? null,
-              matchedCalendarEventId: result.matchedCalendarEventId ?? null,
-            },
-          });
-
-          if (result.classificationStatus === ClassificationStatus.AUTO) {
-            classified++;
-          } else {
-            needsReview++;
-            if (!result.residentId) unmatched++;
-          }
-        }),
+        Array.from(groups.values()).map(({ ids, data }) =>
+          this.prisma.transaction.updateMany({
+            where: { condominiumId, id: { in: ids } },
+            data,
+          }),
+        ),
       );
     }
 

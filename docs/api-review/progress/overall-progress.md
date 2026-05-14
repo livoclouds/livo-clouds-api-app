@@ -8,15 +8,18 @@
 
 ## Overall roadmap status
 
-Phase 0 — Cleanups, Phase 1 — Dashboard trend SQL & imports parallelism,
-and **Phase 2 — Transactions list projection + calendar range
-enforcement** are all **Complete**. P2.A shipped a single targeted trim
-(`matchedCalendarEvent` dropped from `findReconciled` only — every other
-relation include is actively read by the web). P2.B introduced the new
-`ListCalendarEventsDto` with required `from`/`to` plus a 365-day span
-cap. Build passes; unit tests pass; no schema or web change introduced.
+Phases 0, 1, 2, and **3 — Background classification** are **Complete**.
+Phase 3 shipped a single focused change in `classifyBatch`: per-chunk
+in-memory classification followed by one `updateMany` per identical
+payload group, with `matchedAt` normalized to a per-chunk timestamp.
+Build passes, all 65 unit tests pass, no web change, no schema change,
+no API contract change. The roadmap's stretch goal (queue-based
+classification) is **documented as deferred future work** — it would
+change the inline `ClassificationSummary` returned by `POST
+/imports/confirm` and force an API+web lockstep migration, per
+`web-impact-review.md` line 37.
 
-**Overall implementation**: 3 of 8 phases complete — **~37.5%**.
+**Overall implementation**: 4 of 8 phases complete — **~50%**.
 
 ---
 
@@ -27,17 +30,17 @@ cap. Build passes; unit tests pass; no schema or web change introduced.
 | 0     | Cleanups (API-only, low risk)                          | **Complete**  | 100 |
 | 1     | Dashboard trend SQL & imports parallelism              | **Complete**  | 100 |
 | 2     | Transactions list projection + calendar range          | **Complete**  | 100 |
-| 3     | Background classification                              | Pending       |   0 |
+| 3     | Background classification                              | **Complete**  | 100 |
 | 4     | Pagination response shape standardization              | Pending       |   0 |
 | 5     | Paginate residents / overdue / resident statement      | Pending       |   0 |
 | 6     | Paginate collection matrix                             | Pending       |   0 |
 | 7     | Paginate calendar / inventory / common-areas / petty   | Pending       |   0 |
 | 8     | Index hardening (DB migration, deferred)               | Pending       |   0 |
 
-- **Current phase**: 2 (closed)
-- **Completed phases**: 0, 1, 2
+- **Current phase**: 3 (closed)
+- **Completed phases**: 0, 1, 2, 3
 - **In-progress phase**: none
-- **Pending phases**: 3, 4, 5, 6, 7, 8
+- **Pending phases**: 4, 5, 6, 7, 8
 
 ---
 
@@ -309,8 +312,109 @@ Carryovers from Phase 0 and Phase 1 remain (ESLint v9 config gap, missing e2e ha
 
 ---
 
+## Phase 3 task breakdown
+
+- [x] **P3.A** — Replaced per-row `prisma.transaction.update(...)` inside `classifyBatch` with a grouped `updateMany` strategy in `src/modules/classification/classification.service.ts:433-499`.
+  - Two-stage per chunk: Stage A classifies in memory via the pre-existing pure `classifyTransaction` (no DB calls); Stage B groups rows by stable-serialized `data` payload and issues one `updateMany({ where: { condominiumId, id: { in } }, data })` per group, in parallel via `Promise.all`.
+  - Stable key function: `JSON.stringify(data, replacer)` with a `Prisma.Decimal` → `.toString()` replacer. All other leaves are primitives, `null`, or `Date` (handled by `Date.prototype.toJSON`). Insertion order of `data` keys is fixed by the literal so identical payloads serialize to identical strings.
+  - `matchedAt` normalization: one `new Date()` captured per chunk (`nowForChunk`). Auto-matched rows in the chunk share that timestamp; rows with `matchedAt === null` stay `null`. Roadmap line 89 explicitly excludes `matchedAt` timestamps from the byte-for-byte equivalence requirement.
+  - Tenant isolation preserved: every `updateMany` `where` carries `condominiumId` alongside `id: { in: ids }` (matches the `R1.3` bulk-reconcile pattern).
+  - Counter logic preserved: `classified` / `needsReview` / `unmatched` are computed from the same `result.classificationStatus` and `result.residentId` values as before.
+  - Type: the `data` payload uses `Prisma.TransactionUncheckedUpdateManyInput` (not `TransactionUpdateManyMutationInput`) because foreign-key scalars (`residentId`, `matchedRuleId`, `matchedCalendarEventId`) are only allowed via the unchecked variant. This matches the original `update` semantics, which accepted these FKs directly.
+  - `upsertMonthlySummaries(condominiumId, batchId)` call after the loop is unchanged.
+  - `reclassifyBatch`, `manualMatch`, `manualClassify`, approve / ignore / reopen / bulk-reconcile paths untouched.
+- [⏸] **P3.B (stretch — deferred per user)** — Move classification to a background queue. Recorded under "Risks / future work" below.
+
+### Equivalence achieved
+
+| Field on `Transaction` | Result |
+|---|---|
+| `unitNumberDetected`, `payerNameDetected`, `paymentConcept`, `paymentPeriodYear`, `paymentPeriodMonth` | byte-for-byte equal |
+| `matchSource`, `confidenceScore`, `residentId`, `classificationStatus`, `requiresReviewReason`, `matchedRuleId`, `matchedCalendarEventId` | byte-for-byte equal |
+| `matchedAt` | equal up to chunk-level normalization (roadmap-permitted) |
+| `reconciliationStatus` | untouched — equal |
+| `ClassificationSummary` (response body) | byte-for-byte equal for `{ total, classified, needsReview, unmatched }` |
+| `ImportBatch` status | owned by `imports.service.confirm` — equal |
+
+**Equivalence validation limitation**: in this environment we don't have a seed harness that runs a 1,000-row import end-to-end through `/imports/upload` → `/imports/confirm`. Build + unit tests + static grep verifications are the validation surface. A snapshot-based pre/post equivalence test on a real condominium seed is recommended before the next production deploy that exercises imports.
+
+---
+
+## Files reviewed (Phase 3)
+
+- `docs/api-review/implementation-roadmap.md` (Phase 3 scope, lines 76–96)
+- `docs/api-review/performance-analysis.md` (P2.2, lines 112–127)
+- `docs/api-review/database-query-review.md` (Q4, lines 238–251)
+- `docs/api-review/risk-analysis.md` (R1.3, R1.4 — tenant isolation pattern)
+- `docs/api-review/web-impact-review.md` (line 37 — API-only, response shape preserved)
+- `src/modules/classification/classification.service.ts` (full file, `classifyBatch` + helpers)
+- `src/modules/imports/imports.service.ts:372` (caller: `confirm` inlines the summary)
+- `src/modules/classification/classification.controller.ts:33-45` (caller: `reclassifyBatch`)
+
+## Files modified (Phase 3)
+
+| File | Change |
+|---|---|
+| `src/modules/classification/classification.service.ts` | P3.A — Replaced per-row `Promise.all(chunk.map(update))` loop (lines 436–476 of the pre-edit file) with a two-stage flow: classify in memory, group by stable-serialized payload, run one `updateMany` per group in parallel. Added `nowForChunk` for per-chunk `matchedAt` normalization. Typed `data` as `Prisma.TransactionUncheckedUpdateManyInput`. Return shape and counters unchanged. |
+| `docs/api-review/progress/overall-progress.md` | Phase 3 status updates (kickoff + close). |
+| `docs/api-review/progress/overall-progress.html` | Phase 3 status updates (kickoff + close). |
+
+---
+
+## Validation performed — Phase 3
+
+| Command | Result | Notes |
+|---|---|---|
+| `npm run build` | **PASS** | `nest build` clean after a one-line type fix (`Prisma.TransactionUpdateManyMutationInput` → `Prisma.TransactionUncheckedUpdateManyInput`, required so FK scalars like `residentId` are accepted by `updateMany`). |
+| `npm test` | **PASS** | 2 suites, 65 tests passed — same baseline as Phase 0/1/2 (`classifyBatch` has no dedicated unit suite yet). |
+| `npm run lint` | **FAIL (pre-existing)** | Same ESLint v9 vs legacy `.eslintrc` mismatch documented since Phase 0; not introduced by Phase 3. |
+| `npm run test:e2e` | **SKIPPED** | `test/` folder still absent; e2e harness not configured. |
+
+**Phase 3 manual checks (all PASS)**:
+
+- `grep -n "updateMany\|nowForChunk\|groups\.set\|prisma\.transaction\.update(" src/modules/classification/classification.service.ts` →
+  - `nowForChunk` at line 440 (chunk-scoped timestamp).
+  - `groups.set` at line 480 (payload grouping).
+  - `prisma.transaction.updateMany` at line 493 (new grouped update inside `classifyBatch`) and line 510 (pre-existing `reclassifyBatch` reset — untouched).
+  - `prisma.transaction.update(` remaining occurrences at lines 537, 577, 626, 782, 883, 923 — all in `manualMatch` / `manualClassify` / `approveMatch` / `ignoreMatch` / `reopenMatch` / single-row classify paths; **none inside `classifyBatch`**.
+- `git status` in the API repo → exactly 3 modified files (1 src + 2 progress).
+- `git status` in the web repo → no changes.
+
+**Equivalence probe (TODO — requires a live tenant seed with imports)**:
+
+- Run `/imports/confirm` on a 1,000-row import. Capture the `classification` summary; query the resulting `transaction` rows; diff every column except `matchedAt`. Expected: identical to a pre-change baseline. Recommend doing this before the next production deploy that exercises imports.
+
+---
+
+## Risks / blockers detected (cumulative)
+
+Carryovers from Phase 0/1/2 remain (ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug at `dashboard.service.ts:136-146`, R4.2 `runningBalance` race, petty-cash `Promise.all([findFirst, count])` opportunity, deferred `id`-field trims on inner selects, deferred calendar enum tightening, `findAll` defensive include). Phase 3 adds the following:
+
+- **P3.B stretch deferred (queue-based classification)**: Documented as future work. Would gain a `processingStatus` field on `POST /imports/confirm` and force an API+web lockstep migration per `web-impact-review.md:37`. Pre-requisites: BullMQ or Vercel Queues dependency; worker module; web polling UX; idempotency on retried jobs; observability for stuck batches. **Recommendation**: defer until telemetry shows P95 of `/imports/confirm` is unacceptable. Schedule as a dedicated phase with its own coordination plan.
+- **Live-seed equivalence test not executed in this session**: build + unit tests + greps pass, but a snapshot diff of `classifyBatch` output on a real 1,000-row import was not run in this environment. Documented above; recommended before the next imports-bearing prod deploy.
+- **Payload key collisions**: theoretical only — two different `Prisma.Decimal` instances representing the same value (`new Prisma.Decimal('0.9500')` vs `new Prisma.Decimal('0.95')`) serialize to the same string via `.toString()`. In `classifyBatch` `confidenceScore` is always constructed via `.toFixed(4)` so the textual form is canonical. No mitigation needed.
+
+---
+
+## Impact status (cumulative through Phase 3)
+
+| Dimension | Status | Detail |
+|---|---|---|
+| Web app changes | **None required** | `POST /imports/confirm` still returns the inline `ClassificationSummary` (`{ total, classified, needsReview, unmatched }`). `POST /transactions/imports/:batchId/classify` (`reclassifyBatch`) likewise unchanged. The web wrapper at `livo-clouds-web-app/src/lib/api/imports.ts` consumes the same shape. |
+| API contract | **Unchanged** | Endpoint paths preserved. Response envelopes preserved. Error envelopes preserved. No new DTO. The only behavioral delta is internal: `matchedAt` is now uniform per chunk for auto-matched rows in a single `classifyBatch` run, an explicitly roadmap-permitted change. Earlier-phase deltas (`/docs` 404 in prod, petty-cash 409 on folio exhaustion, calendar `from`/`to` required + 365-day cap, `findReconciled` no longer ships `matchedCalendarEvent`) still apply. |
+| Database / Prisma | **Unchanged** | No schema edits, no migrations, no new indexes. The existing index `@@index([condominiumId])` on `Transaction` (and the `id` PK) already supports the new `updateMany` `where: { condominiumId, id: { in: [...] } }`. |
+| Tenant isolation | **Unchanged** | The new `updateMany` `where` keeps `condominiumId` next to `id: { in: [...] }` — same defense-in-depth pattern as `R1.3` bulk-reconcile. No cross-tenant update path was introduced. |
+| AuthN / AuthZ | **Unchanged** | No identity-layer code touched. |
+| Audit behavior | **Unchanged** | `classifyBatch` writes no audit log inside the loop (and didn't before). Audit writes for approve/ignore/reopen/bulk-reconcile (in other methods) are unchanged. |
+
+---
+
+## Remaining work in Phase 3
+
+**None.** P3.A is complete. P3.B (queue-based classification) is documented as deferred future work per user instruction.
+
+---
+
 ## Recommended next step
 
-Proceed to **Phase 3 — Background classification** per `implementation-roadmap.md:76+`. Phase 3 targets the classification batching path (`P2.2` / `Q4`), cascade soft-delete enforcement, and transactions list indexes per `database-query-review.md` Q1.
-
-Web is not expected to change for Phase 3, but the cross-repo audit pattern from Phase 2 should be repeated (verify no web component depends on classification timing assumptions).
+Proceed to **Phase 4 — Pagination response shape standardization** per `implementation-roadmap.md:99-118`. Phase 4 is the first API+web lockstep phase; coordinate the API change with web wrapper updates in `livo-clouds-web-app/src/lib/api/transactions.ts` and `imports.ts` in the same release window.
