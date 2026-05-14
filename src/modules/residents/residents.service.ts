@@ -3,25 +3,65 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PaginatedResult } from '../../common/types';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
+import { ListResidentsDto } from './dto/list-residents.dto';
 
 @Injectable()
 export class ResidentsService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(condominiumId: string) {
-    return this.prisma.resident.findMany({
-      where: { condominiumId, deletedAt: null },
-      include: {
-        vehicles: true,
-        pets: true,
-        additionalResidents: true,
+  async findAll(
+    condominiumId: string,
+    dto: ListResidentsDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 500;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.ResidentWhereInput = {
+      condominiumId,
+      deletedAt: null,
+      ...(dto.paymentStatus ? { paymentStatus: dto.paymentStatus } : {}),
+      ...(dto.q
+        ? {
+            OR: [
+              { unitNumber: { contains: dto.q, mode: 'insensitive' } },
+              { firstName: { contains: dto.q, mode: 'insensitive' } },
+              { lastName: { contains: dto.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.resident.findMany({
+        where,
+        include: {
+          vehicles: true,
+          pets: true,
+          additionalResidents: true,
+        },
+        orderBy: { unitNumber: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.resident.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
-      orderBy: { unitNumber: 'asc' },
-    });
+    };
   }
 
   async findOne(condominiumId: string, id: string) {

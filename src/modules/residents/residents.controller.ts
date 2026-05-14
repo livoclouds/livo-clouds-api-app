@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { UserRole } from '../../common/types';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
+import { ListResidentsDto } from './dto/list-residents.dto';
 import { ResidentsService } from './residents.service';
 
 @ApiTags('Residents')
@@ -27,8 +29,11 @@ export class ResidentsController {
 
   @Get()
   @ApiOperation({ summary: 'List residents' })
-  findAll(@Request() req: { condominiumId: string }) {
-    return this.residentsService.findAll(req.condominiumId);
+  findAll(
+    @Request() req: { condominiumId: string },
+    @Query() dto: ListResidentsDto,
+  ) {
+    return this.residentsService.findAll(req.condominiumId, dto);
   }
 
   @Get(':id')

@@ -1,23 +1,54 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PaginatedResult } from '../../common/types';
+import { ListOverdueDto } from './dto/list-overdue.dto';
 
 @Injectable()
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
-  async getOverdue(condominiumId: string) {
-    const residents = await this.prisma.resident.findMany({
-      where: { condominiumId, paymentStatus: 'OVERDUE', deletedAt: null },
-      include: {
-        collectionRecords: {
-          where: { status: { in: ['UNPAID', 'PARTIAL'] } },
-          orderBy: [{ year: 'asc' }, { month: 'asc' }],
-        },
-      },
-      orderBy: { debt: 'desc' },
-    });
+  async getOverdue(
+    condominiumId: string,
+    dto: ListOverdueDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 500;
+    const skip = (page - 1) * limit;
 
-    return residents.map((r) => ({
+    const where: Prisma.ResidentWhereInput = {
+      condominiumId,
+      paymentStatus: 'OVERDUE',
+      deletedAt: null,
+      ...(dto.q
+        ? {
+            OR: [
+              { unitNumber: { contains: dto.q, mode: 'insensitive' } },
+              { firstName: { contains: dto.q, mode: 'insensitive' } },
+              { lastName: { contains: dto.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...(dto.minDebt !== undefined ? { debt: { gte: dto.minDebt } } : {}),
+    };
+
+    const [residents, total] = await Promise.all([
+      this.prisma.resident.findMany({
+        where,
+        include: {
+          collectionRecords: {
+            where: { status: { in: ['UNPAID', 'PARTIAL'] } },
+            orderBy: [{ year: 'asc' }, { month: 'asc' }],
+          },
+        },
+        orderBy: { debt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.resident.count({ where }),
+    ]);
+
+    const data = residents.map((r) => ({
       residentId: r.id,
       unitNumber: r.unitNumber,
       name: `${r.firstName} ${r.lastName}`,
@@ -26,6 +57,16 @@ export class ReportsService {
       overdueMonths: r.collectionRecords.length,
       records: r.collectionRecords,
     }));
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async getCollectionMatrix(condominiumId: string, year: number) {

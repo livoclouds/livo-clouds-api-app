@@ -189,6 +189,7 @@
       position: relative;
     }
     .phase-card.is-done { border-color: var(--ok); background: var(--ok-bg); }
+    .phase-card.is-active { border-color: var(--in-progress); background: var(--in-progress-bg); }
     .phase-card .phase-id {
       font-size: 11px;
       font-weight: 700;
@@ -304,6 +305,55 @@
     .next-step .body { font-size: 14px; color: var(--text); margin-top: 4px; }
     .next-step ul { margin: 10px 0 0 18px; }
     .next-step li { font-size: 13px; color: var(--text2); margin-bottom: 3px; }
+    .subsection-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin: 18px 0 8px 0;
+    }
+    .phase-meta {
+      font-size: 13px;
+      color: var(--text2);
+      line-height: 1.5;
+      margin: 6px 0 12px 0;
+    }
+    .task-list {
+      margin: 0 0 4px 18px;
+      padding: 0;
+    }
+    .task-list li {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 8px;
+      line-height: 1.45;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      margin: 4px 0 12px 0;
+    }
+    .data-table thead th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--text2);
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .data-table tbody td {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: top;
+    }
+    .data-table tbody tr:last-child td { border-bottom: none; }
+    .data-table code { font-size: 12px; }
 
     code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 
@@ -324,26 +374,26 @@
       <h1>API Review — Overall Implementation Progress</h1>
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
-        <span>Last updated: 2026-05-13</span>
-        <span>Current phase: Phase 4 (closed)</span>
-        <span>Overall: ~62.5%</span>
+        <span>Last updated: 2026-05-13 — Phase 5 closed</span>
+        <span>Current phase: Phase 5 (closed)</span>
+        <span>Overall: ~75%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 62.5%"></div></div>
-        <div class="progress-pct">62.5%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 75%"></div></div>
+        <div class="progress-pct">75%</div>
       </div>
-      <p class="progress-meta">5 of 8 phases complete · Phase 4 closed (paginated <code>transactions</code> + <code>imports</code> endpoints now return nested <code>{ data, meta: { ... } }</code>; web wrappers + 4 consumer tabs updated in lockstep)</p>
+      <p class="progress-meta">6 of 8 phases complete · Phase 5 closed — rolling pagination on <code>residents</code> / <code>/reports/overdue</code> / resident statement landed; <code>imports/upload</code> per-file response gained optional <code>warnings</code>; web wrappers + upload UI chip + EN/ES i18n shipped in the same window</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">5</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">6</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">3</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">2</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -379,11 +429,11 @@
           <div class="phase-title">Pagination response shape standardization</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 5</div>
           <div class="phase-title">Paginate residents / overdue / resident statement</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -1161,13 +1211,133 @@
       </div>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 5 — Paginate residents / overdue / resident statement (+ R2 upload warnings)</h2>
+      <p class="phase-meta">First <strong>API + web rolling</strong> phase. The API bounds three high-risk unbounded list paths with default-preserving values; the web app's only live consumer of the affected wrappers (<code>ResidentsTable</code>) updates its type expectations without UX changes. R2 upload retention failures now surface as an optional <code>warnings: string[]</code> per file; the upload UI renders an amber chip and a Sonner toast in EN/ES. Roadmap reference: <code>implementation-roadmap.md:121-141</code>.</p>
+
+      <h3 class="subsection-title">Task breakdown</h3>
+      <ul class="task-list">
+        <li><strong>P5.A — Residents list pagination + filters.</strong> New <code>ListResidentsDto</code>: <code>page</code> (≥1, default 1), <code>limit</code> (1–500, default 500), <code>q</code> (max 100 chars), <code>paymentStatus</code> (Prisma enum). <code>residents.service.findAll</code> now runs <code>Promise.all([findMany({ skip, take, where, include, orderBy }), count({ where })])</code> and returns <code>PaginatedResult&lt;Resident&gt;</code>. Includes and order preserved.</li>
+        <li><strong>P5.B — Overdue report pagination + filters.</strong> New <code>ListOverdueDto</code>: <code>page</code>, <code>limit</code> (max 500), <code>q</code>, <code>minDebt</code> (≥0). <code>reports.service.getOverdue</code> keeps hard-coded <code>paymentStatus: 'OVERDUE'</code> filter, adds optional <code>q</code> (case-insensitive on unit/firstName/lastName) and <code>debt: { gte: minDebt }</code>. <code>.map()</code> reshape runs on the current page only.</li>
+        <li><strong>P5.C — Account statement defaults + tx pagination + SQL aggregate.</strong> New <code>AccountStatementDto</code>: <code>from?</code>, <code>to?</code>, <code>year?</code>, <code>month?</code>, <code>txPage? = 1</code>, <code>txLimit? = 200</code>. Default 12-month window when both <code>from</code> and <code>to</code> are absent. <code>summary.totalPaid</code> now comes from <code>tx.aggregate({ where: { …, flowType: 'INCOME' }, _sum: { credits: true } })</code> (covers the whole filtered window). Response: <code>{ resident, transactions: { data, meta }, collectionRecords, summary }</code>.</li>
+        <li><strong>P5.D — Imports upload R2 warnings.</strong> Per-file <code>warnings: string[]</code> built in <code>upload()</code>. The R2 catch block pushes <code>'storage.retentionFailed'</code>. Result spreads <code>warnings</code> only when non-empty. <code>status: 'queued'</code> and flow control unchanged.</li>
+        <li><strong>P5.E — Web wrappers.</strong> <code>residents.ts</code>, <code>reports.ts</code>, <code>collection.ts</code> updated for the new envelope. <code>getResidents(params?)</code> builds a query string and reads <code>body.data</code> / <code>body.meta</code>. <code>fetchOverdueReport</code> takes optional <code>params</code> and returns the envelope. <code>AccountStatement.transactions</code> is <code>{ data, meta }</code>; new <code>txPage</code> / <code>txLimit</code> in <code>fetchResidentAccountStatement</code>.</li>
+        <li><strong>P5.F — Residents proxy.</strong> <code>src/app/api/residents/route.ts</code> now takes a <code>NextRequest</code> and forwards <code>page</code> / <code>limit</code> / <code>q</code> / <code>paymentStatus</code> to the upstream URL.</li>
+        <li><strong>P5.G — Upload UI warning chip + i18n.</strong> <code>ImportDataModule</code> reads the upload response, matches warnings to queue entries by <code>fileName</code>, sets <code>entry.warnings</code>, and fires <code>toast.warning</code>. <code>FileQueueItem</code> renders an amber <code>AlertTriangle</code> chip below the status badge when <code>entry.warnings?.length</code>. <code>ClientFileEntry</code> gains optional <code>warnings?: string[]</code>. EN/ES keys: <code>imports.upload.warnings.storageRetentionFailed{,Title}</code>.</li>
+      </ul>
+
+      <h3 class="subsection-title">Wire shape change (per endpoint)</h3>
+      <table class="data-table">
+        <thead>
+          <tr><th>Endpoint</th><th>Old shape</th><th>New shape</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET /condominiums/:slug/residents</code></td><td><code>Resident[]</code></td><td><code>{ data: Resident[], meta: { total, page, limit, totalPages } }</code></td></tr>
+          <tr><td><code>GET /condominiums/:slug/reports/overdue</code></td><td><code>OverdueResident[]</code></td><td><code>{ data: OverdueResident[], meta: { … } }</code></td></tr>
+          <tr><td><code>GET /condominiums/:slug/collection/residents/:id/account-statement</code></td><td><code>{ resident, transactions: Tx[], collectionRecords, summary }</code></td><td><code>{ resident, transactions: { data: Tx[], meta }, collectionRecords, summary }</code></td></tr>
+          <tr><td><code>POST /condominiums/:slug/imports/upload</code> (per file)</td><td><code>{ fileName, status, message, batchId?, existingBatchId? }</code></td><td><code>{ …, warnings?: string[] }</code></td></tr>
+        </tbody>
+      </table>
+      <p class="phase-meta">All four are still wrapped by the global <code>{ data: ... }</code> envelope from <code>ResponseInterceptor</code>.</p>
+
+      <h3 class="subsection-title">Files modified</h3>
+      <table class="data-table">
+        <thead>
+          <tr><th>Repo</th><th>File</th><th>Summary</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>api</td><td><strong>NEW</strong> <code>src/modules/residents/dto/list-residents.dto.ts</code></td><td><code>ListResidentsDto</code>.</td></tr>
+          <tr><td>api</td><td><code>src/modules/residents/residents.service.ts</code></td><td><code>findAll(condominiumId, dto)</code> paginates via <code>Promise.all([findMany, count])</code>.</td></tr>
+          <tr><td>api</td><td><code>src/modules/residents/residents.controller.ts</code></td><td>Binds <code>@Query() dto: ListResidentsDto</code>.</td></tr>
+          <tr><td>api</td><td><strong>NEW</strong> <code>src/modules/reports/dto/list-overdue.dto.ts</code></td><td><code>ListOverdueDto</code>.</td></tr>
+          <tr><td>api</td><td><code>src/modules/reports/reports.service.ts</code></td><td><code>getOverdue(condominiumId, dto)</code> paginates + filters; <code>.map()</code> on page.</td></tr>
+          <tr><td>api</td><td><code>src/modules/reports/reports.controller.ts</code></td><td>Binds <code>@Query() dto: ListOverdueDto</code>.</td></tr>
+          <tr><td>api</td><td><strong>NEW</strong> <code>src/modules/collection/dto/account-statement.dto.ts</code></td><td><code>AccountStatementDto</code>.</td></tr>
+          <tr><td>api</td><td><code>src/modules/collection/collection.service.ts</code></td><td>Default 12-month window; tx <code>findMany + count + aggregate</code> in parallel.</td></tr>
+          <tr><td>api</td><td><code>src/modules/collection/collection.controller.ts</code></td><td>Binds <code>@Query() dto: AccountStatementDto</code>.</td></tr>
+          <tr><td>api</td><td><code>src/modules/imports/imports.service.ts</code></td><td><code>upload()</code> tracks per-file <code>warnings</code>; R2 catch pushes <code>storage.retentionFailed</code>.</td></tr>
+          <tr><td>web</td><td><code>src/lib/api/residents.ts</code></td><td>New types; <code>getResidents(params?)</code> builds query string; reads envelope.</td></tr>
+          <tr><td>web</td><td><code>src/lib/api/reports.ts</code></td><td>New types; <code>fetchOverdueReport</code> returns envelope.</td></tr>
+          <tr><td>web</td><td><code>src/lib/api/collection.ts</code></td><td><code>transactions: { data, meta }</code>; <code>txPage</code>/<code>txLimit</code>.</td></tr>
+          <tr><td>web</td><td><code>src/app/api/residents/route.ts</code></td><td><code>NextRequest</code> + forwards <code>page/limit/q/paymentStatus</code>.</td></tr>
+          <tr><td>web</td><td><code>src/components/imports/ImportDataModule/index.tsx</code></td><td>Reads upload warnings → queue entry + toast.</td></tr>
+          <tr><td>web</td><td><code>src/components/imports/FileQueueItem/index.tsx</code></td><td>Amber <code>AlertTriangle</code> chip on <code>entry.warnings</code>.</td></tr>
+          <tr><td>web</td><td><code>src/types/import.types.ts</code></td><td><code>ClientFileEntry.warnings?: string[]</code>.</td></tr>
+          <tr><td>web</td><td><code>messages/en/imports.json</code></td><td>Added <code>imports.upload.warnings</code> keys.</td></tr>
+          <tr><td>web</td><td><code>messages/es/imports.json</code></td><td>Same keys in Spanish.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Validation</h3>
+      <table class="data-table">
+        <thead>
+          <tr><th>Repo</th><th>Command</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>api</td><td><code>npm run build</code></td><td><strong>PASS</strong></td></tr>
+          <tr><td>api</td><td><code>npm test</code></td><td><strong>PASS</strong> (2 suites · 65 tests)</td></tr>
+          <tr><td>api</td><td><code>npm run lint</code></td><td><strong>FAIL (pre-existing)</strong> — ESLint v9 vs legacy <code>.eslintrc</code>.</td></tr>
+          <tr><td>api</td><td><code>npm run test:e2e</code></td><td><strong>SKIPPED</strong> — <code>test/</code> folder absent.</td></tr>
+          <tr><td>web</td><td><code>pnpm typecheck</code></td><td><strong>PASS</strong></td></tr>
+          <tr><td>web</td><td><code>pnpm build</code></td><td><strong>PASS</strong></td></tr>
+          <tr><td>web</td><td><code>pnpm test</code></td><td><strong>PASS</strong> (6 suites · 125 tests)</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Impact</h3>
+      <div class="impact-grid">
+        <div class="impact-card">
+          <div class="impact-dim">Web app changes</div>
+          <div class="impact-status">Required &amp; completed</div>
+          <div class="impact-note">3 wrappers + 1 proxy + 3 components + 1 types file + 2 i18n files. <code>ResidentsTable</code> UX unchanged. Overdue and statement pages remain placeholders pending rolling follow-ups.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">API contract</div>
+          <div class="impact-status">Changed</div>
+          <div class="impact-note">Residents, overdue, and account statement adopt nested <code>meta</code>. <code>imports/upload</code> per-file gains optional <code>warnings</code>. Earlier-phase contract deltas still apply.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Database / Prisma</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No schema, migrations, or indexes. New <code>where</code> filters scan within <code>condominiumId</code>-indexed subsets.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Tenant isolation / AuthN / AuthZ</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note"><code>condominiumId</code> (from <code>CondominiumAccessGuard</code>) flows into every <code>where</code>. No tenant data accepted from query params.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 5 risks / follow-ups</h2>
+      <div class="risk-card">
+        <div class="risk-title"><code>ResidentsTable</code> still uses client-side pagination</div>
+        <div class="risk-body">Preserved on purpose: <code>limit=500</code> default fits today's largest seed (&lt;300 residents) so the UX is unchanged. Migrate to server-side pagination using the now-exposed <code>meta</code> + <code>q</code> + <code>paymentStatus</code> query params when scale demands it. Rolling follow-up.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Overdue + resident statement pages absent</div>
+        <div class="risk-body"><code>app/[locale]/(app)/overdue/page.tsx</code> is a <code>ModulePlaceholder</code>; the resident statement page is not yet built. Their wrappers are ready and typed for the new envelope; when the pages ship, they should consume <code>page/limit/q/minDebt</code> and <code>txPage/txLimit/from/to</code> directly.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Bounded defaults (<code>limit=500</code>, <code>txLimit=200</code>) — not unlimited</div>
+        <div class="risk-body">Tenants beyond those thresholds will see paginated data on first call. Raise the DTO default if a regression appears before web migrates, but never expose <code>Infinity</code> (DoS surface).</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Carryovers from earlier phases</div>
+        <div class="risk-body">ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug, R4.2 <code>runningBalance</code> race, deferred <code>id</code> trims on inner selects, P3.B queue-based classification stretch, live-seed equivalence test for <code>classifyBatch</code>, <code>reconciliation-rules</code> flat shape, external-consumer assumption.</div>
+      </div>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 5 — Paginate residents / overdue / resident statement</strong> per <code>implementation-roadmap.md:121-141</code>. Phase 5 is rolling: API can ship first with a generous default <code>limit</code> so pre-migration web still works; web migrates per page.</div>
+      <div class="body">Proceed to <strong>Phase 6 — Paginate collection matrix</strong> per <code>implementation-roadmap.md:144-158</code>. Phase 6 is <strong>lockstep</strong>: the year matrix (<code>P1.2</code> in <code>collection.service.ts:16</code> + <code>P1.5</code> in <code>reports.service.ts:31</code>) is the largest per-tenant response and needs an architectural decision (server-side pagination by resident range vs. client-side virtualization) before the API change ships.</div>
       <ul>
-        <li>Pre-requisite: adopt the same nested <code>{ data, meta }</code> shape from Phase 4 as the target for any newly-paginated endpoint, so we don't ship a second flat-shape regression.</li>
-        <li>Bundle opportunity: include <code>reconciliation-rules.service.ts findAll</code> (currently out of scope but flat) in the same standardization sweep.</li>
-        <li>Carryover deferrals from earlier phases (P1.D streaming uploads, R4.2 <code>runningBalance</code> race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test) remain open.</li>
+        <li>Pre-requisite: decide the pagination model (server-side range vs. client-side virtualization).</li>
+        <li>Pre-requisite: audit the matrix consumer in <code>livo-clouds-web-app/src/app/[locale]/(app)/collection/</code>.</li>
+        <li>Pre-requisite: ensure the chosen shape conforms to the standardized <code>{ data, meta }</code> envelope from Phase 4.</li>
+        <li>Bundle opportunity: include <code>reconciliation-rules.service.ts findAll</code> standardization in either Phase 6 or Phase 7's sweep.</li>
+        <li>Carryover deferrals from earlier phases (P1.D streaming uploads, R4.2 race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test) remain open.</li>
       </ul>
     </section>
 

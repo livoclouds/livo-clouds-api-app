@@ -211,6 +211,8 @@ export class ImportsService {
 
       this.logger.log(`upload: created PENDING batch id=${batch.id}, R2 configured=${this.storage.isConfigured()}`);
 
+      const warnings: string[] = [];
+
       if (this.storage.isConfigured()) {
         const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${file.originalname}`;
         try {
@@ -226,6 +228,7 @@ export class ImportsService {
             'upload: R2 upload failed',
             err instanceof Error ? err.stack : String(err),
           );
+          warnings.push('storage.retentionFailed');
         }
       }
 
@@ -234,6 +237,7 @@ export class ImportsService {
         status: 'queued',
         batchId: batch.id,
         message: 'File queued for processing',
+        ...(warnings.length > 0 ? { warnings } : {}),
       });
     }
 

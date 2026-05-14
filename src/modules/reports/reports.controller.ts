@@ -1,6 +1,7 @@
 import { Controller, Get, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { ListOverdueDto } from './dto/list-overdue.dto';
 import { ReportsService } from './reports.service';
 
 @ApiTags('Reports')
@@ -11,8 +12,11 @@ export class ReportsController {
 
   @Get('overdue')
   @ApiOperation({ summary: 'Get overdue residents report' })
-  getOverdue(@Request() req: { condominiumId: string }) {
-    return this.reportsService.getOverdue(req.condominiumId);
+  getOverdue(
+    @Request() req: { condominiumId: string },
+    @Query() dto: ListOverdueDto,
+  ) {
+    return this.reportsService.getOverdue(req.condominiumId, dto);
   }
 
   @Get('collection-matrix')

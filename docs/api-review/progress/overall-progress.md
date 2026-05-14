@@ -1,6 +1,6 @@
 # API Review — Overall Implementation Progress
 
-**Last updated**: 2026-05-13 (UTC)
+**Last updated**: 2026-05-13 (UTC) — Phase 5 closed
 **Tracking source of truth**: `docs/api-review/implementation-roadmap.md`
 **Companion HTML report**: [`overall-progress.html`](./overall-progress.html)
 
@@ -8,21 +8,31 @@
 
 ## Overall roadmap status
 
-Phases 0, 1, 2, 3, and **4 — Pagination response shape standardization**
-are **Complete**. Phase 4 was the first **API + web lockstep** phase
-per `implementation-roadmap.md:99-118`. Paginated endpoints for
-**transactions** (4 methods) and **imports** (1 method) now return
-nested `{ data, meta: { total, page, limit, totalPages } }`; the
-matching web type interfaces and 4 consumer tabs were updated in the
-same window. Other paginated endpoints (residents, calendar, inventory,
-petty-cash, common-areas, reconciliation-rules) remain flat until
-Phases 5–7 per the roadmap. Audit endpoints were already nested
-(unchanged). API `npm run build` + 65 unit tests pass; web `pnpm
-typecheck` + `pnpm build` + 125 vitest tests pass. No schema change,
-no endpoint path change, no envelope change, no tenant-isolation
-change.
+Phases 0, 1, 2, 3, 4, and **5 — Paginate residents / overdue /
+resident statement (+ R2 upload warnings)** are **Complete**. Phase 5
+was the first **API + web rolling** phase per
+`implementation-roadmap.md:121-141`. The API now bounds three of the
+four highest-risk unbounded list paths with default-preserving values:
+**residents** and **/reports/overdue** accept `page`/`limit`/`q` plus
+endpoint-specific filters (`paymentStatus` and `minDebt` respectively)
+with `limit=500` defaults; the **resident account statement** defaults
+to a trailing 12-month window when `from`/`to` are omitted and
+paginates its transactions (`txPage`/`txLimit`, default 200), while
+`summary.totalPaid` is now a Prisma `aggregate(_sum)` instead of a JS
+`.reduce()`. **Imports upload** surfaces an optional `warnings: string[]`
+per file when R2 retention fails (stable key
+`storage.retentionFailed`); the upload UI renders an amber chip and a
+Sonner toast in EN/ES. Web wrappers (`residents.ts`, `reports.ts`,
+`collection.ts`) updated for the new shape; the only live web consumer
+(`ResidentsTable`) keeps client-side filtering/pagination unchanged —
+server-side migration of that table is a rolling follow-up.
 
-**Overall implementation**: 5 of 8 phases complete — **~62.5%**.
+API `npm run build` + 65 unit tests pass; web `pnpm typecheck` + `pnpm
+build` + 125 vitest tests pass. No schema change, no migration, no new
+index, no endpoint path change, no envelope change, no tenant-isolation
+or auth/role change.
+
+**Overall implementation**: 6 of 8 phases complete — **~75%**.
 
 ---
 
@@ -35,15 +45,15 @@ change.
 | 2     | Transactions list projection + calendar range          | **Complete**  | 100 |
 | 3     | Background classification                              | **Complete**  | 100 |
 | 4     | Pagination response shape standardization              | **Complete**  | 100 |
-| 5     | Paginate residents / overdue / resident statement      | Pending       |   0 |
+| 5     | Paginate residents / overdue / resident statement      | **Complete** | 100 |
 | 6     | Paginate collection matrix                             | Pending       |   0 |
 | 7     | Paginate calendar / inventory / common-areas / petty   | Pending       |   0 |
 | 8     | Index hardening (DB migration, deferred)               | Pending       |   0 |
 
-- **Current phase**: 4 (closed)
-- **Completed phases**: 0, 1, 2, 3, 4
+- **Current phase**: 5 (closed)
+- **Completed phases**: 0, 1, 2, 3, 4, 5
 - **In-progress phase**: none
-- **Pending phases**: 5, 6, 7, 8
+- **Pending phases**: 6, 7, 8
 
 ---
 
@@ -546,6 +556,245 @@ Carryovers from Phase 0/1/2/3 remain (ESLint v9 config gap, missing e2e harness,
 
 ---
 
+## Phase 5 task breakdown
+
+- [x] **P5.A** — Residents list pagination + filters. New
+  `src/modules/residents/dto/list-residents.dto.ts`
+  (`ListResidentsDto`) with `page` (≥1, default 1), `limit` (1–500,
+  default 500), `q` (max 100 chars), `paymentStatus` (Prisma
+  `PaymentStatus` enum — `CURRENT` / `OVERDUE`).
+  `src/modules/residents/residents.service.ts` `findAll(condominiumId,
+  dto)` now builds a `Prisma.ResidentWhereInput` with
+  `condominiumId` + `deletedAt: null` + optional `paymentStatus` +
+  optional case-insensitive `OR: [unitNumber, firstName, lastName]
+  contains q`, runs `Promise.all([findMany({ skip, take, where,
+  include, orderBy }), count({ where })])`, and returns
+  `PaginatedResult<Resident>`. `vehicles`/`pets`/`additionalResidents`
+  include preserved; `orderBy unitNumber asc` preserved.
+  `src/modules/residents/residents.controller.ts` `@Get()` binds
+  `@Query() dto`.
+- [x] **P5.B** — Overdue report pagination + filters. New
+  `src/modules/reports/dto/list-overdue.dto.ts` (`ListOverdueDto`)
+  with `page`, `limit` (max 500), `q`, `minDebt` (≥0).
+  `src/modules/reports/reports.service.ts` `getOverdue(condominiumId,
+  dto)` keeps the hard-coded `paymentStatus: 'OVERDUE'` filter, adds
+  optional `q`-on-unit/firstName/lastName and `debt: { gte: minDebt
+  }`, then `Promise.all([findMany, count])`. JS `.map()` reshape runs
+  only on the current page so `overdueMonths = r.collectionRecords.length`
+  per-row stays bounded. Returns `PaginatedResult<OverdueResident>`.
+  Controller binds `@Query() dto`.
+- [x] **P5.C** — Resident account statement defaults + transaction
+  pagination + aggregate `totalPaid`. New
+  `src/modules/collection/dto/account-statement.dto.ts`
+  (`AccountStatementDto`) with `from?` / `to?` (`@IsDateString()`), `year?`,
+  `month?`, `txPage? = 1`, `txLimit? = 200` (max 200).
+  `src/modules/collection/collection.service.ts`
+  `getAccountStatement(condominiumId, residentId, dto)`: when both
+  `from` and `to` are absent, computes `to = new Date()` and `fromDate
+  = to − 12 months`. Builds typed `Prisma.TransactionWhereInput` and
+  `Prisma.CollectionRecordWhereInput`. Runs **4 parallel queries**:
+  `transaction.findMany({ ..., skip, take })`, `transaction.count({
+  where })`, `transaction.aggregate({ ..., flowType: 'INCOME', _sum: {
+  credits: true } })`, `collectionRecord.findMany`. `summary.totalPaid`
+  comes from `incomeAgg._sum.credits` (covers the whole filtered
+  window, not just the current page).
+  Response shape: `{ resident, transactions: { data, meta },
+  collectionRecords, summary }`. `resident`, `collectionRecords`, and
+  `summary` field set unchanged. Controller binds the DTO via
+  `@Query()`.
+- [x] **P5.D** — Imports upload R2 warnings.
+  `src/modules/imports/imports.service.ts` `upload()` now declares a
+  per-file `warnings: string[]`. The R2 catch block pushes
+  `'storage.retentionFailed'` into `warnings`; the final per-file
+  result spreads `...(warnings.length > 0 ? { warnings } : {})` so the
+  field is omitted on the wire when empty. `status: 'queued'` is
+  preserved; flow control is unchanged. The pre-existing
+  `file.warnings` in the `confirm` flow (lines 335/354) writes
+  parser-emitted warnings to `ImportBatch.warnings` and is untouched.
+- [x] **P5.E (web)** — Wrappers updated for the new shape.
+  `src/lib/api/residents.ts`: new
+  `PaginatedResidentsResponse` / `ResidentsListMeta` /
+  `GetResidentsParams` types; `getResidents(params?)` builds a query
+  string and reads `body.data` / `body.meta`. `ResidentsPageData`
+  gains `meta?`.
+  `src/lib/api/reports.ts`: new `PaginationMeta` /
+  `OverdueReportResponse` / `OverdueReportParams`;
+  `fetchOverdueReport(slug, token, params?)` returns the envelope.
+  `src/lib/api/collection.ts`: new `AccountStatementTransaction` /
+  `AccountStatementTxMeta`; `AccountStatement.transactions` is now `{
+  data, meta }`; `fetchResidentAccountStatement` accepts optional
+  `txPage` / `txLimit`.
+- [x] **P5.F (web)** — Residents proxy forwards search params.
+  `src/app/api/residents/route.ts` now takes a `NextRequest`, copies
+  `page` / `limit` / `q` / `paymentStatus` from
+  `request.nextUrl.searchParams` into the upstream URL.
+- [x] **P5.G (web)** — Upload UI warning chip + i18n. The fire-and-forget
+  upload call in
+  `src/components/imports/ImportDataModule/index.tsx` is now a
+  `.then(...).catch(...)` that reads per-file `warnings` from the
+  upload response, maps them onto the matching queue entry by
+  `fileName`, and fires a `toast.warning(...)` for
+  `storage.retentionFailed`. `src/components/imports/FileQueueItem/index.tsx`
+  imports `AlertTriangle` and renders an amber chip below the status
+  badge whenever `entry.warnings?.length`. `ClientFileEntry` gains an
+  optional `warnings?: string[]` field. EN/ES translation keys added
+  under `imports.upload.warnings.storageRetentionFailed` (+
+  `…Title`).
+
+### Wire shape change (per endpoint)
+
+| Endpoint | Old shape | New shape |
+|---|---|---|
+| `GET /condominiums/:slug/residents` | `Resident[]` | `{ data: Resident[], meta: { total, page, limit, totalPages } }` |
+| `GET /condominiums/:slug/reports/overdue` | `OverdueResident[]` | `{ data: OverdueResident[], meta: { total, page, limit, totalPages } }` |
+| `GET /condominiums/:slug/collection/residents/:residentId/account-statement` | `{ resident, transactions: Tx[], collectionRecords, summary }` | `{ resident, transactions: { data: Tx[], meta: { total, page, limit, totalPages } }, collectionRecords, summary }` |
+| `POST /condominiums/:slug/imports/upload` (per-file) | `{ fileName, status, message, batchId?, existingBatchId? }` | `{ fileName, status, message, batchId?, existingBatchId?, warnings?: string[] }` |
+
+(All four are still wrapped by the global `{ data: ... }` envelope from `ResponseInterceptor`.)
+
+### Out-of-scope flat endpoints — still pending later phases
+
+- `src/modules/reconciliation-rules/reconciliation-rules.service.ts:12-37`
+  `findAll` — flat. Pending Phase 7 sweep.
+- `collection year matrix` (`P1.2`/`P1.5`) — Phase 6 (lockstep).
+- Calendar / inventory / common-areas / petty-cash — Phase 7.
+
+---
+
+## Files reviewed (Phase 5)
+
+- `docs/api-review/implementation-roadmap.md` (Phase 5 scope, lines 121–141)
+- `docs/api-review/performance-analysis.md` (P1.1, P1.3, P1.4)
+- `docs/api-review/risk-analysis.md` (R5.3 — R2 upload swallowing)
+- `docs/api-review/web-impact-review.md` (rolling-coordination rows for residents / overdue / statement / upload UI)
+- `docs/api-review/database-query-review.md` (Q1, Q2)
+- `src/common/types/index.ts` (`PaginatedResult<T>` target shape)
+- `src/modules/residents/residents.{service,controller}.ts` + `dto/`
+- `src/modules/reports/reports.{service,controller}.ts`
+- `src/modules/collection/collection.{service,controller}.ts`
+- `src/modules/imports/imports.service.ts` (`upload` flow + `confirm` to confirm `warnings` semantics differ)
+- `prisma/schema.prisma` (`PaymentStatus` enum, `Resident.debt` column type, `Transaction` shape)
+- Web: `src/lib/api/{residents,reports,collection}.ts`
+- Web: `src/app/api/residents/route.ts`, `src/app/api/imports/upload/route.ts`
+- Web: `src/components/imports/{ImportDataModule,FileQueueItem,UploadDropzone}/index.tsx`
+- Web: `src/types/import.types.ts`
+- Web: `messages/{en,es}/imports.json`
+- Web: `src/components/residents/ResidentsTable/index.tsx` (verified — keeps client-side filter/pagination; no refactor required)
+
+## Files modified (Phase 5)
+
+| File | Change |
+|---|---|
+| **NEW** `src/modules/residents/dto/list-residents.dto.ts` | `ListResidentsDto` — `page`, `limit` (max 500), `q` (max 100), `paymentStatus` (Prisma enum). |
+| `src/modules/residents/residents.service.ts` | `findAll(condominiumId, dto)` paginates with `Promise.all([findMany, count])`. Returns `PaginatedResult<Resident>`. |
+| `src/modules/residents/residents.controller.ts` | `@Get()` binds `@Query() dto: ListResidentsDto`. `Query` imported from `@nestjs/common`. |
+| **NEW** `src/modules/reports/dto/list-overdue.dto.ts` | `ListOverdueDto` — `page`, `limit` (max 500), `q` (max 100), `minDebt` (≥0). |
+| `src/modules/reports/reports.service.ts` | `getOverdue(condominiumId, dto)` paginates with `Promise.all`. Adds `q` `OR`-on-unit/firstName/lastName and `debt: { gte: minDebt }`. `.map()` reshape runs on the page only. Returns `PaginatedResult<OverdueResident>`. |
+| `src/modules/reports/reports.controller.ts` | `@Get('overdue')` binds `@Query() dto: ListOverdueDto`. |
+| **NEW** `src/modules/collection/dto/account-statement.dto.ts` | `AccountStatementDto` — `from?`, `to?`, `year?`, `month?` (1–12), `txPage? = 1`, `txLimit? = 200`. |
+| `src/modules/collection/collection.service.ts` | `getAccountStatement(condominiumId, residentId, dto)`: default 12-month window when `from`/`to` absent; `Promise.all([tx.findMany({ skip, take }), tx.count, tx.aggregate({ _sum: credits }), cr.findMany])`; `summary.totalPaid` from SQL `aggregate`; `transactions` is `{ data, meta }`. |
+| `src/modules/collection/collection.controller.ts` | `@Query() dto: AccountStatementDto`. |
+| `src/modules/imports/imports.service.ts` | `upload()` builds `warnings: string[]` per file; R2 catch pushes `'storage.retentionFailed'`; result spreads `warnings` only when non-empty. |
+| `src/lib/api/residents.ts` (web) | New types (`PaginatedResidentsResponse`, `ResidentsListMeta`, `GetResidentsParams`). `getResidents(params?)` builds a query string and reads the envelope. `ResidentsPageData.meta?` added. |
+| `src/lib/api/reports.ts` (web) | New types (`PaginationMeta`, `OverdueReportResponse`, `OverdueReportParams`). `fetchOverdueReport(slug, token, params?)` returns the envelope. |
+| `src/lib/api/collection.ts` (web) | `AccountStatement.transactions` is `{ data, meta }`. New `AccountStatementTransaction` / `AccountStatementTxMeta`. `fetchResidentAccountStatement` accepts `txPage` / `txLimit`. |
+| `src/app/api/residents/route.ts` (web) | `NextRequest` arg; copies `page` / `limit` / `q` / `paymentStatus` to upstream URL. |
+| `src/components/imports/ImportDataModule/index.tsx` (web) | Reads upload response; maps `warnings` per-file by `fileName` onto queue entries; toast for `storage.retentionFailed`. |
+| `src/components/imports/FileQueueItem/index.tsx` (web) | Amber `AlertTriangle` chip rendered when `entry.warnings?.length`; uses `imports.upload.warnings` namespace. |
+| `src/types/import.types.ts` (web) | `ClientFileEntry` gains optional `warnings?: string[]`. |
+| `messages/en/imports.json` (web) | Added `imports.upload.warnings.storageRetentionFailed{,Title}` keys. |
+| `messages/es/imports.json` (web) | Added the same keys in Spanish. |
+| `docs/api-review/progress/overall-progress.md` | Phase 5 status updates (kickoff + close). |
+| `docs/api-review/progress/overall-progress.html` | Phase 5 status updates (kickoff + close). |
+
+---
+
+## Validation performed — Phase 5
+
+### API repo
+
+| Command | Result | Notes |
+|---|---|---|
+| `npm run build` | **PASS** | `nest build` clean. New DTOs + `class-validator`/`class-transformer` decorators compile; service signatures and `PaginatedResult` return types resolve. |
+| `npm test` | **PASS** | 2 suites, 65 unit tests — same baseline as Phase 0/1/2/3/4. No suite asserts pagination/filter shape. |
+| `npm run lint` | **FAIL (pre-existing)** | Same ESLint v9 vs legacy `.eslintrc` mismatch documented since Phase 0; not introduced by Phase 5. |
+| `npm run test:e2e` | **SKIPPED** | `test/` folder still absent; e2e harness not configured. |
+
+### Web repo
+
+| Command | Result | Notes |
+|---|---|---|
+| `pnpm typecheck` | **PASS** | `tsc --noEmit` clean. New wrapper types propagate; `ResidentsTable.getResidents()` still works without UX changes (server returns 500-row page that today fits any tenant). |
+| `pnpm build` | **PASS** | `next build` clean. All routes + API proxies compile. |
+| `pnpm test` | **PASS** | 6 vitest suites, 125 tests — same baseline. |
+
+### Manual checks (all PASS)
+
+- `grep "findMany\\|count\\|aggregate" src/modules/residents/residents.service.ts src/modules/reports/reports.service.ts src/modules/collection/collection.service.ts` → each list/statement query sits inside a `Promise.all([findMany({ skip, take, where, … }), count({ where }), …])`.
+- `grep "warnings" src/modules/imports/imports.service.ts` → `warnings: string[]` is declared per file; pushed to in the R2 catch; conditionally spread on the result.
+- `grep "ListResidentsDto|ListOverdueDto|AccountStatementDto" src/modules` → all three DTOs imported in both service and controller.
+- `grep "body\\.data\\|body\\.meta" src/lib/api/residents.ts` → wrapper reads the new envelope.
+- `grep "warnings" src/lib/api/residents.ts src/lib/api/reports.ts src/lib/api/collection.ts src/components/imports/FileQueueItem/index.tsx src/types/import.types.ts` → warning chip + type union threaded through the UI.
+- `git status` (API) → 8 changed files (3 service + 3 controller + 1 imports.service + 1 progress.md, plus 3 new DTOs, plus 1 progress.html — count varies by how `git status` groups).
+- `git status` (web) → 9 changed files (3 wrappers + 1 proxy + 2 components + 1 import.types + 2 i18n).
+
+### Response-shape probes (TODO — require a live tenant)
+
+- `GET /condominiums/:slug/residents` (no params) → returns `{ data: [...], meta: { total, page: 1, limit: 500, totalPages: 1 } }`; `ResidentsTable` renders identically.
+- `GET /condominiums/:slug/residents?page=2&limit=50&q=garc&paymentStatus=OVERDUE` → paginated subset; `meta.total` reflects filtered count.
+- `GET /condominiums/:slug/reports/overdue?minDebt=10000&q=303` → filtered envelope; `paymentStatus=OVERDUE` filter still applied unconditionally.
+- `GET /condominiums/:slug/collection/residents/:id/account-statement` (no params) → default window = last 12 months; `transactions.meta.limit = 200`; `summary.totalPaid` from `aggregate._sum.credits`.
+- `POST /condominiums/:slug/imports/upload` with R2 unreachable → each file `{ status: 'queued', warnings: ['storage.retentionFailed'], … }`; web `FileQueueItem` shows the amber chip + Sonner toast.
+- `POST .../imports/upload` with R2 healthy → `warnings` absent from the wire.
+
+---
+
+## Risks / blockers detected (cumulative)
+
+Carryovers from Phase 0/1/2/3/4 remain (ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug at `dashboard.service.ts:136-146`, R4.2 `runningBalance` race, petty-cash parallel reads opportunity, deferred `id` trims on inner selects, deferred calendar enum tightening, generic `findAll` defensive include, P3.B queue-based classification stretch, live-seed equivalence test for `classifyBatch`, `reconciliation-rules` flat shape, external API consumer assumption). Phase 5 adds:
+
+- **`ResidentsTable` still does client-side pagination**: today's UX is preserved because the API returns up to 500 residents per page (largest seed < 300). When tenants exceed 500 residents — or before any future scale-up — migrate `ResidentsTable` to server-side pagination using the `meta` already exposed on the wire and the `q` / `paymentStatus` query params already accepted upstream. **Documented as rolling follow-up.**
+- **`/reports/overdue` and the resident account statement have no web consumers yet**: the wrapper types are correct, but the actual pages (`app/[locale]/(app)/overdue/page.tsx` is a placeholder; the resident statement page is not yet built). When the pages are added, they should use `txPage` / `txLimit` / `q` / `minDebt` / `from` / `to` directly.
+- **Defaults are not unlimited**: `limit=500` and `txLimit=200` are not equivalent to `Infinity`. A condominium with > 500 residents OR a resident with > 200 transactions in 12 months will see paginated data on first call. If that becomes a regression for any operator before web pages migrate, raise the default in the DTO file (not in the consumer) — but do not expose `Infinity` (DoS surface).
+- **Aggregate vs reduce for `totalPaid`**: behavior is intentionally identical when no rounding artifact occurs (Prisma `Decimal` → `Number()`). A future audit could compare `aggregate._sum.credits.toString()` against the JS reduce on a fixed seed; documented as a one-shot check, not a recurring risk.
+
+---
+
+## Impact status (cumulative through Phase 5)
+
+| Dimension | Status | Detail |
+|---|---|---|
+| Web app changes | **Required and completed** | 3 wrappers + 1 proxy + 3 components + 1 type + 2 i18n files. `ResidentsTable` UX unchanged. Overdue and statement pages remain placeholders pending Phase 5 follow-ups. |
+| API contract | **Changed — residents, /reports/overdue, account statement, imports/upload** | Residents and overdue now return `{ data, meta }`; account statement nests `transactions` as `{ data, meta }`; imports/upload per-file gains optional `warnings: string[]`. Earlier-phase deltas (`/docs` 404 in prod, petty-cash 409, calendar `from`/`to` required + 365-day cap, `findReconciled` no longer ships `matchedCalendarEvent`, `classifyBatch` chunk-uniform `matchedAt`, transactions/imports nested `meta`) still apply. |
+| Database / Prisma | **Unchanged** | No schema edits, no migrations, no new indexes. New `where` clauses scan within `condominiumId`-indexed subsets; no full-table scans introduced. |
+| Tenant isolation | **Unchanged** | `condominiumId` (from `CondominiumAccessGuard`) flows into every `where`. No tenant data accepted from query params. |
+| AuthN / AuthZ | **Unchanged** | No identity-layer code touched. |
+| Audit behavior | **Unchanged** | List endpoints and statement endpoint write no audit logs. |
+
+---
+
+## Remaining work in Phase 5
+
+**None.** P5.A through P5.G are complete. Out-of-scope items
+(`reconciliation-rules` standardization, `ResidentsTable` server-side
+pagination, building the actual overdue and statement pages) are
+documented under "Risks / blockers detected" as rolling follow-ups,
+not Phase 5 work.
+
+---
+
 ## Recommended next step
 
-Proceed to **Phase 5 — Paginate residents / overdue / resident statement** per `implementation-roadmap.md:121-141`. Phase 5 is rolling (API can ship first with a generous default `limit` so pre-migration web still works; web migrates per page). Pre-requisites: confirm the same nested `{ data, meta }` shape from Phase 4 will be the target for any newly-paginated endpoint (so we don't ship a second flat-shape regression). Suggested follow-ups to bundle when the time is right: include `reconciliation-rules.service.ts findAll` (currently out of scope but flat) in the same standardization sweep.
+Proceed to **Phase 6 — Paginate collection matrix** per
+`implementation-roadmap.md:144-158`. Phase 6 is **lockstep**: the
+collection year matrix (P1.2 in `collection.service.ts:16` and P1.5
+in `reports.service.ts:31`) is the largest per-tenant response and
+needs an architectural decision (server-side pagination by resident
+range vs. client-side virtualization) before the API change ships.
+Pre-requisites: (1) decide the pagination model; (2) audit the
+matrix consumer in
+`livo-clouds-web-app/src/app/[locale]/(app)/collection/`; (3) ensure
+the chosen shape conforms to the standardized `{ data, meta }`
+envelope from Phase 4. Suggested follow-ups to bundle: include
+`reconciliation-rules.service.ts findAll` standardization in either
+Phase 6 or Phase 7's sweep.

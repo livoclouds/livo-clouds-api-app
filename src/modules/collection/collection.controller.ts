@@ -5,6 +5,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { CollectionService } from './collection.service';
+import { AccountStatementDto } from './dto/account-statement.dto';
 
 @ApiTags('Collection')
 @Controller('condominiums/:condominiumSlug/collection')
@@ -36,17 +37,9 @@ export class CollectionController {
   getAccountStatement(
     @Request() req: { condominiumId: string },
     @Param('residentId') residentId: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('year') year?: string,
-    @Query('month') month?: string,
+    @Query() dto: AccountStatementDto,
   ) {
-    return this.collectionService.getAccountStatement(req.condominiumId, residentId, {
-      from,
-      to,
-      year: year ? parseInt(year, 10) : undefined,
-      month: month ? parseInt(month, 10) : undefined,
-    });
+    return this.collectionService.getAccountStatement(req.condominiumId, residentId, dto);
   }
 
   @Patch(':id')
