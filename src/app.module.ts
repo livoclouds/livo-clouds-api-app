@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerUserGuard } from './common/guards/throttler-user.guard';
 import appConfig from './config/app.config';
@@ -31,6 +32,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
+import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
 
 @Module({
   controllers: [HealthController],
@@ -40,6 +42,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
       ignoreEnvFile: process.env.NODE_ENV === 'production',
       load: [appConfig, corsConfig, databaseConfig, jwtConfig, storageConfig],
     }),
+    EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([
       {
         // Burst protection: max 20 requests in 10 seconds per user
@@ -74,6 +77,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
     UsersModule,
     ReconciliationRulesModule,
     CalendarModule,
+    CalendarReclassifyModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

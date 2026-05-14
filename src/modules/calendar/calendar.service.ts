@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CalendarEventVisibility, EventType, EventStatus } from '@prisma/client';
 import { PaginatedResult, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -24,6 +25,17 @@ import {
 } from './recurrence';
 import { assertValidTimezone } from './timezone.util';
 import { buildVisibilityFilter, canSeeVisibility } from './visibility.util';
+import {
+  CALENDAR_TERRACE_CHANGED,
+  type CalendarTerraceChangedPayload,
+} from './events/calendar-terrace-changed.event';
+import {
+  shouldTriggerReclassifyOnCreate,
+  shouldTriggerReclassifyOnDelete,
+  shouldTriggerReclassifyOnUpdate,
+  toTerraceTriggerSnapshot,
+  type TriggerCore,
+} from './reclassify/should-trigger-reclassify';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -51,7 +63,17 @@ export class CalendarService {
   constructor(
     private prisma: PrismaService,
     private audit: AuditService,
+    private events: EventEmitter2,
   ) {}
+
+  private emitTerraceChange(
+    trigger: TriggerCore | null,
+    action: CalendarTerraceChangedPayload['action'],
+  ): void {
+    if (!trigger) return;
+    const payload: CalendarTerraceChangedPayload = { ...trigger, action };
+    this.events.emit(CALENDAR_TERRACE_CHANGED, payload);
+  }
 
   async findAll(
     condominiumId: string,
@@ -294,6 +316,11 @@ export class CalendarService {
       afterState: event,
     });
 
+    this.emitTerraceChange(
+      shouldTriggerReclassifyOnCreate(condominiumId, toTerraceTriggerSnapshot(event), event.id),
+      'create',
+    );
+
     return event;
   }
 
@@ -449,6 +476,16 @@ export class CalendarService {
       afterState: updated,
     });
 
+    this.emitTerraceChange(
+      shouldTriggerReclassifyOnUpdate(
+        condominiumId,
+        toTerraceTriggerSnapshot(existing),
+        toTerraceTriggerSnapshot(updated),
+        id,
+      ),
+      'update',
+    );
+
     return updated;
   }
 
@@ -470,6 +507,11 @@ export class CalendarService {
       entityId: id,
       beforeState: existing,
     });
+
+    this.emitTerraceChange(
+      shouldTriggerReclassifyOnDelete(condominiumId, toTerraceTriggerSnapshot(existing), id),
+      'delete',
+    );
 
     return { id };
   }

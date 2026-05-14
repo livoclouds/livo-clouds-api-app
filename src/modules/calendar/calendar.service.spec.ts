@@ -22,6 +22,10 @@ interface AuditMock {
   log: jest.Mock;
 }
 
+interface EventEmitterMock {
+  emit: jest.Mock;
+}
+
 function makePrismaMock(): PrismaMock {
   return {
     calendarEvent: {
@@ -40,8 +44,16 @@ function makeAuditMock(): AuditMock {
   return { log: jest.fn().mockResolvedValue(undefined) };
 }
 
-function makeService(prisma: PrismaMock, audit: AuditMock): CalendarService {
-  return new CalendarService(prisma as never, audit as never);
+function makeEventEmitterMock(): EventEmitterMock {
+  return { emit: jest.fn().mockReturnValue(true) };
+}
+
+function makeService(
+  prisma: PrismaMock,
+  audit: AuditMock,
+  events: EventEmitterMock = makeEventEmitterMock(),
+): CalendarService {
+  return new CalendarService(prisma as never, audit as never, events as never);
 }
 
 function baseEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -733,5 +745,380 @@ describe('CalendarService — Phase 5C visibility', () => {
 
     expect(result.id).toBe(EVENT_ID);
     expect(result.visibility).toBe(CalendarEventVisibility.PUBLIC);
+  });
+});
+
+// ─── Phase 5E — auto-reclassify trigger ──────────────────────────────────────
+
+import { TERRACE_BOOKING_DEFAULTS } from './terrace-metadata.validator';
+import { CALENDAR_TERRACE_CHANGED } from './events/calendar-terrace-changed.event';
+
+function terraceMeta(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...TERRACE_BOOKING_DEFAULTS, ...overrides };
+}
+
+function terraceEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return baseEvent({
+    eventType: EventType.TERRACE_BOOKING,
+    status: EventStatus.PENDING,
+    startDate: new Date('2026-06-15T10:00:00Z'),
+    endDate: new Date('2026-06-15T13:00:00Z'),
+    residentId: 'res-1',
+    unitNumber: '101',
+    metadata: terraceMeta(),
+    ...overrides,
+  });
+}
+
+describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
+  it('emits calendar.terrace.changed on TERRACE_BOOKING create with action=create and 30d window', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const created = terraceEvent();
+    prisma.calendarEvent.create.mockResolvedValueOnce(created);
+    prisma.resident.findFirst.mockResolvedValueOnce({ id: 'res-1' });
+    prisma.condominiumSettings.findUnique.mockResolvedValueOnce({
+      terraceBookingEnabled: true,
+      terraceRentalAmount: 1500,
+      terraceSecurityDepositAmount: 1000,
+    });
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'Terrace booking',
+      eventType: EventType.TERRACE_BOOKING,
+      startDate: '2026-06-15T10:00:00Z',
+      endDate: '2026-06-15T13:00:00Z',
+      residentId: 'res-1',
+      unitNumber: '101',
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    const [name, payload] = events.emit.mock.calls[0];
+    expect(name).toBe(CALENDAR_TERRACE_CHANGED);
+    expect(payload.action).toBe('create');
+    expect(payload.condominiumId).toBe(CONDOMINIUM_ID);
+    const day = 24 * 60 * 60 * 1000;
+    expect(payload.windowStart.getTime()).toBe(
+      (created.startDate as Date).getTime() - 30 * day,
+    );
+    expect(payload.windowEnd.getTime()).toBe((created.startDate as Date).getTime());
+  });
+
+  it('does NOT emit on create for non-terrace events', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent());
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'Meeting',
+      eventType: EventType.GENERAL,
+      startDate: '2026-06-15T10:00:00Z',
+      endDate: '2026-06-15T11:00:00Z',
+    } as never);
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('emits on TERRACE_BOOKING update when terraceRentalAmount changes', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ metadata: terraceMeta({ terraceRentalAmount: 1500 }) });
+    const after = terraceEvent({ metadata: terraceMeta({ terraceRentalAmount: 3000 }) });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      metadata: { ...terraceMeta(), terraceRentalAmount: 3000 },
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].action).toBe('update');
+    expect(events.emit.mock.calls[0][1].reason).toContain('metadata');
+  });
+
+  it('emits on update when startDate changes; window covers both before and after', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({
+      startDate: new Date('2026-06-10T10:00:00Z'),
+      endDate: new Date('2026-06-10T13:00:00Z'),
+    });
+    const after = terraceEvent({
+      startDate: new Date('2026-07-01T10:00:00Z'),
+      endDate: new Date('2026-07-01T13:00:00Z'),
+    });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      startDate: '2026-07-01T10:00:00Z',
+      endDate: '2026-07-01T13:00:00Z',
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    const day = 24 * 60 * 60 * 1000;
+    expect(events.emit.mock.calls[0][1].windowStart.getTime()).toBe(
+      (before.startDate as Date).getTime() - 30 * day,
+    );
+    expect(events.emit.mock.calls[0][1].windowEnd.getTime()).toBe(
+      (after.startDate as Date).getTime(),
+    );
+  });
+
+  it('emits on update when residentId changes', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ residentId: 'res-1' });
+    const after = terraceEvent({ residentId: 'res-2' });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+    prisma.resident.findFirst.mockResolvedValueOnce({ id: 'res-2' });
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      residentId: 'res-2',
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('residentId');
+  });
+
+  it('emits on update when unitNumber changes', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ unitNumber: '101' });
+    const after = terraceEvent({ unitNumber: '202' });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      unitNumber: '202',
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('unitNumber');
+  });
+
+  it('does NOT emit when only the title changes', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ title: 'Old' });
+    const after = terraceEvent({ title: 'New' });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      title: 'New',
+    } as never);
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT emit when only notes / description / location / visibility / timezone change', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent();
+    const after = terraceEvent({
+      notes: 'updated',
+      description: 'updated',
+      location: 'updated',
+      visibility: CalendarEventVisibility.COUNCIL_ONLY,
+      timezone: 'America/Mexico_City',
+    });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      notes: 'updated',
+      description: 'updated',
+      location: 'updated',
+      visibility: CalendarEventVisibility.COUNCIL_ONLY,
+      timezone: 'America/Mexico_City',
+    } as never);
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('emits on update when status transitions PENDING → CANCELLED', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ status: EventStatus.PENDING });
+    const after = terraceEvent({ status: EventStatus.CANCELLED });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      status: EventStatus.CANCELLED,
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('status');
+  });
+
+  it('emits on update when paymentStatus flips PAID → PENDING', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent({ metadata: terraceMeta({ paymentStatus: 'PAID' }) });
+    const after = terraceEvent({ metadata: terraceMeta({ paymentStatus: 'PENDING' }) });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      metadata: { ...terraceMeta(), paymentStatus: 'PENDING' },
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('metadata');
+  });
+
+  it('does NOT emit when both before and after are non-terrace', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = baseEvent({ title: 'Old' });
+    const after = baseEvent({ title: 'New' });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      title: 'New',
+    } as never);
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('emits when an event flips from non-terrace to TERRACE_BOOKING', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = baseEvent();
+    const after = terraceEvent();
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(after);
+    prisma.condominiumSettings.findUnique.mockResolvedValueOnce({
+      terraceBookingEnabled: true,
+      terraceRentalAmount: 1500,
+      terraceSecurityDepositAmount: 1000,
+    });
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      eventType: EventType.TERRACE_BOOKING,
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('flipToTerrace');
+  });
+
+  it('emits when an event flips from TERRACE_BOOKING to non-terrace', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    const before = terraceEvent();
+    const after = baseEvent({ eventType: EventType.GENERAL, metadata: null });
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after);
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      eventType: EventType.GENERAL,
+    } as never);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].reason).toContain('flipFromTerrace');
+  });
+
+  it('emits on remove of a live TERRACE_BOOKING', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(terraceEvent());
+
+    await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit.mock.calls[0][1].action).toBe('delete');
+  });
+
+  it('does NOT emit on remove when the event was already CANCELLED', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(
+      terraceEvent({ status: EventStatus.CANCELLED }),
+    );
+
+    await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
+
+    expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT emit on remove of a non-terrace event', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const events = makeEventEmitterMock();
+    const service = makeService(prisma, audit, events);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(baseEvent());
+
+    await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
+
+    expect(events.emit).not.toHaveBeenCalled();
   });
 });
