@@ -8,6 +8,7 @@ import { EventType, EventStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
+import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
 import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 import {
   validateTerraceMetadata,
@@ -15,12 +16,7 @@ import {
   type TerraceBookingMetadata,
 } from './terrace-metadata.validator';
 
-export interface CalendarEventQuery {
-  from?: string;
-  to?: string;
-  type?: string;
-  status?: string;
-}
+const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class CalendarService {
@@ -29,7 +25,7 @@ export class CalendarService {
     private audit: AuditService,
   ) {}
 
-  async findAll(condominiumId: string, query: CalendarEventQuery) {
+  async findAll(condominiumId: string, query: ListCalendarEventsDto) {
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
         `Invalid eventType: "${query.type}". Valid values: ${Object.values(EventType).join(', ')}`,
@@ -41,24 +37,30 @@ export class CalendarService {
       );
     }
 
-    if (query.from && isNaN(new Date(query.from).getTime())) {
+    const fromDate = new Date(query.from);
+    const toDate = new Date(query.to);
+    if (isNaN(fromDate.getTime())) {
       throw new BadRequestException('Invalid "from" date format. Expected ISO 8601.');
     }
-    if (query.to && isNaN(new Date(query.to).getTime())) {
+    if (isNaN(toDate.getTime())) {
       throw new BadRequestException('Invalid "to" date format. Expected ISO 8601.');
+    }
+    if (toDate.getTime() < fromDate.getTime()) {
+      throw new BadRequestException('"to" must be on or after "from".');
+    }
+    if (toDate.getTime() - fromDate.getTime() > MAX_CALENDAR_RANGE_MS) {
+      throw new BadRequestException('Calendar range cannot exceed 365 days.');
     }
 
     const where: Record<string, unknown> = { condominiumId, deletedAt: null };
 
     if (query.type) where.eventType = query.type;
     if (query.status) where.status = query.status;
-    if (query.from || query.to) {
-      // Overlap filter: events whose interval intersects [from, to]
-      const rangeFilter: Record<string, unknown>[] = [];
-      if (query.to) rangeFilter.push({ startDate: { lt: new Date(query.to) } });
-      if (query.from) rangeFilter.push({ endDate: { gt: new Date(query.from) } });
-      if (rangeFilter.length > 0) where.AND = rangeFilter;
-    }
+    // Overlap filter: events whose interval intersects [from, to]
+    where.AND = [
+      { startDate: { lt: toDate } },
+      { endDate: { gt: fromDate } },
+    ];
 
     return this.prisma.calendarEvent.findMany({
       where,

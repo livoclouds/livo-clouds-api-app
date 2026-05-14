@@ -325,25 +325,25 @@
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
         <span>Last updated: 2026-05-13</span>
-        <span>Current phase: Phase 1 (closed)</span>
-        <span>Overall: ~25%</span>
+        <span>Current phase: Phase 2 (closed)</span>
+        <span>Overall: ~37.5%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 25%"></div></div>
-        <div class="progress-pct">25%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 37.5%"></div></div>
+        <div class="progress-pct">37.5%</div>
       </div>
-      <p class="progress-meta">2 of 8 phases complete · Phase 1 closed (P1.D deferred by user decision) · ready to start Phase 2</p>
+      <p class="progress-meta">3 of 8 phases complete · Phase 2 closed (P2.A targeted trim shipped; P2.B calendar contract tightened)</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">2</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">3</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">6</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">5</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -361,11 +361,11 @@
           <div class="phase-title">Dashboard trend SQL &amp; imports parallelism</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 2</div>
           <div class="phase-title">Transactions list projection &amp; calendar range</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -657,14 +657,169 @@
       </div>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 2 task breakdown</h2>
+      <ul class="checklist">
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P2.A</strong> — Targeted trim in <code>src/modules/transactions/transactions.service.ts</code>.
+            <div class="sub">Removed the <code>matchedCalendarEvent</code> include from <code>findReconciled</code> only (the one list variant whose consumer <code>ImportReconciledTab</code> never reads the field — confirmed by cross-repo audit). <code>findAll</code>, <code>findUnmatched</code>, <code>findClassified</code> untouched: their web consumers actively render <code>matchedCalendarEvent</code> and its nested resident. Response envelope preserved. The web TS type already declares the field optional, so the absence is non-breaking.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P2.B</strong> — New <code>src/modules/calendar/dto/list-calendar-events.dto.ts</code> + service span check + controller binding.
+            <div class="sub"><code>from</code>/<code>to</code> decorated <code>@IsDateString() @IsNotEmpty()</code> (matches the convention used by <code>CreateCalendarEventDto</code>); <code>type</code>/<code>status</code> remain <code>@IsOptional() @IsString()</code> (enum tightening deferred). Service parses both dates once, rejects <code>to &lt; from</code> and spans &gt; 365 days with <code>BadRequestException</code>. The overlap-range Prisma filter (<code>startDate &lt; to AND endDate &gt; from</code>) is unchanged. Controller binds the DTO so the global <code>ValidationPipe</code> (<code>main.ts:34-40</code>, <code>whitelist: true</code>, <code>transform: true</code>) enforces required + format. Legacy <code>CalendarEventQuery</code> interface deleted (no other importers found via grep).</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Files modified (Phase 2)</h2>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>src/modules/transactions/transactions.service.ts</code></td><td><strong>Modified</strong> (P2.A — drop <code>matchedCalendarEvent</code> from <code>findReconciled</code> only)</td></tr>
+          <tr><td><code>src/modules/calendar/dto/list-calendar-events.dto.ts</code></td><td><strong>NEW</strong> (P2.B — class-validator DTO)</td></tr>
+          <tr><td><code>src/modules/calendar/calendar.service.ts</code></td><td><strong>Modified</strong> (P2.B — accept DTO, add span guard, remove legacy interface)</td></tr>
+          <tr><td><code>src/modules/calendar/calendar.controller.ts</code></td><td><strong>Modified</strong> (P2.B — bind DTO via <code>@Query()</code>)</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Updated</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Updated</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validation — Phase 2</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nest build</code> clean. New class-validator imports + <code>MAX_CALENDAR_RANGE_MS</code> compile; updated <code>findAll</code> signature checks against the new DTO.</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>2 suites, 65 tests passed — same baseline as Phase 0/1.</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="result-fail">FAIL (pre-existing)</td>
+            <td>Same ESLint v9 config gap; not introduced by Phase 2.</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td class="result-skip">SKIPPED</td>
+            <td>No <code>test/</code> harness.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -c "matchedCalendarEvent" src/modules/transactions/transactions.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>3 occurrences (<code>findAll</code>, <code>findUnmatched</code>, <code>findClassified</code>). Was 4 before; <code>findReconciled</code> no longer includes the relation.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -rn "interface CalendarEventQuery\|CalendarEventQuery " src/</code></td>
+            <td class="result-pass">PASS</td>
+            <td>No hits — legacy interface is gone and no leftover references.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep -n "ListCalendarEventsDto\|MAX_CALENDAR_RANGE_MS" src/modules/calendar/</code></td>
+            <td class="result-pass">PASS</td>
+            <td>DTO class, controller import, service import, span constant, and span check all present.</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (API repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>Exactly 6 changed files (3 src edits + 1 new DTO + 2 progress).</td>
+          </tr>
+          <tr>
+            <td>Manual: git status (web repo)</td>
+            <td class="result-pass">PASS</td>
+            <td>No Phase-2-related changes.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 2 impact summary</h2>
+      <div class="impact-grid">
+        <div class="impact-card">
+          <div class="impact-dim">Web app</div>
+          <div class="impact-status">None required</div>
+          <div class="impact-note"><code>ImportReconciledTab</code> never reads <code>matchedCalendarEvent</code>; the field is optional in the web TS type. <code>CalendarEventList</code> always sends <code>from</code>/<code>to</code>; max observed span is 31 days, well below the 365-day cap.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">API contract</div>
+          <div class="impact-status">Tightened, not broken</div>
+          <div class="impact-note"><code>/transactions/reconciled</code> rows lose an optional field. <code>/calendar/events</code> now returns 400 when <code>from</code>/<code>to</code> are missing or span &gt; 365 days. Aligned with <code>risk-analysis.md</code> R3.4 and <code>performance-analysis.md</code> P3.4.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Database</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No schema edits, no migrations, no new indexes.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Tenant isolation / AuthN / AuthZ</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No identity-layer or tenant-plumbing code touched.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 2 deferred follow-ups</h2>
+      <div class="risk-card">
+        <div class="risk-title">Trim <code>id</code> fields from inner selects (deferred)</div>
+        <div class="risk-body"><code>resident</code>, <code>matchedRule</code>, <code>reconciledBy</code>, <code>importBatch</code> all still ship <code>id</code> in their <code>select</code>. The web never reads these <code>id</code>s directly, but TanStack Table or future components may use them as row keys. Marginal payload win; non-zero risk. Recommend a dedicated audit phase that verifies every table's <code>getRowId</code> config before trimming.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Calendar <code>type</code>/<code>status</code> enum tightening (deferred)</div>
+        <div class="risk-body">The new DTO keeps <code>@IsString()</code> on both. Tightening to <code>@IsEnum(EventType)</code> / <code>@IsEnum(EventStatus)</code> would catch malformed queries at the pipe level (currently they're rejected one layer deeper, inside the service). Separate hardening pass.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title"><code>findAll</code> (<code>GET /transactions</code>) defensive include</div>
+        <div class="risk-body">The generic list endpoint still includes <code>matchedCalendarEvent</code> even though no web component was identified as a consumer. Kept defensively because the endpoint is public-shaped and removing the include risks future regressions. Revisit when an explicit consumer is identified.</div>
+      </div>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 2 — Transactions list projection &amp; calendar range enforcement</strong> (API-only, low blast).</div>
+      <div class="body">Proceed to <strong>Phase 3 — Background classification</strong> per <code>implementation-roadmap.md:76+</code>. Targets classification batching (P2.2 / Q4), cascade soft-delete enforcement, and transactions list indexes (Q1).</div>
       <ul>
-        <li>P3.3 / Q3 — Audit web consumers to confirm <code>matchedCalendarEvent.resident</code>, <code>importBatch</code>, <code>matchedRule</code>, <code>reconciledBy</code> are needed on each list variant; trim to <code>select</code> projections where not. <strong>Cross-repo verification required.</strong></li>
-        <li>P3.4 — Require <code>from</code>/<code>to</code> on calendar list; cap span at 12 months.</li>
-        <li>Web is not required to change for Phase 2 — the cross-repo audit is read-only.</li>
+        <li>Web is not expected to change for Phase 3, but the cross-repo audit pattern from Phase 2 should be repeated.</li>
+        <li>Carryover deferrals from earlier phases (P1.D streaming uploads, R4.2 <code>runningBalance</code> race) remain open.</li>
       </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 2 cross-repo audit (completed during planning)</h2>
+      <table>
+        <thead>
+          <tr><th>Endpoint</th><th>Web component</th><th>Required relations</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET /transactions</code> (<code>findAll</code>)</td><td>None directly identified</td><td><code>resident</code>, <code>matchedCalendarEvent</code> — kept defensively</td></tr>
+          <tr><td><code>GET /transactions/unmatched</code></td><td><code>ImportReviewTab</code></td><td><code>matchedCalendarEvent.{title, startDate, unitNumber, resident.firstName, resident.lastName}</code></td></tr>
+          <tr><td><code>GET /transactions/classified</code></td><td><code>ImportClassifiedTab</code></td><td><code>resident.{firstName, lastName}</code>; modal: <code>matchedRule.name</code>, <code>matchedCalendarEvent.{title, startDate, unitNumber, resident.firstName, resident.lastName}</code></td></tr>
+          <tr><td><code>GET /transactions/reconciled</code></td><td><code>ImportReconciledTab</code></td><td><code>resident.{firstName, lastName, unitNumber}</code>, <code>reconciledBy.{firstName, lastName}</code>; modal: <code>matchedRule.name</code>, <code>importBatch.fileName</code>. <strong>Never reads <code>matchedCalendarEvent</code>.</strong></td></tr>
+          <tr><td><code>GET /calendar/events</code></td><td><code>CalendarEventList</code> (sole caller)</td><td>Always sends <code>from</code> and <code>to</code>; max observed span 31 days; safe to require + cap at 365 days.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section next-step">
+      <div class="label">Recommended next step</div>
+      <div class="body">Continue <strong>Phase 2</strong> implementation per the approved plan. After Phase 2 closes, the next phase is <strong>Phase 3 — Background classification</strong>.</div>
     </section>
 
     <p class="footer">Standalone report · no runtime dependencies · light/dark via <code>prefers-color-scheme</code></p>

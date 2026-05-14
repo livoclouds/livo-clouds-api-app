@@ -15,8 +15,9 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
-import { CalendarService, CalendarEventQuery } from './calendar.service';
+import { CalendarService } from './calendar.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
+import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
 import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 
 @ApiTags('Calendar')
@@ -29,7 +30,7 @@ export class CalendarController {
   @ApiOperation({ summary: 'List calendar events' })
   findAll(
     @Request() req: { condominiumId: string; user: JwtPayload },
-    @Query() query: CalendarEventQuery,
+    @Query() query: ListCalendarEventsDto,
   ) {
     return this.calendarService.findAll(req.condominiumId, query);
   }
