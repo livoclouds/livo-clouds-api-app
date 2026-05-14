@@ -22,6 +22,7 @@ interface PrismaMock {
   };
   resident: { findMany: jest.Mock };
   calendarEvent: { findMany: jest.Mock };
+  condominiumSettings: { findUnique: jest.Mock };
   financialMonthlySummary: { upsert: jest.Mock };
 }
 
@@ -38,6 +39,10 @@ function makePrismaMock(): PrismaMock {
     },
     resident: { findMany: jest.fn().mockResolvedValue([]) },
     calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
+    // Phase 5F (KI-004): default to no tenant-level keywords so existing tests stay green.
+    condominiumSettings: {
+      findUnique: jest.fn().mockResolvedValue({ terraceGlobalKeywords: [] }),
+    },
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
   };
 }
@@ -330,5 +335,158 @@ describe('ClassificationService.classifyBatch — KI-002 resident signal', () =>
     expect((data!.confidenceScore as { toString(): string }).toString()).toBe('0.88');
     expect(data!.matchedCalendarEventId).toBe('event-shared-unit');
     expect(data!.residentId).toBeNull();
+  });
+});
+
+describe('ClassificationService.classifyBatch — Phase 5F global terrace keywords', () => {
+  function setupBaseMocks(
+    prisma: PrismaMock,
+    {
+      description,
+      candidate,
+      globalKeywords,
+      residents = [],
+    }: {
+      description: string;
+      candidate: {
+        id: string;
+        residentId: string | null;
+        unitNumber: string | null;
+        terraceRentalAmount: number;
+      };
+      globalKeywords: string[];
+      residents?: Array<{ id: string; unitNumber: string; firstName: string; lastName: string }>;
+    },
+  ): void {
+    prisma.resident.findMany.mockResolvedValue(residents);
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description,
+        transactionDate: daysBefore(EVENT_DATE, 5),
+        credits: 1500,
+        charges: null,
+        flowType: 'INCOME',
+      },
+    ]);
+    prisma.calendarEvent.findMany.mockResolvedValue([
+      {
+        id: candidate.id,
+        residentId: candidate.residentId,
+        unitNumber: candidate.unitNumber,
+        startDate: EVENT_DATE,
+        metadata: {
+          ...TERRACE_BOOKING_DEFAULTS,
+          terraceRentalAmount: candidate.terraceRentalAmount,
+          paymentStatus: 'PENDING',
+        },
+      },
+    ]);
+    prisma.condominiumSettings.findUnique.mockResolvedValue({ terraceGlobalKeywords: globalKeywords });
+    prisma.transaction.groupBy.mockImplementation(
+      ({ by }: { by: string[] }) =>
+        by.includes('transactionDate')
+          ? Promise.resolve([{ transactionDate: daysBefore(EVENT_DATE, 5) }])
+          : Promise.resolve([]),
+    );
+  }
+
+  it('matches via tenant-level terraceGlobalKeywords + unit signal at AUTO 0.88', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    setupBaseMocks(prisma, {
+      description: 'pago kiosko casa 5 marzo',
+      candidate: { id: 'event-global-unit', residentId: null, unitNumber: '5', terraceRentalAmount: 1500 },
+      globalKeywords: ['kiosko'],
+    });
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.matchSource).toBe('AUTO_TERRACE_BOOKING');
+    expect(data!.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect((data!.confidenceScore as { toString(): string }).toString()).toBe('0.88');
+    expect(data!.matchedCalendarEventId).toBe('event-global-unit');
+  });
+
+  it('matches via tenant-level keyword alone as keyword-only NEEDS_REVIEW 0.70', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    setupBaseMocks(prisma, {
+      description: 'pago kiosko marzo',
+      candidate: { id: 'event-global-only', residentId: null, unitNumber: null, terraceRentalAmount: 1500 },
+      globalKeywords: ['kiosko'],
+    });
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.matchSource).toBe('AUTO_TERRACE_BOOKING');
+    expect(data!.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect((data!.confidenceScore as { toString(): string }).toString()).toBe('0.7');
+    expect(data!.requiresReviewReason).toBe(RequiresReviewReason.LOW_CONFIDENCE);
+  });
+
+  it('does not classify amount + date alone — empty globalKeywords + no other signals → null match', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    setupBaseMocks(prisma, {
+      description: 'TRANSFERENCIA SPEI 12345',
+      candidate: { id: 'event-noop', residentId: null, unitNumber: null, terraceRentalAmount: 1500 },
+      globalKeywords: [],
+    });
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.matchedCalendarEventId).toBeNull();
+    expect(data!.matchSource).not.toBe('AUTO_TERRACE_BOOKING');
+  });
+
+  it('handles missing CondominiumSettings row (findUnique returns null) by treating globals as empty', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.resident.findMany.mockResolvedValue([]);
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description: 'reservacion terraza casa 5',
+        transactionDate: daysBefore(EVENT_DATE, 5),
+        credits: 1500,
+        charges: null,
+        flowType: 'INCOME',
+      },
+    ]);
+    prisma.calendarEvent.findMany.mockResolvedValue([
+      {
+        id: 'event-no-settings',
+        residentId: null,
+        unitNumber: '5',
+        startDate: EVENT_DATE,
+        metadata: { ...TERRACE_BOOKING_DEFAULTS, terraceRentalAmount: 1500, paymentStatus: 'PENDING' },
+      },
+    ]);
+    prisma.condominiumSettings.findUnique.mockResolvedValue(null);
+    prisma.transaction.groupBy.mockImplementation(
+      ({ by }: { by: string[] }) =>
+        by.includes('transactionDate')
+          ? Promise.resolve([{ transactionDate: daysBefore(EVENT_DATE, 5) }])
+          : Promise.resolve([]),
+    );
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    // Hardcoded "terraza" + unit signal still produce AUTO 0.88 even without a settings row.
+    expect(data!.matchSource).toBe('AUTO_TERRACE_BOOKING');
+    expect((data!.confidenceScore as { toString(): string }).toString()).toBe('0.88');
   });
 });

@@ -296,4 +296,90 @@ describe('matchTerraceBooking', () => {
     );
     expect(result).toBeNull();
   });
+
+  // ── Phase 5F — Tenant-level global keywords ────────────────────────────────
+
+  describe('global keywords (Phase 5F / KI-004)', () => {
+    it('triggers keyword signal via tenant global keywords (description is not in hardcoded list and not in candidate customKeywords)', () => {
+      const result = matchTerraceBooking(
+        input({
+          description: 'pago kiosko junio',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['kiosko'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+      expect(result!.requiresReviewReason).toBe('LOW_CONFIDENCE');
+      expect(result!.confidenceScore).toBe(0.7);
+      expect(result!.matchedCalendarEventId).toBe('event-001');
+    });
+
+    it('combines a global-keyword signal with a unit signal to reach AUTO 0.88', () => {
+      const result = matchTerraceBooking(
+        input({
+          description: 'pago kiosko casa 5',
+          detectedResidentId: null,
+          detectedUnitNumber: '5',
+          globalKeywords: ['kiosko'],
+        }),
+        [candidate({ residentId: null, customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.classificationStatus).toBe('AUTO');
+      expect(result!.confidenceScore).toBe(0.88);
+    });
+
+    it('preserves existing behavior when globalKeywords is empty / undefined', () => {
+      const r1 = matchTerraceBooking(input({ globalKeywords: [] }), [candidate()]);
+      const r2 = matchTerraceBooking(input(), [candidate()]);
+      expect(r1).toEqual({ ...r1, matchedAt: r1!.matchedAt });
+      expect(r1!.classificationStatus).toBe('AUTO');
+      expect(r1!.confidenceScore).toBe(0.95);
+      expect(r2!.classificationStatus).toBe('AUTO');
+      expect(r2!.confidenceScore).toBe(0.95);
+    });
+
+    it('matches accent-folded global keywords against accented descriptions', () => {
+      const result = matchTerraceBooking(
+        input({
+          description: 'reserva salón social marzo',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['salon social'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.confidenceScore).toBe(0.7);
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+    });
+
+    it('does not double-count when both global keywords and customKeywords match (signal is binary)', () => {
+      const both = matchTerraceBooking(
+        input({
+          description: 'pago club house mayo',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['club house'],
+        }),
+        [candidate({ customKeywords: ['club house'] })],
+      );
+      const onlyGlobal = matchTerraceBooking(
+        input({
+          description: 'pago club house mayo',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['club house'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(both).not.toBeNull();
+      expect(onlyGlobal).not.toBeNull();
+      expect(both!.confidenceScore).toBe(onlyGlobal!.confidenceScore);
+      expect(both!.classificationStatus).toBe(onlyGlobal!.classificationStatus);
+    });
+  });
 });

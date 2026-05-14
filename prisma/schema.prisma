@@ -268,11 +268,12 @@ model CondominiumSettings {
   notifyNewIncident     Boolean @default(true)
 
   // Terrace Booking
-  terraceBookingEnabled        Boolean @default(true)
-  terraceRentalAmount          Decimal @default(1500) @db.Decimal(12, 2)
-  terraceSecurityDepositAmount Decimal @default(1000) @db.Decimal(12, 2)
-  terraceDefaultStartTime      String  @default("10:00")
-  terraceDefaultEndTime        String  @default("11:00")
+  terraceBookingEnabled        Boolean  @default(true)
+  terraceRentalAmount          Decimal  @default(1500) @db.Decimal(12, 2)
+  terraceSecurityDepositAmount Decimal  @default(1000) @db.Decimal(12, 2)
+  terraceDefaultStartTime      String   @default("10:00")
+  terraceDefaultEndTime        String   @default("11:00")
+  terraceGlobalKeywords        String[] @default([])
 
   condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
 

@@ -334,6 +334,9 @@ export class ClassificationService {
       amount: number | null;
       transactionDate: Date;
       detectedResidentId?: string | null;
+      // Phase 5F (KI-004): tenant-level keywords loaded once per batch from
+      // CondominiumSettings.terraceGlobalKeywords and threaded through.
+      globalKeywords?: string[];
     },
   ): ClassificationResult {
     const extraction = extractFromText(description);
@@ -373,6 +376,7 @@ export class ClassificationService {
             terraceContext.detectedResidentId
             ?? deriveResidentIdFromUnit(extraction.unitNumberDetected, residents),
           detectedUnitNumber: extraction.unitNumberDetected,
+          globalKeywords: terraceContext.globalKeywords,
         },
         terraceContext.events,
       );
@@ -402,7 +406,7 @@ export class ClassificationService {
     condominiumId: string,
     batchId: string,
   ): Promise<ClassificationSummary> {
-    const [residents, transactions, activeRules, rawTerraceEvents] = await Promise.all([
+    const [residents, transactions, activeRules, rawTerraceEvents, settings] = await Promise.all([
       this.prisma.resident.findMany({
         where: { condominiumId, deletedAt: null },
         select: { id: true, unitNumber: true, firstName: true, lastName: true },
@@ -422,7 +426,13 @@ export class ClassificationService {
         },
         select: { id: true, residentId: true, unitNumber: true, startDate: true, metadata: true },
       }),
+      // Phase 5F (KI-004): tenant-level terrace keywords merged into Pass 0.5.
+      this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { terraceGlobalKeywords: true },
+      }),
     ]);
+    const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
 
     // Parse terrace metadata and filter to events with PENDING payment.
     const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
@@ -459,6 +469,7 @@ export class ClassificationService {
               events: terraceEvents,
               amount: tx.credits ? Number(tx.credits) : null,
               transactionDate: new Date(tx.transactionDate),
+              globalKeywords: terraceGlobalKeywords,
             }
           : undefined;
 

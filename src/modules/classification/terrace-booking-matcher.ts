@@ -1,3 +1,5 @@
+import { normalizeTerraceKeyword, normalizeTerraceKeywordList } from './terrace-keywords.util';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface TerraceCandidate {
@@ -15,6 +17,13 @@ export interface TerraceMatchInput {
   description: string;
   detectedResidentId: string | null;
   detectedUnitNumber: string | null;
+  /**
+   * Tenant-level terrace keywords from `CondominiumSettings.terraceGlobalKeywords` (Phase 5F).
+   * Merged with the hardcoded `TERRACE_KEYWORDS` and per-candidate `customKeywords` for
+   * the keyword signal. Default empty array preserves pre-5F behavior for callers that
+   * have not yet been wired to pass the tenant list.
+   */
+  globalKeywords?: string[];
 }
 
 export interface TerraceMatchResult {
@@ -48,19 +57,17 @@ const MIN_SIGNAL_FOR_MATCH = 1;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function normalizeStr(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+const normalizeStr = normalizeTerraceKeyword;
 
-function hasTerraceKeyword(normalizedDescription: string, extraKeywords: string[] = []): boolean {
+function hasTerraceKeyword(
+  normalizedDescription: string,
+  candidateKeywords: string[] = [],
+  globalKeywords: string[] = [],
+): boolean {
   return (
     TERRACE_KEYWORDS.some((kw) => normalizedDescription.includes(kw)) ||
-    extraKeywords.some((kw) => normalizedDescription.includes(kw))
+    globalKeywords.some((kw) => normalizedDescription.includes(kw)) ||
+    candidateKeywords.some((kw) => normalizedDescription.includes(kw))
   );
 }
 
@@ -112,6 +119,10 @@ export function matchTerraceBooking(
   const normalizedDetectedUnit = input.detectedUnitNumber
     ? normalizeStr(input.detectedUnitNumber)
     : null;
+  // Pre-normalize tenant-level keywords once so the per-candidate loop stays cheap.
+  // Phase 5F: merged into the keyword signal alongside hardcoded TERRACE_KEYWORDS
+  // and the per-candidate customKeywords already pre-normalized by the metadata validator.
+  const normalizedGlobalKeywords = normalizeTerraceKeywordList(input.globalKeywords ?? []);
 
   // Step 1: filter to candidates with matching amount and date in window.
   const amountAndDateMatches = candidates.filter(
@@ -136,7 +147,7 @@ export function matchTerraceBooking(
       normalizedDetectedUnit === normalizeStr(c.unitNumber);
     if (unitSignal) score += SIGNAL_UNIT;
 
-    const keywordSignal = hasTerraceKeyword(normalizedDesc, c.customKeywords);
+    const keywordSignal = hasTerraceKeyword(normalizedDesc, c.customKeywords, normalizedGlobalKeywords);
     if (keywordSignal) score += SIGNAL_KEYWORD;
 
     return { candidate: c, score, residentSignal, unitSignal };
