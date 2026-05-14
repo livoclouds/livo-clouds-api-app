@@ -1,5 +1,6 @@
-import { EventStatus, EventType } from '@prisma/client';
+import { CalendarEventVisibility, EventStatus, EventType } from '@prisma/client';
 import { CalendarService } from './calendar.service';
+import { UserRole } from '../../common/types';
 
 const CONDOMINIUM_ID = 'cond-1';
 const EVENT_ID = 'evt-1';
@@ -64,6 +65,7 @@ function baseEvent(overrides: Record<string, unknown> = {}): Record<string, unkn
     recurrenceRule: null,
     parentEventId: null,
     timezone: null,
+    visibility: CalendarEventVisibility.PUBLIC,
     deletedAt: null,
     createdAt: new Date('2026-06-01T00:00:00Z'),
     updatedAt: new Date('2026-06-01T00:00:00Z'),
@@ -490,5 +492,246 @@ describe('CalendarService — Phase 5A recurrence', () => {
       data: Record<string, unknown>;
     };
     expect(args.data.recurrenceRule).toBeNull();
+  });
+});
+
+describe('CalendarService — Phase 5C visibility', () => {
+  const FROM = '2026-06-01T00:00:00.000Z';
+  const TO = '2026-06-30T23:59:59.999Z';
+  const listQuery = (): { from: string; to: string } => ({ from: FROM, to: TO });
+
+  it('defaults visibility to PUBLIC on create when omitted', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent());
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'Default visibility',
+      eventType: EventType.GENERAL,
+      startDate: '2026-06-15T14:00:00.000Z',
+      endDate: '2026-06-15T15:00:00.000Z',
+    } as never);
+
+    const args = prisma.calendarEvent.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.visibility).toBe(CalendarEventVisibility.PUBLIC);
+  });
+
+  it('persists each supported visibility value on create', async () => {
+    for (const visibility of [
+      CalendarEventVisibility.PUBLIC,
+      CalendarEventVisibility.COUNCIL_ONLY,
+      CalendarEventVisibility.PRIVATE,
+    ]) {
+      const prisma = makePrismaMock();
+      const audit = makeAuditMock();
+      const service = makeService(prisma, audit);
+      prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent({ visibility }));
+
+      await service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Scoped',
+        eventType: EventType.COUNCIL_MEETING,
+        startDate: '2026-06-15T14:00:00.000Z',
+        endDate: '2026-06-15T15:00:00.000Z',
+        visibility,
+      } as never);
+
+      const args = prisma.calendarEvent.create.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(args.data.visibility).toBe(visibility);
+    }
+  });
+
+  it('updates visibility when supplied and persists updatedById (regression)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent())
+      .mockResolvedValueOnce(baseEvent({ visibility: CalendarEventVisibility.COUNCIL_ONLY }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      visibility: CalendarEventVisibility.COUNCIL_ONLY,
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.visibility).toBe(CalendarEventVisibility.COUNCIL_ONLY);
+    expect(args.data.updatedById).toBe(USER_ID);
+  });
+
+  it('omits visibility from update payload when the field is absent', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent({ visibility: CalendarEventVisibility.PRIVATE }))
+      .mockResolvedValueOnce(baseEvent({ visibility: CalendarEventVisibility.PRIVATE }));
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      title: 'Renamed only',
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect('visibility' in args.data).toBe(false);
+  });
+
+  it('list omits the visibility WHERE clause for ROOT (sees everything)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.ROOT);
+
+    const singleArgs = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(singleArgs.where.visibility).toBeUndefined();
+  });
+
+  it('list omits the visibility WHERE clause for TENANT_ADMIN (sees everything)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.TENANT_ADMIN);
+
+    const args = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(args.where.visibility).toBeUndefined();
+  });
+
+  it('list filters READ_ONLY to PUBLIC + COUNCIL_ONLY', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.READ_ONLY);
+
+    const args = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(args.where.visibility).toEqual({
+      in: [CalendarEventVisibility.PUBLIC, CalendarEventVisibility.COUNCIL_ONLY],
+    });
+  });
+
+  it('list restricts GUARD to PUBLIC only (hides COUNCIL_ONLY and PRIVATE)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.GUARD);
+
+    const args = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(args.where.visibility).toEqual({ in: [CalendarEventVisibility.PUBLIC] });
+  });
+
+  it('list restricts NEIGHBOR to PUBLIC only', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.NEIGHBOR);
+
+    const args = prisma.calendarEvent.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(args.where.visibility).toEqual({ in: [CalendarEventVisibility.PUBLIC] });
+  });
+
+  it('findOne hides COUNCIL_ONLY events from NEIGHBOR (404)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(
+      baseEvent({ visibility: CalendarEventVisibility.COUNCIL_ONLY }),
+    );
+
+    await expect(
+      service.findOne(CONDOMINIUM_ID, EVENT_ID, UserRole.NEIGHBOR),
+    ).rejects.toThrow('Calendar event not found');
+  });
+
+  it('findOne hides PRIVATE events from READ_ONLY (404)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(
+      baseEvent({ visibility: CalendarEventVisibility.PRIVATE }),
+    );
+
+    await expect(
+      service.findOne(CONDOMINIUM_ID, EVENT_ID, UserRole.READ_ONLY),
+    ).rejects.toThrow('Calendar event not found');
+  });
+
+  it('findOne returns COUNCIL_ONLY events to READ_ONLY', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(
+      baseEvent({ visibility: CalendarEventVisibility.COUNCIL_ONLY }),
+    );
+
+    const result = (await service.findOne(
+      CONDOMINIUM_ID,
+      EVENT_ID,
+      UserRole.READ_ONLY,
+    )) as Record<string, unknown>;
+
+    expect(result.id).toBe(EVENT_ID);
+    expect(result.visibility).toBe(CalendarEventVisibility.COUNCIL_ONLY);
+  });
+
+  it('findOne returns PRIVATE events to TENANT_ADMIN', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(
+      baseEvent({ visibility: CalendarEventVisibility.PRIVATE }),
+    );
+
+    const result = (await service.findOne(
+      CONDOMINIUM_ID,
+      EVENT_ID,
+      UserRole.TENANT_ADMIN,
+    )) as Record<string, unknown>;
+
+    expect(result.id).toBe(EVENT_ID);
+    expect(result.visibility).toBe(CalendarEventVisibility.PRIVATE);
+  });
+
+  it('findOne still returns PUBLIC events to NEIGHBOR (regression for default behavior)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce(baseEvent());
+
+    const result = (await service.findOne(
+      CONDOMINIUM_ID,
+      EVENT_ID,
+      UserRole.NEIGHBOR,
+    )) as Record<string, unknown>;
+
+    expect(result.id).toBe(EVENT_ID);
+    expect(result.visibility).toBe(CalendarEventVisibility.PUBLIC);
   });
 });

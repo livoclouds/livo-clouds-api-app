@@ -195,6 +195,12 @@ enum EventStatus {
   CANCELLED
 }
 
+enum CalendarEventVisibility {
+  PUBLIC
+  COUNCIL_ONLY
+  PRIVATE
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -783,6 +789,7 @@ model CalendarEvent {
   recurrenceRule String?
   parentEventId  String?
   timezone       String?
+  visibility     CalendarEventVisibility @default(PUBLIC)
   deletedAt      DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt

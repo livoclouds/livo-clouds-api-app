@@ -20,6 +20,12 @@ export enum EventTypeDto {
   GENERAL = 'GENERAL',
 }
 
+export enum CalendarEventVisibilityDto {
+  PUBLIC = 'PUBLIC',
+  COUNCIL_ONLY = 'COUNCIL_ONLY',
+  PRIVATE = 'PRIVATE',
+}
+
 export class CreateCalendarEventDto {
   @ApiProperty({ example: 'Reservación Terraza - Familia García' })
   @IsString()
@@ -100,4 +106,14 @@ export class CreateCalendarEventDto {
   @IsString()
   @MaxLength(64)
   timezone?: string | null;
+
+  @ApiPropertyOptional({
+    enum: CalendarEventVisibilityDto,
+    default: CalendarEventVisibilityDto.PUBLIC,
+    description:
+      'Event visibility scope (Phase 5C). PUBLIC: visible to every authenticated calendar viewer in the condominium (default and pre-5C behavior). COUNCIL_ONLY: visible to root, tenant_admin, and read_only. PRIVATE: visible to root and tenant_admin only.',
+  })
+  @IsOptional()
+  @IsEnum(CalendarEventVisibilityDto)
+  visibility?: CalendarEventVisibilityDto;
 }

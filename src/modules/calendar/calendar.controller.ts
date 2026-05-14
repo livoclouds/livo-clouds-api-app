@@ -32,7 +32,7 @@ export class CalendarController {
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Query() query: ListCalendarEventsDto,
   ) {
-    return this.calendarService.findAll(req.condominiumId, query);
+    return this.calendarService.findAll(req.condominiumId, query, req.user.role);
   }
 
   @Get(':id')
@@ -41,7 +41,7 @@ export class CalendarController {
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Param('id') id: string,
   ) {
-    return this.calendarService.findOne(req.condominiumId, id);
+    return this.calendarService.findOne(req.condominiumId, id, req.user.role);
   }
 
   @Post()

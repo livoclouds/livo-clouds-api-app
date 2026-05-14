@@ -4,8 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EventType, EventStatus } from '@prisma/client';
-import { PaginatedResult } from '../../common/types';
+import { CalendarEventVisibility, EventType, EventStatus } from '@prisma/client';
+import { PaginatedResult, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
@@ -23,6 +23,7 @@ import {
   validateRecurrenceRule,
 } from './recurrence';
 import { assertValidTimezone } from './timezone.util';
+import { buildVisibilityFilter, canSeeVisibility } from './visibility.util';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -55,6 +56,7 @@ export class CalendarService {
   async findAll(
     condominiumId: string,
     query: ListCalendarEventsDto,
+    role: UserRole = UserRole.ROOT,
   ): Promise<PaginatedResult<unknown>> {
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
@@ -85,6 +87,8 @@ export class CalendarService {
     const baseFilter: Record<string, unknown> = { condominiumId, deletedAt: null };
     if (query.type) baseFilter.eventType = query.type;
     if (query.status) baseFilter.status = query.status;
+    const visibilityFilter = buildVisibilityFilter(role);
+    if (visibilityFilter.visibility) baseFilter.visibility = visibilityFilter.visibility;
 
     const singleWhere: Record<string, unknown> = {
       ...baseFilter,
@@ -172,7 +176,7 @@ export class CalendarService {
     };
   }
 
-  async findOne(condominiumId: string, id: string) {
+  async findOne(condominiumId: string, id: string, role: UserRole = UserRole.ROOT) {
     const event = await this.prisma.calendarEvent.findFirst({
       where: { id, condominiumId, deletedAt: null },
       include: {
@@ -183,6 +187,10 @@ export class CalendarService {
     });
 
     if (!event) {
+      throw new NotFoundException('Calendar event not found');
+    }
+
+    if (!canSeeVisibility(role, event.visibility)) {
       throw new NotFoundException('Calendar event not found');
     }
 
@@ -265,6 +273,7 @@ export class CalendarService {
         recurrenceRule: dto.recurrenceRule ?? null,
         parentEventId: dto.parentEventId ?? null,
         timezone: dto.timezone ?? null,
+        visibility: (dto.visibility as CalendarEventVisibility | undefined) ?? CalendarEventVisibility.PUBLIC,
         ...(resolvedMetadata !== undefined && { metadata: resolvedMetadata as unknown as object }),
       },
       include: {
@@ -289,7 +298,10 @@ export class CalendarService {
   }
 
   async update(condominiumId: string, userId: string, id: string, dto: UpdateCalendarEventDto) {
-    const existing = await this.findOne(condominiumId, id);
+    // Update is gated to ROOT/TENANT_ADMIN at the controller, so passing ROOT here
+    // is correct: the existence/visibility check should never hide a row from an
+    // admin during a write operation.
+    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
 
     const start = new Date(dto.startDate ?? existing.startDate);
     const end = new Date(dto.endDate ?? existing.endDate);
@@ -358,6 +370,9 @@ export class CalendarService {
         : dto.recurrenceRule;
     }
     if (dto.parentEventId !== undefined) data.parentEventId = dto.parentEventId;
+    if (dto.visibility !== undefined) {
+      data.visibility = dto.visibility as CalendarEventVisibility;
+    }
     if (dto.timezone !== undefined) {
       data.timezone =
         dto.timezone === null || (typeof dto.timezone === 'string' && dto.timezone.length === 0)
@@ -420,7 +435,7 @@ export class CalendarService {
       data,
     });
 
-    const updated = await this.findOne(condominiumId, id);
+    const updated = await this.findOne(condominiumId, id, UserRole.ROOT);
 
     await this.audit.log({
       condominiumId,
@@ -438,7 +453,7 @@ export class CalendarService {
   }
 
   async remove(condominiumId: string, userId: string, id: string) {
-    const existing = await this.findOne(condominiumId, id);
+    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
 
     await this.prisma.calendarEvent.updateMany({
       where: { id, condominiumId, deletedAt: null },

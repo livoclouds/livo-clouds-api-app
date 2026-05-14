@@ -9,7 +9,7 @@ import {
   IsUUID,
   MaxLength,
 } from 'class-validator';
-import { EventTypeDto } from './create-calendar-event.dto';
+import { CalendarEventVisibilityDto, EventTypeDto } from './create-calendar-event.dto';
 
 export enum EventStatusDto {
   PENDING = 'PENDING',
@@ -105,4 +105,13 @@ export class UpdateCalendarEventDto {
   @IsString()
   @MaxLength(64)
   timezone?: string | null;
+
+  @ApiPropertyOptional({
+    enum: CalendarEventVisibilityDto,
+    description:
+      'Event visibility scope (Phase 5C). PUBLIC: visible to every calendar viewer. COUNCIL_ONLY: root + tenant_admin + read_only. PRIVATE: root + tenant_admin only.',
+  })
+  @IsOptional()
+  @IsEnum(CalendarEventVisibilityDto)
+  visibility?: CalendarEventVisibilityDto;
 }
