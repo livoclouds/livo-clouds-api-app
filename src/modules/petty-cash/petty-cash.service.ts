@@ -5,9 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { JwtPayload } from '../../common/types';
+import { JwtPayload, PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateMovementDto } from './dto/create-movement.dto';
+import { ListPettyCashDto } from './dto/list-petty-cash.dto';
 
 const MAX_FOLIO_RETRIES = 5;
 
@@ -15,14 +16,37 @@ const MAX_FOLIO_RETRIES = 5;
 export class PettyCashService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(condominiumId: string) {
-    return this.prisma.pettyCashMovement.findMany({
-      where: { condominiumId },
-      include: {
-        registeredBy: { select: { id: true, firstName: true, lastName: true } },
+  async findAll(
+    condominiumId: string,
+    query: ListPettyCashDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 200;
+    const skip = (page - 1) * limit;
+    const where = { condominiumId };
+
+    const [data, total] = await Promise.all([
+      this.prisma.pettyCashMovement.findMany({
+        where,
+        include: {
+          registeredBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+        orderBy: { date: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.pettyCashMovement.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
       },
-      orderBy: { date: 'desc' },
-    });
+    };
   }
 
   async findOne(condominiumId: string, id: string) {

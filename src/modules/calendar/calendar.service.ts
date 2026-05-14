@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventType, EventStatus } from '@prisma/client';
+import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
@@ -25,7 +26,10 @@ export class CalendarService {
     private audit: AuditService,
   ) {}
 
-  async findAll(condominiumId: string, query: ListCalendarEventsDto) {
+  async findAll(
+    condominiumId: string,
+    query: ListCalendarEventsDto,
+  ): Promise<PaginatedResult<unknown>> {
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
         `Invalid eventType: "${query.type}". Valid values: ${Object.values(EventType).join(', ')}`,
@@ -56,20 +60,38 @@ export class CalendarService {
 
     if (query.type) where.eventType = query.type;
     if (query.status) where.status = query.status;
-    // Overlap filter: events whose interval intersects [from, to]
     where.AND = [
       { startDate: { lt: toDate } },
       { endDate: { gt: fromDate } },
     ];
 
-    return this.prisma.calendarEvent.findMany({
-      where,
-      include: {
-        resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
-        createdBy: { select: { id: true, firstName: true, lastName: true } },
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 500;
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.calendarEvent.findMany({
+        where,
+        include: {
+          resident: { select: { id: true, firstName: true, lastName: true, unitNumber: true } },
+          createdBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+        orderBy: { startDate: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.calendarEvent.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
       },
-      orderBy: { startDate: 'asc' },
-    });
+    };
   }
 
   async findOne(condominiumId: string, id: string) {

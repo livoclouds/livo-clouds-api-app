@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
+import { ListCommonAreasDto } from './dto/list-common-areas.dto';
+import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
 
 @Injectable()
 export class InventoryService {
@@ -9,12 +12,35 @@ export class InventoryService {
 
   // ─── Common Areas ──────────────────────────────────────────────
 
-  async findAllAreas(condominiumId: string) {
-    return this.prisma.commonArea.findMany({
-      where: { condominiumId },
-      include: { inventoryItems: true },
-      orderBy: { name: 'asc' },
-    });
+  async findAllAreas(
+    condominiumId: string,
+    query: ListCommonAreasDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 200;
+    const skip = (page - 1) * limit;
+    const where = { condominiumId };
+
+    const [data, total] = await Promise.all([
+      this.prisma.commonArea.findMany({
+        where,
+        include: { inventoryItems: true },
+        orderBy: { name: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.commonArea.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
   }
 
   async createArea(condominiumId: string, dto: CreateCommonAreaDto) {
@@ -47,12 +73,35 @@ export class InventoryService {
 
   // ─── Inventory Items ──────────────────────────────────────────
 
-  async findAllItems(condominiumId: string) {
-    return this.prisma.inventoryItem.findMany({
-      where: { condominiumId },
-      include: { commonArea: { select: { id: true, name: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAllItems(
+    condominiumId: string,
+    query: ListInventoryItemsDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 200;
+    const skip = (page - 1) * limit;
+    const where = { condominiumId };
+
+    const [data, total] = await Promise.all([
+      this.prisma.inventoryItem.findMany({
+        where,
+        include: { commonArea: { select: { id: true, name: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.inventoryItem.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
   }
 
   async createItem(condominiumId: string, dto: CreateInventoryItemDto) {

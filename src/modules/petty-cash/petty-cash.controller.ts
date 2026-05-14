@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -14,6 +15,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { CreateMovementDto } from './dto/create-movement.dto';
+import { ListPettyCashDto } from './dto/list-petty-cash.dto';
 import { PettyCashService } from './petty-cash.service';
 
 @ApiTags('Petty Cash')
@@ -23,9 +25,12 @@ export class PettyCashController {
   constructor(private readonly pettyCashService: PettyCashService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List petty cash movements' })
-  findAll(@Request() req: { condominiumId: string }) {
-    return this.pettyCashService.findAll(req.condominiumId);
+  @ApiOperation({ summary: 'List petty cash movements (paginated)' })
+  findAll(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListPettyCashDto,
+  ) {
+    return this.pettyCashService.findAll(req.condominiumId, query);
   }
 
   @Get(':id')

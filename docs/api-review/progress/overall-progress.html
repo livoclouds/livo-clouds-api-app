@@ -374,9 +374,9 @@
       <h1>API Review — Overall Implementation Progress</h1>
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
-        <span>Last updated: 2026-05-13 — Phase 6 closed</span>
-        <span>Current phase: Phase 6 (closed)</span>
-        <span>Overall: ~87.5%</span>
+        <span>Last updated: 2026-05-13 — Phase 7 closed</span>
+        <span>Current phase: Phase 7 (closed)</span>
+        <span>Overall: ~87.5% (Phase 8 deferred)</span>
       </div>
     </header>
 
@@ -386,14 +386,14 @@
         <div class="progress-bar"><div class="progress-fill" style="width: 87.5%"></div></div>
         <div class="progress-pct">87.5%</div>
       </div>
-      <p class="progress-meta">7 of 8 phases complete · Phase 6 closed — lockstep API+web change to bound the collection year matrix (<code>P1.2</code> + <code>P1.5</code>) landed. Server-side resident-range pagination with default-preserving limits; envelope <code>{ data, meta }</code> aligned with Phase 4. Web wrappers updated type-only (no live UI consumer; <code>CollectionControlReport</code> still on mock data).</p>
+      <p class="progress-meta">7 of 8 phases complete · Phase 7 closed — rolling API+web change. Every remaining unbounded list endpoint (<code>/calendar/events</code>, <code>/common-areas</code>, <code>/inventory</code>, <code>/petty-cash</code>) now returns the standard <code>{ data, meta }</code> envelope established in Phase 4 and accepts optional <code>page</code>/<code>limit</code>. Defaults preserve today's behavior for every current tenant. Web: calendar wrapper + <code>CalendarEventList</code> migrated to envelope; the three other endpoints have no live consumer (mock tables) so were API-only changes. Phase 8 (index hardening) deferred per roadmap until measured pressure justifies it.</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
       <div class="kpi-card done"><div class="kpi-value">7</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">1</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">1</div><div class="kpi-label">Deferred</div></div>
     </div>
 
     <section class="section">
@@ -441,11 +441,11 @@
           <div class="phase-title">Paginate collection matrix</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 7</div>
           <div class="phase-title">Paginate calendar / inventory / common-areas / petty-cash</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -1532,13 +1532,134 @@
       </div>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 7 — Closed</h2>
+      <p class="phase-meta"><strong>Roadmap line</strong>: <code>implementation-roadmap.md:162-176</code> — <em>Phase 7 — Paginate calendar / inventory / common-areas / petty-cash (API+web, rolling). Objective: close out the remaining unbounded lists.</em></p>
+      <p class="phase-meta"><strong>Status</strong>: ✅ Complete · <strong>% complete</strong>: <strong>100%</strong> · <strong>Overall implementation</strong>: <strong>87.5%</strong> (7 of 8 roadmap phases closed; Phase 8 deferred per user instruction).</p>
+
+      <h3 class="subsection-title">Per-endpoint contract delta</h3>
+      <table class="data-table">
+        <thead>
+          <tr><th>Endpoint</th><th>Old</th><th>New</th><th>Defaults / max</th><th>Coordination</th><th>Validation</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>GET /:slug/calendar/events</code></td>
+            <td>Flat <code>CalendarEvent[]</code>; <code>from</code>/<code>to</code> required (Phase 2 ✅), <code>type?</code>/<code>status?</code> filters</td>
+            <td><code>{ data, meta }</code>; <code>page?</code> ≥ 1, <code>limit?</code> 1–2000</td>
+            <td>page=1, limit=500, max=2000</td>
+            <td><strong>Lockstep micro-coordination</strong> within overall rolling phase (1 wrapper + 1 component update)</td>
+            <td>API build/test PASS · web typecheck/build/test PASS</td>
+          </tr>
+          <tr>
+            <td><code>GET /:slug/common-areas</code></td>
+            <td>Flat <code>CommonArea[]</code> (with nested <code>inventoryItems</code>); no params</td>
+            <td><code>{ data, meta }</code>; <code>page?</code>, <code>limit?</code></td>
+            <td>page=1, limit=200, max=500</td>
+            <td><strong>Rolling</strong> — no live web consumer (mock tables)</td>
+            <td>API build/test PASS</td>
+          </tr>
+          <tr>
+            <td><code>GET /:slug/inventory</code></td>
+            <td>Flat <code>InventoryItem[]</code> (with <code>commonArea</code> projection); no params</td>
+            <td><code>{ data, meta }</code>; <code>page?</code>, <code>limit?</code></td>
+            <td>page=1, limit=200, max=1000</td>
+            <td><strong>Rolling</strong> — no live web consumer (mock tables)</td>
+            <td>API build/test PASS</td>
+          </tr>
+          <tr>
+            <td><code>GET /:slug/petty-cash</code></td>
+            <td>Flat <code>PettyCashMovement[]</code> (with <code>registeredBy</code> projection); no params</td>
+            <td><code>{ data, meta }</code>; <code>page?</code>, <code>limit?</code></td>
+            <td>page=1, limit=200, max=1000</td>
+            <td><strong>Rolling</strong> — no live web consumer (mock tables)</td>
+            <td>API build/test PASS</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Architecture decision — rolling vs lockstep per endpoint</h3>
+      <p class="phase-meta">The roadmap labels Phase 7 as <strong>rolling</strong>. The decision applies unchanged to three of the four endpoints — no live web consumer exists (tables read mock data), so the API can ship without web coordination. For the calendar endpoint, the existing <code>getCalendarEvents()</code> wrapper returned a bare array and <code>CalendarEventList</code> iterated it directly, so a pure shape change required updating the wrapper + the single consumer in the same release window — effectively <strong>lockstep micro-coordination</strong> inside the overall rolling phase. Chosen over inventing a transitional shape (<code>?paginated=1</code> flag or parallel endpoint) because the web surface area is one wrapper file plus one <code>.then</code> destructuring — the smallest possible coordinated change.</p>
+
+      <h3 class="subsection-title">Task tracking</h3>
+      <ul class="task-list">
+        <li>☑ <strong>P7.A</strong> — Calendar list pagination (DTO + service)</li>
+        <li>☑ <strong>P7.B</strong> — Common-areas list pagination (DTO + service + controller)</li>
+        <li>☑ <strong>P7.C</strong> — Inventory items list pagination (DTO + service + controller)</li>
+        <li>☑ <strong>P7.D</strong> — Petty-cash list pagination (DTO + service + controller)</li>
+        <li>☑ <strong>P7.E</strong> — Web calendar wrapper + <code>CalendarEventList</code> envelope migration</li>
+        <li>☑ <strong>P7.F</strong> — Close progress files at 100%</li>
+      </ul>
+
+      <h3 class="subsection-title">Files modified — API</h3>
+      <table class="data-table">
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/modules/calendar/dto/list-calendar-events.dto.ts</code></td><td>Added <code>page?</code> + <code>limit?</code> validators (defaults 1 / 500, max 2000). Existing <code>from</code>/<code>to</code>/<code>type</code>/<code>status</code> preserved.</td></tr>
+          <tr><td><code>src/modules/calendar/calendar.service.ts</code></td><td><code>findAll</code> now returns <code>PaginatedResult&lt;unknown&gt;</code>. Wraps <code>findMany</code> + <code>count</code> in <code>Promise.all</code>; preserves overlap range, <code>orderBy</code>, and <code>resident</code>/<code>createdBy</code> projections.</td></tr>
+          <tr><td><strong>NEW</strong> <code>src/modules/inventory/dto/list-common-areas.dto.ts</code></td><td><code>ListCommonAreasDto</code> with <code>page?</code> + <code>limit?</code> (defaults 1 / 200, max 500).</td></tr>
+          <tr><td><strong>NEW</strong> <code>src/modules/inventory/dto/list-inventory-items.dto.ts</code></td><td><code>ListInventoryItemsDto</code> (defaults 1 / 200, max 1000).</td></tr>
+          <tr><td><code>src/modules/inventory/inventory.service.ts</code></td><td><code>findAllAreas</code> and <code>findAllItems</code> updated to <code>PaginatedResult</code>; existing <code>include</code> + <code>orderBy</code> preserved.</td></tr>
+          <tr><td><code>src/modules/inventory/inventory.controller.ts</code></td><td>Both list <code>@Get()</code> methods bind <code>@Query()</code> to the new DTOs.</td></tr>
+          <tr><td><strong>NEW</strong> <code>src/modules/petty-cash/dto/list-petty-cash.dto.ts</code></td><td><code>ListPettyCashDto</code> (defaults 1 / 200, max 1000).</td></tr>
+          <tr><td><code>src/modules/petty-cash/petty-cash.service.ts</code></td><td><code>findAll</code> updated to <code>PaginatedResult</code>; existing <code>include</code> + <code>orderBy</code> preserved.</td></tr>
+          <tr><td><code>src/modules/petty-cash/petty-cash.controller.ts</code></td><td>List <code>@Get()</code> binds <code>@Query()</code> to the DTO.</td></tr>
+          <tr><td><code>docs/api-review/progress/*</code></td><td>Phase 7 status updates (kickoff + close).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Files modified — Web</h3>
+      <table class="data-table">
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/lib/api/calendar.ts</code></td><td>Imports <code>PaginationMeta</code> from <code>./reports</code>. <code>CalendarEventQuery</code> extended with optional <code>page</code>/<code>limit</code>. New <code>CalendarEventListResponse = { data: CalendarEvent[]; meta: PaginationMeta }</code>. <code>getCalendarEvents</code> now returns this envelope; <code>URLSearchParams</code> forwards <code>page</code>/<code>limit</code> when provided.</td></tr>
+          <tr><td><code>src/components/calendar/CalendarEventList/index.tsx</code></td><td>Single <code>.then</code> updated to destructure <code>data</code> from the response envelope. Defensive <code>Array.isArray</code> fallback preserved. No other changes.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Validation</h3>
+      <table class="data-table">
+        <thead><tr><th>Command</th><th>Result</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>API <code>npm run build</code></td><td><strong>PASS</strong></td><td>Clean after each module.</td></tr>
+          <tr><td>API <code>npm test</code></td><td><strong>PASS</strong></td><td>65/65 unit tests pass.</td></tr>
+          <tr><td>API <code>npm run lint</code></td><td><strong>FAIL (pre-existing)</strong></td><td>ESLint 9 vs legacy <code>.eslintrc</code>; Phase-0 carryover.</td></tr>
+          <tr><td>API <code>npm run test:e2e</code></td><td><strong>SKIPPED</strong></td><td><code>test/</code> folder absent (Phase-0 carryover).</td></tr>
+          <tr><td>Web <code>pnpm typecheck</code></td><td><strong>PASS</strong></td><td><code>tsc --noEmit</code> clean.</td></tr>
+          <tr><td>Web <code>pnpm build</code></td><td><strong>PASS</strong></td><td><code>next build</code> succeeds.</td></tr>
+          <tr><td>Web <code>pnpm test</code></td><td><strong>PASS</strong></td><td>125/125 vitest tests pass.</td></tr>
+          <tr><td>Grep — API <code>findMany</code> + DTO usages</td><td><strong>PASS</strong></td><td>Four <code>findMany</code> call sites all inside <code>Promise.all</code>; DTOs imported in controller + service.</td></tr>
+          <tr><td>Grep — web <code>getCalendarEvents</code> callers</td><td><strong>PASS</strong></td><td>One live consumer destructures <code>data</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Impact status (cumulative through Phase 7)</h3>
+      <table class="data-table">
+        <thead><tr><th>Dimension</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>Web app changes</td><td>Calendar wrapper + consumer migrated</td><td>Lockstep micro-coordination on calendar only; mock-data tables unchanged.</td></tr>
+          <tr><td>API contract</td><td>Shape change on four list endpoints</td><td>Flat array → <code>{ data, meta }</code>; defaults preserve content for every current tenant. Paths, error envelope, success interceptor, non-list methods all unchanged.</td></tr>
+          <tr><td>Database / Prisma</td><td>Unchanged</td><td>No schema edits, no migrations, no new indexes. Existing <code>condominiumId</code> indexes cover all <code>where</code> clauses.</td></tr>
+          <tr><td>Tenant isolation</td><td>Unchanged</td><td>All four <code>where</code> clauses derive <code>condominiumId</code> from <code>CondominiumAccessGuard</code>.</td></tr>
+          <tr><td>AuthN / AuthZ</td><td>Unchanged</td><td>No identity-layer code touched.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="subsection-title">Risks / blockers detected</h3>
+      <ul>
+        <li><strong>Calendar lockstep micro-coordination</strong> — one wrapper + one <code>.then</code> ship together with the API change. Rollback is a single <code>git checkout</code>.</li>
+        <li><strong>Mock-data tables remain on mock data</strong> — explicitly out of scope. The three inventory/petty-cash tables continue rendering mock data; API endpoints are now paginated and ready to be consumed when those tables are wired up later.</li>
+        <li><strong>Carryovers from earlier phases</strong> — ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug, R4.2 race, <code>classifyBatch</code> snapshot test, <code>ResidentsTable</code> server-side pagination, overdue + statement page builds, <code>reconciliation-rules</code> flat shape. Open as independent follow-ups.</li>
+      </ul>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 7 — Paginate calendar, inventory, common-areas, petty-cash</strong> per <code>implementation-roadmap.md:162-176</code>. Phase 7 is <strong>rolling</strong> (same pattern as Phase 5): API ships with default-preserving values; web migrates page-by-page.</div>
+      <div class="body">Phase 7 closes out the pagination + perf scope of the API review. The remaining roadmap entry is <strong>Phase 8 — Index hardening</strong> (<code>implementation-roadmap.md:179-194</code>) which the roadmap itself flags as <em>deferred — only apply when measured pressure warrants it</em>. Per the user's instruction not to implement Phase 8 in this pass, Phase 8 stays deferred until telemetry from the four newly-paginated endpoints demonstrates need.</div>
       <ul>
-        <li>Endpoints: <code>calendar.service.ts:32</code> <code>findAll</code> (already requires <code>from</code>/<code>to</code> + 365-day cap), <code>inventory.service.ts:12, 50</code> (<code>/common-areas</code> + <code>/inventory</code>), <code>petty-cash.service.ts:14</code>.</li>
-        <li>Bundle opportunity: <code>reconciliation-rules.service.ts:12-37</code> still returns a non-standard flat shape (<code>{ data, total, page, limit, totalPages }</code>). Recommended to sweep in Phase 7 to close out pagination work in a single window.</li>
-        <li>Carryover deferrals remain open: P1.D streaming uploads, R4.2 race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test, <code>ResidentsTable</code> server-side pagination, building the overdue and resident-statement pages.</li>
+        <li>Ship Phase 7 to production; gather telemetry on calendar, common-areas, inventory items, petty-cash response times and tail latencies.</li>
+        <li>Re-evaluate Phase 8 indexes (<code>AuditLog (condominiumId, createdAt)</code>, <code>ImportBatch (condominiumId, fileHash)</code>, petty-cash folio sequence) against measured slow queries.</li>
+        <li>Schedule independent follow-ups: live-API wiring of mock inventory/petty-cash tables, <code>reconciliation-rules</code> flat shape sweep, <code>ResidentsTable</code> server-side pagination, overdue + statement pages, dashboard snake_case fallback bug, R4.2 race, ESLint v9 config migration, e2e harness bootstrap, P1.D R2 streaming uploads.</li>
       </ul>
     </section>
 

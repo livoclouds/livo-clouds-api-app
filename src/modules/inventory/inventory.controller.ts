@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -16,6 +17,8 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
+import { ListCommonAreasDto } from './dto/list-common-areas.dto';
+import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
 import { InventoryService } from './inventory.service';
 
 @ApiTags('Inventory')
@@ -27,9 +30,12 @@ export class InventoryController {
   // ─── Common Areas ──────────────────────────────────────────────
 
   @Get('condominiums/:condominiumSlug/common-areas')
-  @ApiOperation({ summary: 'List common areas' })
-  findAllAreas(@Request() req: { condominiumId: string }) {
-    return this.inventoryService.findAllAreas(req.condominiumId);
+  @ApiOperation({ summary: 'List common areas (paginated)' })
+  findAllAreas(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListCommonAreasDto,
+  ) {
+    return this.inventoryService.findAllAreas(req.condominiumId, query);
   }
 
   @Post('condominiums/:condominiumSlug/common-areas')
@@ -66,9 +72,12 @@ export class InventoryController {
   // ─── Inventory Items ──────────────────────────────────────────
 
   @Get('condominiums/:condominiumSlug/inventory')
-  @ApiOperation({ summary: 'List inventory items' })
-  findAllItems(@Request() req: { condominiumId: string }) {
-    return this.inventoryService.findAllItems(req.condominiumId);
+  @ApiOperation({ summary: 'List inventory items (paginated)' })
+  findAllItems(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListInventoryItemsDto,
+  ) {
+    return this.inventoryService.findAllItems(req.condominiumId, query);
   }
 
   @Post('condominiums/:condominiumSlug/inventory')
