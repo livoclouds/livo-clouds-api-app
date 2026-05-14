@@ -325,25 +325,25 @@
       <p>Tracking source of truth for the 8-phase roadmap in <code>docs/api-review/implementation-roadmap.md</code></p>
       <div class="meta">
         <span>Last updated: 2026-05-13</span>
-        <span>Current phase: Phase 3 (closed)</span>
-        <span>Overall: ~50%</span>
+        <span>Current phase: Phase 4 (closed)</span>
+        <span>Overall: ~62.5%</span>
       </div>
     </header>
 
     <section class="progress-shell">
       <h2>Overall roadmap completion</h2>
       <div class="progress-row">
-        <div class="progress-bar"><div class="progress-fill" style="width: 50%"></div></div>
-        <div class="progress-pct">50%</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: 62.5%"></div></div>
+        <div class="progress-pct">62.5%</div>
       </div>
-      <p class="progress-meta">4 of 8 phases complete · Phase 3 closed (P3.A — <code>classifyBatch</code> now issues one <code>updateMany</code> per identical payload group, with tenant <code>condominiumId</code> preserved in the <code>where</code>)</p>
+      <p class="progress-meta">5 of 8 phases complete · Phase 4 closed (paginated <code>transactions</code> + <code>imports</code> endpoints now return nested <code>{ data, meta: { ... } }</code>; web wrappers + 4 consumer tabs updated in lockstep)</p>
     </section>
 
     <div class="kpi-row">
       <div class="kpi-card total"><div class="kpi-value">8</div><div class="kpi-label">Total phases</div></div>
-      <div class="kpi-card done"><div class="kpi-value">4</div><div class="kpi-label">Completed</div></div>
+      <div class="kpi-card done"><div class="kpi-value">5</div><div class="kpi-label">Completed</div></div>
       <div class="kpi-card active"><div class="kpi-value">0</div><div class="kpi-label">In progress</div></div>
-      <div class="kpi-card pending"><div class="kpi-value">4</div><div class="kpi-label">Pending</div></div>
+      <div class="kpi-card pending"><div class="kpi-value">3</div><div class="kpi-label">Pending</div></div>
     </div>
 
     <section class="section">
@@ -373,11 +373,11 @@
           <div class="phase-title">Background classification</div>
           <span class="badge complete">Complete</span>
         </div>
-        <div class="phase-card">
-          <span class="phase-pct">0%</span>
+        <div class="phase-card is-done">
+          <span class="phase-pct">100%</span>
           <div class="phase-id">Phase 4</div>
           <div class="phase-title">Pagination response shape standardization</div>
-          <span class="badge pending">Pending</span>
+          <span class="badge complete">Complete</span>
         </div>
         <div class="phase-card">
           <span class="phase-pct">0%</span>
@@ -970,12 +970,204 @@
       </div>
     </section>
 
+    <section class="section">
+      <h2 class="section-title">Phase 4 task breakdown</h2>
+      <ul class="checklist">
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P4.A</strong> — Standardized paginated response shape on transactions list endpoints in <code>src/modules/transactions/transactions.service.ts</code>.
+            <div class="sub"><code>findAll</code> (line 49), <code>findUnmatched</code> (line 100), <code>findClassified</code> (line 152), <code>findReconciled</code> (line 198) now return <code>{ data, meta: { total, page, limit, totalPages } }</code>. Controllers untouched (pure pass-through; no <code>@ApiResponse</code> decorators to update). Includes (<code>resident</code>, <code>matchedCalendarEvent</code>, <code>importBatch</code>, <code>matchedRule</code>, <code>reconciledBy</code>, <code>_count</code>) and <code>where</code> clauses preserved.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P4.B</strong> — Standardized paginated response shape on imports list endpoint in <code>src/modules/imports/imports.service.ts</code>.
+            <div class="sub"><code>findAll</code> (line 62) now returns the same nested shape. Controller untouched. Filter logic preserved.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P4.C</strong> — Updated web type interfaces in lockstep.
+            <div class="sub"><code>livo-clouds-web-app/src/lib/api/transactions.ts:68-76</code> (<code>PaginatedTransactions</code>) and <code>imports.ts:34-42</code> (<code>PaginatedImportBatches</code>) replaced flat fields with <code>meta: { total, page, limit, totalPages }</code>.</div>
+          </div>
+        </li>
+        <li>
+          <span class="check done">&#10003;</span>
+          <div>
+            <strong>P4.D</strong> — Updated all 8 consumer access sites in lockstep.
+            <div class="sub"><code>ImportHistoryTab/index.tsx:145-146</code>, <code>ImportReviewTab/index.tsx:274,277</code>, <code>ImportClassifiedTab/index.tsx:279-280</code>, <code>ImportReconciledTab/index.tsx:154-155</code> now read <code>data.meta?.total</code> / <code>data.meta?.totalPages</code>. Optional-chain kept defensively to match the pre-existing <code>?? 0</code> / <code>?? 1</code> fallback style.</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 4 — wire shape change</h2>
+      <table>
+        <thead>
+          <tr><th>Endpoint</th><th>Before</th><th>After</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET /condominiums/:slug/transactions</code></td><td><code>{ data: { data, total, page, limit, totalPages } }</code></td><td><code>{ data: { data, meta: { total, page, limit, totalPages } } }</code></td></tr>
+          <tr><td><code>GET /condominiums/:slug/transactions/unmatched</code></td><td>same flat</td><td>same nested</td></tr>
+          <tr><td><code>GET /condominiums/:slug/transactions/classified</code></td><td>same flat</td><td>same nested</td></tr>
+          <tr><td><code>GET /condominiums/:slug/transactions/reconciled</code></td><td>same flat</td><td>same nested</td></tr>
+          <tr><td><code>GET /condominiums/:slug/imports/batches</code></td><td>same flat</td><td>same nested</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:12px;color:var(--text2);margin-top:8px;">The outer <code>{ data }</code> envelope is the global <code>ResponseInterceptor</code> (<code>src/common/interceptors/response.interceptor.ts:11-17</code>) and is unchanged. The web <code>lib/api/client.ts:63</code> strips that outer envelope so wrappers and proxy routes see <code>{ data, meta }</code> directly.</p>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Files modified (Phase 4)</h2>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>src/modules/transactions/transactions.service.ts</code></td><td><strong>Modified</strong> (P4.A — flat → nested <code>meta</code> on 4 list methods)</td></tr>
+          <tr><td><code>src/modules/imports/imports.service.ts</code></td><td><strong>Modified</strong> (P4.B — flat → nested <code>meta</code> on <code>findAll</code>)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/lib/api/transactions.ts</code></td><td><strong>Modified</strong> (P4.C — <code>PaginatedTransactions</code> interface)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/lib/api/imports.ts</code></td><td><strong>Modified</strong> (P4.C — <code>PaginatedImportBatches</code> interface)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/components/imports/ImportHistoryTab/index.tsx</code></td><td><strong>Modified</strong> (P4.D — read <code>data.meta?.total</code> / <code>data.meta?.totalPages</code>)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/components/imports/ImportReviewTab/index.tsx</code></td><td><strong>Modified</strong> (P4.D — same)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/components/imports/ImportClassifiedTab/index.tsx</code></td><td><strong>Modified</strong> (P4.D — same)</td></tr>
+          <tr><td><code>livo-clouds-web-app/src/components/imports/ImportReconciledTab/index.tsx</code></td><td><strong>Modified</strong> (P4.D — same)</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.md</code></td><td>Updated (kickoff + close)</td></tr>
+          <tr><td><code>docs/api-review/progress/overall-progress.html</code></td><td>Updated (kickoff + close)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validation — Phase 4 (API repo)</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>nest build</code> clean. Inner-shape change compiles; service return-type inference resolves cleanly through the controllers.</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>2 suites, 65 tests passed — same baseline as Phase 0/1/2/3 (no pagination assertions in any unit suite).</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="result-fail">FAIL (pre-existing)</td>
+            <td>Same ESLint v9 vs legacy <code>.eslintrc</code> mismatch documented since Phase 0; not introduced by Phase 4.</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td class="result-skip">SKIPPED</td>
+            <td><code>test/</code> folder still absent; e2e harness not configured.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep "data, total, page, limit, totalPages" transactions.service.ts imports.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td><strong>0 hits</strong> (was 5). All paginated returns now use <code>meta:</code>.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep "meta:" transactions.service.ts imports.service.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td><strong>5 hits</strong> (4 transactions + 1 imports) — exactly the count expected.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validation — Phase 4 (web repo)</h2>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Result</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pnpm typecheck</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>tsc --noEmit</code> clean. Interface change ripples through <code>apiRequest&lt;T&gt;</code>, 4 Next.js proxy routes, wrappers, and 4 consumer components without explicit edit (proxy routes typed via generic, no destructuring of pagination fields).</td>
+          </tr>
+          <tr>
+            <td><code>pnpm build</code></td>
+            <td class="result-pass">PASS</td>
+            <td><code>next build</code> succeeded; all routes and API proxies compiled.</td>
+          </tr>
+          <tr>
+            <td><code>pnpm test</code></td>
+            <td class="result-pass">PASS</td>
+            <td>6 vitest suites, 125 tests passed (calendar utilities, format-currency, terrace-booking). No test asserts pagination shape.</td>
+          </tr>
+          <tr>
+            <td><code>pnpm test:e2e</code></td>
+            <td class="result-skip">NONE</td>
+            <td>No e2e script configured in web <code>package.json</code>.</td>
+          </tr>
+          <tr>
+            <td>Manual: <code>grep "\.total\b\|\.totalPages" src/components/imports/ src/lib/api/transactions.ts src/lib/api/imports.ts</code></td>
+            <td class="result-pass">PASS</td>
+            <td>Only <code>.meta?.total</code> / <code>.meta?.totalPages</code> remain in the 4 tabs. Flat accesses are gone.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 4 impact summary</h2>
+      <div class="impact-grid">
+        <div class="impact-card">
+          <div class="impact-dim">Web app</div>
+          <div class="impact-status">Required + completed</div>
+          <div class="impact-note">2 type interfaces + 4 consumer tabs updated in the same window as the API change. Next.js proxy routes pass through unchanged (typed via <code>apiRequest&lt;PaginatedX&gt;</code> so the ripple is automatic). <code>TablePagination</code> is shape-agnostic — no edit needed.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">API contract</div>
+          <div class="impact-status">Changed (transactions + imports)</div>
+          <div class="impact-note">Wire shape: <code>GET /transactions[/unmatched|/classified|/reconciled]</code> and <code>GET /imports/batches</code> now return nested <code>meta</code> inside the global success envelope. Endpoint paths preserved. Error envelopes preserved. Earlier-phase deltas still apply.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Database / Prisma</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No schema edits, no migrations, no new indexes, no query changes — purely an in-memory return-statement rewrite.</div>
+        </div>
+        <div class="impact-card">
+          <div class="impact-dim">Tenant isolation / AuthN / AuthZ</div>
+          <div class="impact-status">Unchanged</div>
+          <div class="impact-note">No <code>where</code> clauses or identity-layer code touched. <code>condominiumId</code> filter remains on every list query.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Phase 4 risks / follow-ups</h2>
+      <div class="risk-card">
+        <div class="risk-title">External API consumers — confirmed none in this monorepo</div>
+        <div class="risk-body">The Phase 4 change is a breaking shape change on the wire (flat → nested <code>meta</code>). It is safe <strong>only</strong> because the API is consumed exclusively by this web app, validated in the same session. If a future client (mobile, partner, third-party) is added that reads paginated <code>transactions</code> or <code>imports</code> responses, it must adopt the nested shape — flag in any external-integration design doc.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Out-of-scope <code>reconciliation-rules</code> flat endpoint</div>
+        <div class="risk-body"><code>src/modules/reconciliation-rules/reconciliation-rules.service.ts:12-37</code> still returns flat <code>{ data, total, page, limit, totalPages }</code>. Web reads <code>data.total</code> directly in <code>ReconciliationRulesSection</code> (<code>livo-clouds-web-app/src/components/settings/ReconciliationRulesSection/index.tsx:243</code>). Not a Phase 4 concern (roadmap reserves it for later). Document so it isn't forgotten when Phase 5+ work expands the standardization pass.</div>
+      </div>
+      <div class="risk-card">
+        <div class="risk-title">Defensive optional-chaining on the web</div>
+        <div class="risk-body">Consumer tabs read <code>data.meta?.total</code> / <code>data.meta?.totalPages</code> with the original <code>?? 0</code> / <code>?? 1</code> fallbacks preserved. With the new strict <code>meta: {...}</code> interface the chain is technically unreachable, but it harmlessly preserves defensive behavior if the server returns a malformed body.</div>
+      </div>
+    </section>
+
     <section class="section next-step">
       <div class="label">Recommended next step</div>
-      <div class="body">Proceed to <strong>Phase 4 — Pagination response shape standardization</strong> per <code>implementation-roadmap.md:99-118</code>. First API+web lockstep phase; coordinate the API change with web wrapper updates in <code>livo-clouds-web-app/src/lib/api/transactions.ts</code> and <code>imports.ts</code> in the same release window.</div>
+      <div class="body">Proceed to <strong>Phase 5 — Paginate residents / overdue / resident statement</strong> per <code>implementation-roadmap.md:121-141</code>. Phase 5 is rolling: API can ship first with a generous default <code>limit</code> so pre-migration web still works; web migrates per page.</div>
       <ul>
-        <li>Carryover deferrals from earlier phases (P1.D streaming uploads to R2, R4.2 <code>runningBalance</code> race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap) remain open.</li>
-        <li>Recommend writing the first <code>classifyBatch</code> snapshot equivalence test before any further changes to the classification pipeline.</li>
+        <li>Pre-requisite: adopt the same nested <code>{ data, meta }</code> shape from Phase 4 as the target for any newly-paginated endpoint, so we don't ship a second flat-shape regression.</li>
+        <li>Bundle opportunity: include <code>reconciliation-rules.service.ts findAll</code> (currently out of scope but flat) in the same standardization sweep.</li>
+        <li>Carryover deferrals from earlier phases (P1.D streaming uploads, R4.2 <code>runningBalance</code> race, dashboard snake_case fallback bug, ESLint v9 config migration, e2e harness bootstrap, <code>classifyBatch</code> snapshot equivalence test) remain open.</li>
       </ul>
     </section>
 

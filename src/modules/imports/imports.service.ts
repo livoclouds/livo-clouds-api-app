@@ -59,7 +59,15 @@ export class ImportsService {
       this.prisma.importBatch.count({ where }),
     ]);
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findOne(condominiumId: string, id: string) {

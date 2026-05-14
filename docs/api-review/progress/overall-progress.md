@@ -8,18 +8,21 @@
 
 ## Overall roadmap status
 
-Phases 0, 1, 2, and **3 — Background classification** are **Complete**.
-Phase 3 shipped a single focused change in `classifyBatch`: per-chunk
-in-memory classification followed by one `updateMany` per identical
-payload group, with `matchedAt` normalized to a per-chunk timestamp.
-Build passes, all 65 unit tests pass, no web change, no schema change,
-no API contract change. The roadmap's stretch goal (queue-based
-classification) is **documented as deferred future work** — it would
-change the inline `ClassificationSummary` returned by `POST
-/imports/confirm` and force an API+web lockstep migration, per
-`web-impact-review.md` line 37.
+Phases 0, 1, 2, 3, and **4 — Pagination response shape standardization**
+are **Complete**. Phase 4 was the first **API + web lockstep** phase
+per `implementation-roadmap.md:99-118`. Paginated endpoints for
+**transactions** (4 methods) and **imports** (1 method) now return
+nested `{ data, meta: { total, page, limit, totalPages } }`; the
+matching web type interfaces and 4 consumer tabs were updated in the
+same window. Other paginated endpoints (residents, calendar, inventory,
+petty-cash, common-areas, reconciliation-rules) remain flat until
+Phases 5–7 per the roadmap. Audit endpoints were already nested
+(unchanged). API `npm run build` + 65 unit tests pass; web `pnpm
+typecheck` + `pnpm build` + 125 vitest tests pass. No schema change,
+no endpoint path change, no envelope change, no tenant-isolation
+change.
 
-**Overall implementation**: 4 of 8 phases complete — **~50%**.
+**Overall implementation**: 5 of 8 phases complete — **~62.5%**.
 
 ---
 
@@ -31,16 +34,16 @@ change the inline `ClassificationSummary` returned by `POST
 | 1     | Dashboard trend SQL & imports parallelism              | **Complete**  | 100 |
 | 2     | Transactions list projection + calendar range          | **Complete**  | 100 |
 | 3     | Background classification                              | **Complete**  | 100 |
-| 4     | Pagination response shape standardization              | Pending       |   0 |
+| 4     | Pagination response shape standardization              | **Complete**  | 100 |
 | 5     | Paginate residents / overdue / resident statement      | Pending       |   0 |
 | 6     | Paginate collection matrix                             | Pending       |   0 |
 | 7     | Paginate calendar / inventory / common-areas / petty   | Pending       |   0 |
 | 8     | Index hardening (DB migration, deferred)               | Pending       |   0 |
 
-- **Current phase**: 3 (closed)
-- **Completed phases**: 0, 1, 2, 3
+- **Current phase**: 4 (closed)
+- **Completed phases**: 0, 1, 2, 3, 4
 - **In-progress phase**: none
-- **Pending phases**: 4, 5, 6, 7, 8
+- **Pending phases**: 5, 6, 7, 8
 
 ---
 
@@ -415,6 +418,134 @@ Carryovers from Phase 0/1/2 remain (ESLint v9 config gap, missing e2e harness, d
 
 ---
 
+## Phase 4 task breakdown
+
+- [x] **P4.A** — Standardized paginated response shape on **transactions** list endpoints. `src/modules/transactions/transactions.service.ts` `findAll` (line 49), `findUnmatched` (line 100), `findClassified` (line 152), `findReconciled` (line 198) now return `{ data, meta: { total, page, limit, totalPages } }`. Controllers untouched (pure pass-through; no `@ApiResponse` decorators to update). Includes (`resident`, `matchedCalendarEvent`, `importBatch`, `matchedRule`, `reconciledBy`, `_count`) and `where` clauses preserved.
+- [x] **P4.B** — Standardized paginated response shape on **imports** list endpoint. `src/modules/imports/imports.service.ts` `findAll` (line 62) now returns the same nested shape. Controller untouched. Filter logic preserved.
+- [x] **P4.C** — Updated web type interfaces in lockstep. `livo-clouds-web-app/src/lib/api/transactions.ts:68-76` (`PaginatedTransactions`) and `imports.ts:34-42` (`PaginatedImportBatches`) replaced flat fields with `meta: { total, page, limit, totalPages }`.
+- [x] **P4.D** — Updated all 8 consumer access sites in lockstep. `ImportHistoryTab/index.tsx:145-146`, `ImportReviewTab/index.tsx:274,277`, `ImportClassifiedTab/index.tsx:279-280`, `ImportReconciledTab/index.tsx:154-155` now read `data.meta?.total` / `data.meta?.totalPages` (optional-chain kept defensively, matching the pre-existing `?? 0` / `?? 1` style — would only fire on a malformed server body).
+
+### What this change means for the wire
+
+Final HTTP body of `GET /condominiums/:slug/transactions` (and the unmatched/classified/reconciled variants) and `GET /condominiums/:slug/imports/batches` is now (after the global `ResponseInterceptor` at `src/common/interceptors/response.interceptor.ts:11-17`):
+
+```json
+{ "data": { "data": [ ... ], "meta": { "total": 123, "page": 1, "limit": 50, "totalPages": 3 } } }
+```
+
+The outer `{ data }` envelope is the global interceptor (unchanged); the inner shape is the new standardized pagination payload. The web `lib/api/client.ts:63` strips the outer envelope before returning, so wrappers and proxy routes see `{ data: [...], meta: {...} }` directly.
+
+### Out-of-scope flat endpoints — documented as follow-up
+
+- `src/modules/reconciliation-rules/reconciliation-rules.service.ts:12-37` `findAll` — still flat. **Not listed in roadmap Phase 4.** Recommended for inclusion when a later phase (5+) extends the standardization pass.
+- All other paginated endpoints (residents, calendar, inventory, petty-cash, common-areas) are pending Phases 5–7 per the roadmap.
+
+---
+
+## Files reviewed (Phase 4)
+
+- `docs/api-review/implementation-roadmap.md` (Phase 4 scope, lines 99-118)
+- `docs/api-review/risk-analysis.md` (R3.2 — pagination shape inconsistency)
+- `docs/api-review/database-query-review.md` (Q2 — paginated endpoints)
+- `docs/api-review/web-impact-review.md` (lockstep pair requirement, line 37)
+- `docs/api-review/performance-analysis.md` (cross-reference for paginated list endpoints)
+- `docs/api-review/endpoint-inventory.md` (cross-reference for paginated list endpoints)
+- `src/common/interceptors/response.interceptor.ts` (global success envelope)
+- `src/common/types/index.ts` (existing `PaginatedResult<T>` shape at lines 28-36 — reused as the target shape; not imported to keep edits minimal)
+- `src/modules/transactions/transactions.service.ts` (4 paginated methods)
+- `src/modules/transactions/transactions.controller.ts` (confirmed pass-through, no decorator changes)
+- `src/modules/imports/imports.service.ts` (paginated `findAll`)
+- `src/modules/imports/imports.controller.ts` (confirmed pass-through)
+- `src/modules/audit/audit.service.ts` (cross-reference — already uses nested `meta`)
+- `src/modules/reconciliation-rules/reconciliation-rules.service.ts` (cross-reference — flat, but out of Phase 4 scope)
+- Web: `src/lib/api/client.ts` (envelope unwrap at line 63)
+- Web: `src/lib/api/transactions.ts` (paginated wrappers + interface)
+- Web: `src/lib/api/imports.ts` (paginated wrapper + interface)
+- Web: `src/app/api/transactions/route.ts`, `transactions/classified/route.ts`, `transactions/reconciled/route.ts`, `imports/batches/route.ts` (confirmed pass-through — no edit needed)
+- Web: `src/components/imports/ImportHistoryTab/index.tsx`
+- Web: `src/components/imports/ImportReviewTab/index.tsx`
+- Web: `src/components/imports/ImportClassifiedTab/index.tsx`
+- Web: `src/components/imports/ImportReconciledTab/index.tsx`
+- Web: `src/components/ui/table-pagination.tsx` (confirmed prop-only — no edit needed)
+- Web: `src/types/reconciliation.types.ts` (cross-reference — `PaginatedReconciliationRules` flat, untouched)
+
+## Files modified (Phase 4)
+
+| File | Change |
+|---|---|
+| `src/modules/transactions/transactions.service.ts` | P4.A — Rewrote terminal return statements in `findAll`, `findUnmatched`, `findClassified`, `findReconciled` from flat `{ data, total, page, limit, totalPages }` to nested `{ data, meta: { total, page, limit, totalPages } }`. No other edits. |
+| `src/modules/imports/imports.service.ts` | P4.B — Same rewrite on `findAll` only. No other edits. |
+| `livo-clouds-web-app/src/lib/api/transactions.ts` | P4.C — `PaginatedTransactions` interface: flat → nested `meta`. |
+| `livo-clouds-web-app/src/lib/api/imports.ts` | P4.C — `PaginatedImportBatches` interface: flat → nested `meta`. |
+| `livo-clouds-web-app/src/components/imports/ImportHistoryTab/index.tsx` | P4.D — `data.total` → `data.meta?.total`, `data.totalPages` → `data.meta?.totalPages`. |
+| `livo-clouds-web-app/src/components/imports/ImportReviewTab/index.tsx` | P4.D — same rewrite (pendingTotal access + setTotalPages). |
+| `livo-clouds-web-app/src/components/imports/ImportClassifiedTab/index.tsx` | P4.D — same. |
+| `livo-clouds-web-app/src/components/imports/ImportReconciledTab/index.tsx` | P4.D — same. |
+| `docs/api-review/progress/overall-progress.md` | Phase 4 status updates (kickoff + close). |
+| `docs/api-review/progress/overall-progress.html` | Phase 4 status updates (kickoff + close). |
+
+---
+
+## Validation performed — Phase 4
+
+### API repo
+
+| Command | Result | Notes |
+|---|---|---|
+| `npm run build` | **PASS** | `nest build` clean. Inner-shape change compiles; service return-type inference resolves cleanly through the controllers. |
+| `npm test` | **PASS** | 2 suites, 65 tests passed — same baseline as Phase 0/1/2/3 (no pagination assertions in any unit suite, so no test churn). |
+| `npm run lint` | **FAIL (pre-existing)** | Same ESLint v9 vs legacy `.eslintrc` mismatch documented since Phase 0; not introduced by Phase 4. |
+| `npm run test:e2e` | **SKIPPED** | `test/` folder still absent; e2e harness not configured. |
+
+### Web repo
+
+| Command | Result | Notes |
+|---|---|---|
+| `pnpm typecheck` | **PASS** | `tsc --noEmit` clean. The interface change propagates through `apiRequest<T>`, the 4 Next.js proxy routes (which type-ripple automatically since they call `apiRequest<PaginatedX>(...)` without destructuring), and the 4 consumer components. |
+| `pnpm build` | **PASS** | `next build` succeeded; all routes and API proxies compiled. |
+| `pnpm test` | **PASS** | 6 vitest suites, 125 tests passed (calendar utilities, format-currency, terrace-booking). No test asserts pagination shape. |
+| `pnpm lint` | **NOT RUN** | Not exercised in this phase; lint state is unrelated to Phase 4. |
+| `pnpm test:e2e` | **NONE** | No e2e script configured. |
+
+### Manual checks (all PASS)
+
+- `grep -n "data, total, page, limit, totalPages" src/modules/transactions/transactions.service.ts src/modules/imports/imports.service.ts` → **0 hits** (was 5 before). ✓
+- `grep -n "meta:" src/modules/transactions/transactions.service.ts src/modules/imports/imports.service.ts` → **5 hits** (4 transactions + 1 imports) — exactly the count expected. ✓
+- `grep -rn "\.total\b\|\.totalPages" livo-clouds-web-app/src/components/imports/ src/lib/api/transactions.ts src/lib/api/imports.ts` → only `.meta?.total` / `.meta?.totalPages` access in the 4 tabs; flat accesses are gone. ✓
+- `git status` in API repo → exactly 4 modified files (2 src + 2 progress).
+- `git status` in web repo → exactly 6 modified files (2 lib/api + 4 components).
+
+---
+
+## Risks / blockers detected (cumulative)
+
+Carryovers from Phase 0/1/2/3 remain (ESLint v9 config gap, missing e2e harness, dashboard snake_case fallback bug at `dashboard.service.ts:136-146`, R4.2 `runningBalance` race, petty-cash parallel reads opportunity, deferred `id` trims on inner selects, deferred calendar enum tightening, generic `findAll` defensive include, P3.B queue-based classification stretch, live-seed equivalence test for `classifyBatch`). Phase 4 adds:
+
+- **External API consumers — confirmed none in this monorepo**. The Phase 4 change is a breaking shape change on the wire (flat → nested `meta`). It is safe **only** because the API is consumed exclusively by this web app, validated in the same session. If a future client (mobile, partner, third-party) is added that reads paginated `transactions` or `imports` responses, it must adopt the nested shape — flag in any future external-integration design doc.
+- **Out-of-scope `reconciliation-rules` flat endpoint**: still returns flat fields. Web reads `data.total` directly in `ReconciliationRulesSection` (`livo-clouds-web-app/src/components/settings/ReconciliationRulesSection/index.tsx:243`). **Not a Phase 4 concern** — roadmap reserves it for later. Document so it isn't forgotten when Phase 5+ work expands the standardization pass.
+- **Defensive optional-chaining (`data.meta?.total`)**: kept on the web side to match the pre-existing `?? 0` / `?? 1` style. With the new strict `meta: {...}` interface the chain is technically unreachable, but it harmlessly preserves defensive behavior if the server returns a malformed body.
+
+---
+
+## Impact status (cumulative through Phase 4)
+
+| Dimension | Status | Detail |
+|---|---|---|
+| Web app changes | **Required and completed** | 2 type interfaces + 4 consumer tabs updated in the same window as the API change. Next.js proxy routes pass through unchanged (typed via `apiRequest<PaginatedX>` so the ripple is automatic). `TablePagination` UI component is shape-agnostic — no edit needed. |
+| API contract | **Changed — paginated transactions + imports** | Wire shape: `GET /transactions[/unmatched|/classified|/reconciled]` and `GET /imports/batches` now return nested `meta` inside the global success envelope. All other endpoints unchanged. Endpoint paths preserved. Error envelopes preserved. Earlier-phase deltas (`/docs` 404 in prod, petty-cash 409 on folio exhaustion, calendar `from`/`to` required + 365-day cap, `findReconciled` no longer ships `matchedCalendarEvent`, classifyBatch chunk-uniform `matchedAt`) still apply. |
+| Database / Prisma | **Unchanged** | No schema edits, no migrations, no new indexes, no query changes — purely an in-memory return-statement rewrite. |
+| Tenant isolation | **Unchanged** | No `where` clauses touched. The `condominiumId` filter remains on every list query. |
+| AuthN / AuthZ | **Unchanged** | No identity-layer code touched. |
+| Audit behavior | **Unchanged** | List endpoints write no audit logs (and didn't before). |
+
+---
+
+## Remaining work in Phase 4
+
+**None.** P4.A, P4.B, P4.C, P4.D are all complete. The out-of-scope flat endpoint (`reconciliation-rules`) is documented as a follow-up.
+
+---
+
 ## Recommended next step
 
-Proceed to **Phase 4 — Pagination response shape standardization** per `implementation-roadmap.md:99-118`. Phase 4 is the first API+web lockstep phase; coordinate the API change with web wrapper updates in `livo-clouds-web-app/src/lib/api/transactions.ts` and `imports.ts` in the same release window.
+Proceed to **Phase 5 — Paginate residents / overdue / resident statement** per `implementation-roadmap.md:121-141`. Phase 5 is rolling (API can ship first with a generous default `limit` so pre-migration web still works; web migrates per page). Pre-requisites: confirm the same nested `{ data, meta }` shape from Phase 4 will be the target for any newly-paginated endpoint (so we don't ship a second flat-shape regression). Suggested follow-ups to bundle when the time is right: include `reconciliation-rules.service.ts findAll` (currently out of scope but flat) in the same standardization sweep.
