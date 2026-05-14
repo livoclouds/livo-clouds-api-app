@@ -517,6 +517,7 @@ export class ClassificationService {
         matchedAt: null,
         requiresReviewReason: null,
         matchedRuleId: null,
+        matchedCalendarEventId: null,
         classificationVersion: { increment: 1 },
       },
     });
