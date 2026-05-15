@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
@@ -677,13 +677,28 @@ export class ClassificationService {
     },
     userId: string,
   ): Promise<void> {
-    let residentId: string | undefined;
-    if (dto.unitNumber) {
+    // REV-004: strict resident resolution.
+    // `residentId === undefined` means the dto did not touch the unit (no update),
+    // `null` means admin explicitly cleared the unit, a string means resolved match.
+    // An unresolved non-empty unitNumber raises 400 UNIT_NOT_FOUND so admin typos
+    // never silently break a correctly matched transaction.
+    let residentId: string | null | undefined;
+    if (dto.unitNumber === '') {
+      residentId = null;
+    } else if (dto.unitNumber) {
       const resident = await this.prisma.resident.findFirst({
         where: { condominiumId, unitNumber: dto.unitNumber, deletedAt: null },
         select: { id: true },
       });
-      if (resident) residentId = resident.id;
+      if (!resident) {
+        throw new BadRequestException({
+          code: 'UNIT_NOT_FOUND',
+          reason: `Unit "${dto.unitNumber}" does not match any resident in this condominium.`,
+          field: 'unitNumber',
+          unitNumber: dto.unitNumber,
+        });
+      }
+      residentId = resident.id;
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -785,7 +800,7 @@ export class ClassificationService {
             matchedRuleId: existingTx.matchedRuleId,
           },
           afterState: {
-            residentId: residentId ?? existingTx.residentId ?? null,
+            residentId: residentId !== undefined ? residentId : (existingTx.residentId ?? null),
             unitNumberDetected: dto.unitNumber !== undefined ? (dto.unitNumber || null) : existingTx.unitNumberDetected,
             paymentConcept: dto.paymentConcept !== undefined ? (dto.paymentConcept || null) : existingTx.paymentConcept,
             paymentPeriodMonth: dto.paymentPeriodMonth !== undefined ? dto.paymentPeriodMonth : existingTx.paymentPeriodMonth,
@@ -833,7 +848,7 @@ export class ClassificationService {
           confidenceScore: null,
           matchedAt: null,
           classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-          requiresReviewReason: RequiresReviewReason.NO_MATCH,
+          requiresReviewReason: RequiresReviewReason.MANUAL_UNMATCHED,
           matchedRuleId: null,
         },
       });
@@ -864,7 +879,7 @@ export class ClassificationService {
             residentId: null,
             matchSource: null,
             classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-            requiresReviewReason: RequiresReviewReason.NO_MATCH,
+            requiresReviewReason: RequiresReviewReason.MANUAL_UNMATCHED,
             matchedRuleId: null,
           },
           result: 'SUCCESS',
