@@ -421,6 +421,7 @@ export class ImportsService {
         results.push({
           fileName: file.originalname,
           status: 'duplicate',
+          code: 'DUPLICATE_FILE',
           message: 'File already imported',
           existingBatchId: duplicate.id,
         });
@@ -535,6 +536,22 @@ export class ImportsService {
       });
     }
 
+    // UF-017 — when every file in the request is a duplicate, escalate to
+    // HTTP 409 Conflict so generic HTTP clients can distinguish a no-op from
+    // a successful upload. Mixed requests stay 200 with per-file status.
+    if (
+      results.length > 0 &&
+      results.every((r) => r.status === 'duplicate')
+    ) {
+      throw new ConflictException({
+        code: 'DUPLICATE_FILE',
+        reason: 'All files in this request were previously imported',
+        files: results,
+        totalFiles: results.length,
+        duplicateCount: results.length,
+      });
+    }
+
     return results;
   }
 
@@ -558,16 +575,21 @@ export class ImportsService {
 
     const results: {
       fileName: string;
-      status: 'imported' | 'duplicate' | 'skipped';
+      status: 'imported' | 'duplicate' | 'skipped' | 'processing';
       batchId?: string;
       imported: number;
       duplicateFile: boolean;
+      code?: 'DUPLICATE_FILE';
       classification?: { total: number; classified: number; needsReview: number; unmatched: number };
       validationReport?: ValidationReport;
       reconciliation?: ReconciliationReport;
     }[] = [];
 
     let totalImported = 0;
+    // UF-007 — batches whose persistence completed but whose classification is
+    // still running. The web client polls each one via GET /imports/:id until
+    // the batch reaches COMPLETED or FAILED.
+    const pendingBatchIds: string[] = [];
 
     for (const file of dto.files) {
       try {
@@ -598,11 +620,25 @@ export class ImportsService {
         include: { _count: { select: { transactions: true } } },
       });
 
-      if (existing?.status === 'COMPLETED' && existing._count.transactions > 0) {
-        this.logger.log(`confirm: duplicate detected, batchId=${existing.id}`);
+      // UF-007 — PROCESSING is now a steady-state for async classification.
+      // A re-confirm during the brief async window must not re-enter the
+      // $transaction (the updatedAt precondition catches it but only after the
+      // re-parse work is wasted). Treat PROCESSING + transactions as duplicate.
+      // COMPLETED + transactions is the original duplicate case.
+      // FAILED is not treated as duplicate so the existing user-delete-then-
+      // reupload recovery path is preserved.
+      if (
+        existing &&
+        (existing.status === 'COMPLETED' || existing.status === 'PROCESSING') &&
+        existing._count.transactions > 0
+      ) {
+        this.logger.log(
+          `confirm: duplicate detected, batchId=${existing.id} status=${existing.status}`,
+        );
         results.push({
           fileName: file.fileName,
           status: 'duplicate',
+          code: 'DUPLICATE_FILE',
           batchId: existing.id,
           imported: 0,
           duplicateFile: true,
@@ -732,7 +768,12 @@ export class ImportsService {
       // completed it in between, updateMany returns count=0 and we abort instead
       // of double-inserting transactions.
       const batch = await this.prisma.$transaction(async (tx) => {
-        this.logger.log(`confirm: updating PENDING batch ${existing.id} to COMPLETED`);
+        // UF-007 — set status to PROCESSING (transactions persisted but
+        // classification still pending). The async runClassificationAsync
+        // method below transitions to COMPLETED (or FAILED) and writes the
+        // terminal audit event. The PENDING → PROCESSING → COMPLETED chain
+        // is captured by the ImportStatus enum in prisma/schema.prisma.
+        this.logger.log(`confirm: updating PENDING batch ${existing.id} to PROCESSING`);
         const conditional = await tx.importBatch.updateMany({
           where: {
             id: existing.id,
@@ -741,14 +782,13 @@ export class ImportsService {
           },
           data: {
             importedById: user.sub,
-            status: 'COMPLETED',
+            status: 'PROCESSING',
             totalRows: validTransactions.length,
             totalIncome,
             totalExpenses,
             finalBalance,
             transactionCount: validTransactions.length,
             warnings: mergedWarnings,
-            completedAt: new Date(),
           },
         });
         if (conditional.count === 0) {
@@ -786,26 +826,21 @@ export class ImportsService {
 
       this.logger.log(`confirm: saved ${validTransactions.length} transactions (${validationReport.invalidRows} invalid skipped), batchId=${batch.id}`);
 
-      const classificationSummary = await this.classification.classifyBatch(
-        condominiumId,
-        batch.id,
-      );
-      this.logger.log(
-        `confirm: classification done ${JSON.stringify(classificationSummary)}`,
-      );
-
+      // UF-007 — capture the per-file result with status:'processing'. The
+      // batch row is now PROCESSING; classification runs out-of-band and the
+      // web polls GET /imports/:id until status reaches COMPLETED/FAILED.
       results.push({
         fileName: file.fileName,
-        status: 'imported',
+        status: 'processing',
         batchId: batch.id,
         imported: validTransactions.length,
         duplicateFile: false,
-        classification: classificationSummary,
         validationReport,
         reconciliation,
       });
 
       totalImported += validTransactions.length;
+      pendingBatchIds.push(batch.id);
 
       const auditResult =
         validationReport.invalidRows > 0 || reconciliation.mismatchCount > 0
@@ -814,7 +849,7 @@ export class ImportsService {
       await this.audit.log({
         condominiumId,
         userId: user.sub,
-        action: 'IMPORT_COMPLETED',
+        action: 'IMPORT_PROCESSING',
         actionCategory: 'UPDATE',
         module: 'imports',
         entityType: 'ImportBatch',
@@ -827,13 +862,38 @@ export class ImportsService {
           totalIncome,
           totalExpenses,
           finalBalance,
-          classification: classificationSummary,
           reconciliation: {
             clientRowCount: reconciliation.clientRowCount,
             serverRowCount: reconciliation.serverRowCount,
             mismatchCount: reconciliation.mismatchCount,
           },
         },
+      });
+
+      // UF-007 — defer classification via setImmediate so the HTTP response
+      // returns before classification runs. CLAUDE.md prohibits queue
+      // infrastructure; this is a single-process deferral. The async method
+      // owns the PROCESSING → COMPLETED/FAILED transition and writes the
+      // terminal IMPORT_COMPLETED or IMPORT_FAILED audit row.
+      setImmediate(() => {
+        void this.runClassificationAsync(
+          condominiumId,
+          batch.id,
+          file.fileName,
+          user.sub,
+          {
+            transactionCount: validTransactions.length,
+            invalidRowsSkipped: validationReport.invalidRows,
+            totalIncome,
+            totalExpenses,
+            finalBalance,
+            reconciliationSummary: {
+              clientRowCount: reconciliation.clientRowCount,
+              serverRowCount: reconciliation.serverRowCount,
+              mismatchCount: reconciliation.mismatchCount,
+            },
+          },
+        );
       });
       } catch (err) {
         const exceptionPayload =
@@ -866,12 +926,150 @@ export class ImportsService {
       }
     }
 
+    // UF-017 — when every file in the request was already imported, escalate
+    // to HTTP 409 Conflict. Mixed requests stay 200 with per-file status so
+    // partial-success semantics are preserved.
+    if (
+      results.length === dto.files.length &&
+      results.length > 0 &&
+      results.every((r) => r.duplicateFile)
+    ) {
+      throw new ConflictException({
+        code: 'DUPLICATE_FILE',
+        reason: 'All files in this request were previously imported',
+        files: results,
+        totalFiles: dto.files.length,
+        duplicateCount: results.length,
+      });
+    }
+
     return {
       files: results,
       totalImported,
-      totalSkipped: results.filter((r) => r.status !== 'imported').length,
+      // 'processing' files are persisted (their transactions are committed);
+      // they are not skipped. Only true skip cases (duplicates, empty files)
+      // count here.
+      totalSkipped: results.filter(
+        (r) => r.status === 'duplicate' || r.status === 'skipped',
+      ).length,
       totalFiles: dto.files.length,
+      pendingBatchIds,
     };
+  }
+
+  // UF-007 — out-of-band classification runner. Owns the PROCESSING →
+  // COMPLETED/FAILED batch transition and the terminal audit event. Never
+  // throws to its setImmediate caller: any error is captured, the batch is
+  // marked FAILED with errorMessage, and an IMPORT_FAILED audit is written
+  // with result:'WARNING' (the transactions are still persisted).
+  private async runClassificationAsync(
+    condominiumId: string,
+    batchId: string,
+    fileName: string,
+    userId: string,
+    persistence: {
+      transactionCount: number;
+      invalidRowsSkipped: number;
+      totalIncome: number;
+      totalExpenses: number;
+      finalBalance: number;
+      reconciliationSummary: {
+        clientRowCount: number;
+        serverRowCount: number;
+        mismatchCount: number;
+      };
+    },
+  ): Promise<void> {
+    try {
+      const classificationSummary = await this.classification.classifyBatch(
+        condominiumId,
+        batchId,
+      );
+      this.logger.log(
+        `classify-async: done batchId=${batchId} ${JSON.stringify(classificationSummary)}`,
+      );
+
+      await this.prisma.importBatch.update({
+        where: { id: batchId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+        },
+      });
+
+      const auditResult =
+        persistence.invalidRowsSkipped > 0 ||
+        persistence.reconciliationSummary.mismatchCount > 0
+          ? 'WARNING'
+          : 'SUCCESS';
+      await this.audit.log({
+        condominiumId,
+        userId,
+        action: 'IMPORT_COMPLETED',
+        actionCategory: 'UPDATE',
+        module: 'imports',
+        entityType: 'ImportBatch',
+        entityId: batchId,
+        result: auditResult,
+        afterState: {
+          fileName,
+          transactionCount: persistence.transactionCount,
+          invalidRowsSkipped: persistence.invalidRowsSkipped,
+          totalIncome: persistence.totalIncome,
+          totalExpenses: persistence.totalExpenses,
+          finalBalance: persistence.finalBalance,
+          classification: classificationSummary,
+          reconciliation: persistence.reconciliationSummary,
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `classify-async: failed batchId=${batchId}: ${message}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      try {
+        await this.prisma.importBatch.update({
+          where: { id: batchId },
+          data: {
+            status: 'FAILED',
+            errorMessage: `Classification failed: ${message}`,
+          },
+        });
+      } catch (updateErr) {
+        this.logger.error(
+          `classify-async: failed to mark batch as FAILED batchId=${batchId}`,
+          updateErr instanceof Error ? updateErr.stack : String(updateErr),
+        );
+      }
+      try {
+        // Transactions are persisted — classification did not run. WARNING
+        // (not ERROR) because the import itself succeeded; only enrichment
+        // failed. Operators can re-run classification via the existing
+        // POST /imports/:batchId/classify endpoint.
+        await this.audit.log({
+          condominiumId,
+          userId,
+          action: 'IMPORT_FAILED',
+          actionCategory: 'UPDATE',
+          module: 'imports',
+          entityType: 'ImportBatch',
+          entityId: batchId,
+          result: 'WARNING',
+          description: `Classification failed (transactions persisted): ${message}`,
+          afterState: {
+            fileName,
+            transactionCount: persistence.transactionCount,
+            errorCode: 'CLASSIFICATION_FAILED',
+          },
+        });
+      } catch (auditErr) {
+        this.logger.error(
+          'classify-async: failed to write IMPORT_FAILED audit',
+          auditErr instanceof Error ? auditErr.stack : String(auditErr),
+        );
+      }
+    }
   }
 
   async remove(condominiumId: string, id: string) {
