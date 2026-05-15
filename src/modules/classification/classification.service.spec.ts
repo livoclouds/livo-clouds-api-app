@@ -14,37 +14,60 @@ function daysBefore(d: Date, days: number): Date {
 
 interface PrismaMock {
   transaction: {
+    findFirst: jest.Mock;
     findMany: jest.Mock;
     updateMany: jest.Mock;
     groupBy: jest.Mock;
     aggregate: jest.Mock;
     count: jest.Mock;
   };
-  resident: { findMany: jest.Mock };
+  resident: { findFirst: jest.Mock; findMany: jest.Mock };
   calendarEvent: { findMany: jest.Mock };
   condominiumSettings: { findUnique: jest.Mock };
   financialMonthlySummary: { upsert: jest.Mock };
+  auditLog: { create: jest.Mock };
+  reconciliationCorrectionPattern: { upsert: jest.Mock };
+  $transaction: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
-  return {
+  const mock: PrismaMock = {
     transaction: {
+      findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
-      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       groupBy: jest.fn().mockResolvedValue([]),
       aggregate: jest
         .fn()
         .mockResolvedValue({ _sum: { credits: null, charges: null }, _count: 0 }),
       count: jest.fn().mockResolvedValue(0),
     },
-    resident: { findMany: jest.fn().mockResolvedValue([]) },
+    resident: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
     // Phase 5F (KI-004): default to no tenant-level keywords so existing tests stay green.
     condominiumSettings: {
       findUnique: jest.fn().mockResolvedValue({ terraceGlobalKeywords: [] }),
     },
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
+    auditLog: { create: jest.fn().mockResolvedValue(null) },
+    reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
+    // REV-003 / REV-017: support both forms — array (chunk classifyBatch) and
+    // callback (single-row overrides). The callback receives the same mock as `tx`.
+    $transaction: jest.fn(),
   };
+  mock.$transaction.mockImplementation(async (arg: unknown) => {
+    if (typeof arg === 'function') {
+      return (arg as (tx: PrismaMock) => Promise<unknown>)(mock);
+    }
+    if (Array.isArray(arg)) {
+      return Promise.all(arg);
+    }
+    return undefined;
+  });
+  return mock;
 }
 
 function makeService(prisma: PrismaMock): ClassificationService {
@@ -488,5 +511,255 @@ describe('ClassificationService.classifyBatch — Phase 5F global terrace keywor
     // Hardcoded "terraza" + unit signal still produce AUTO 0.88 even without a settings row.
     expect(data!.matchSource).toBe('AUTO_TERRACE_BOOKING');
     expect((data!.confidenceScore as { toString(): string }).toString()).toBe('0.88');
+  });
+});
+
+const TX_ID = 'tx-rev003';
+const USER_ID = 'user-rev003';
+const NOW = new Date('2026-05-15T12:00:00Z');
+
+describe('ClassificationService.manualMatch — REV-003 optimistic locking', () => {
+  it('throws ConflictException with STALE_OVERRIDE when updateMany count is 0 (concurrent update lost the race)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-1', condominiumId: CONDOMINIUM_ID });
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      residentId: null,
+      matchSource: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.NO_MATCH,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 0 });
+
+    let caught: unknown;
+    try {
+      await service.manualMatch(CONDOMINIUM_ID, TX_ID, 'res-1', USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    const response = (caught as { getStatus(): number; getResponse(): unknown }).getResponse();
+    expect((caught as { getStatus(): number }).getStatus()).toBe(409);
+    expect(response).toMatchObject({ code: 'STALE_OVERRIDE' });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('writes audit row when the updateMany succeeds (count: 1)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-1', condominiumId: CONDOMINIUM_ID });
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      residentId: null,
+      matchSource: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.NO_MATCH,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.manualMatch(CONDOMINIUM_ID, TX_ID, 'res-1', USER_ID);
+
+    const updateCall = prisma.transaction.updateMany.mock.calls[0];
+    expect(updateCall[0]).toMatchObject({
+      where: { id: TX_ID, condominiumId: CONDOMINIUM_ID, updatedAt: NOW },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({
+      action: 'TRANSACTION_MATCHED_MANUALLY',
+      userId: USER_ID,
+    });
+  });
+});
+
+describe('ClassificationService.manualClassify — REV-003 optimistic locking', () => {
+  it('throws ConflictException and skips pattern upsert + audit when updateMany count is 0', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      description: 'Test',
+      residentId: null,
+      unitNumberDetected: null,
+      paymentConcept: null,
+      paymentPeriodMonth: null,
+      paymentPeriodYear: null,
+      transactionDate: NOW,
+      matchSource: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.NO_MATCH,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 0 });
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(
+        CONDOMINIUM_ID,
+        TX_ID,
+        { paymentConcept: 'MAINTENANCE' },
+        USER_ID,
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect((caught as { getStatus(): number }).getStatus()).toBe(409);
+    expect(
+      (caught as { getResponse(): unknown }).getResponse(),
+    ).toMatchObject({ code: 'STALE_OVERRIDE' });
+    expect(prisma.reconciliationCorrectionPattern.upsert).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('writes pattern upsert + audit row on successful update (count: 1)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      description: 'PAGO MARZO CASA 5',
+      residentId: null,
+      unitNumberDetected: null,
+      paymentConcept: null,
+      paymentPeriodMonth: null,
+      paymentPeriodYear: null,
+      transactionDate: NOW,
+      matchSource: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: RequiresReviewReason.NO_MATCH,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.manualClassify(
+      CONDOMINIUM_ID,
+      TX_ID,
+      { paymentConcept: 'MAINTENANCE' },
+      USER_ID,
+    );
+
+    expect(prisma.reconciliationCorrectionPattern.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({
+      action: 'TRANSACTION_CLASSIFIED_MANUALLY',
+      userId: USER_ID,
+    });
+  });
+});
+
+describe('ClassificationService.unmatch — REV-003 optimistic locking', () => {
+  it('throws ConflictException and skips audit when updateMany count is 0', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      residentId: 'res-prev',
+      matchSource: 'MANUAL',
+      classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 0 });
+
+    let caught: unknown;
+    try {
+      await service.unmatch(CONDOMINIUM_ID, TX_ID, USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect((caught as { getStatus(): number }).getStatus()).toBe(409);
+    expect(
+      (caught as { getResponse(): unknown }).getResponse(),
+    ).toMatchObject({ code: 'STALE_OVERRIDE' });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('writes TRANSACTION_UNMATCHED audit row on successful update', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      residentId: 'res-prev',
+      matchSource: 'MANUAL',
+      classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.unmatch(CONDOMINIUM_ID, TX_ID, USER_ID);
+
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({
+      action: 'TRANSACTION_UNMATCHED',
+      userId: USER_ID,
+    });
+  });
+});
+
+describe('ClassificationService.classifyBatch — REV-017 chunk atomicity', () => {
+  it('wraps the per-chunk updateMany calls in $transaction(array form)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.resident.findMany.mockResolvedValue([]);
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-a',
+        description: 'CARGO',
+        transactionDate: NOW,
+        credits: null,
+        charges: 100,
+        flowType: 'EXPENSE',
+      },
+    ]);
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    // $transaction is invoked once per non-empty chunk; here the single tx
+    // produces exactly one chunk → one $transaction call with an array payload.
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const arg = prisma.$transaction.mock.calls[0][0];
+    expect(Array.isArray(arg)).toBe(true);
+  });
+
+  it('propagates a chunk failure (rolls back chunk 2 while chunk 1 stays committed)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    // 250 transactions → two chunks of 200 + 50 = two $transaction invocations.
+    const txs = Array.from({ length: 250 }, (_, i) => ({
+      id: `tx-${i}`,
+      description: 'CARGO ' + i,
+      transactionDate: NOW,
+      credits: null,
+      charges: 100 + i,  // distinct payloads → no group collapse
+      flowType: 'EXPENSE',
+    }));
+    prisma.transaction.findMany.mockResolvedValue(txs);
+
+    // Chunk 1 succeeds; chunk 2 throws (simulated DB error / forced rollback).
+    prisma.$transaction
+      .mockImplementationOnce(async (arg: unknown) =>
+        Array.isArray(arg) ? Promise.all(arg) : undefined,
+      )
+      .mockImplementationOnce(async () => {
+        throw new Error('forced chunk-2 failure');
+      });
+
+    await expect(service.classifyBatch(CONDOMINIUM_ID, BATCH_ID)).rejects.toThrow(
+      'forced chunk-2 failure',
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
   });
 });
