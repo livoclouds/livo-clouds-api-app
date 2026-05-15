@@ -55,7 +55,7 @@ export class CalendarReclassifyService {
       }
       this.inFlight.add(key);
       try {
-        await this.classification.reclassifyBatch(payload.condominiumId, batchId);
+        await this.classification.reclassifyBatch(payload.condominiumId, batchId, null);
         succeeded++;
       } catch (err) {
         failed++;

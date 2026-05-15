@@ -69,7 +69,7 @@ describe('ClassificationService.reclassifyBatch — KI-001 regression', () => {
     const prisma = makePrismaMock();
     const service = makeService(prisma);
 
-    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID);
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
 
     const firstCall = prisma.transaction.updateMany.mock.calls[0];
     expect(firstCall[0]).toEqual({
@@ -125,7 +125,7 @@ describe('ClassificationService.reclassifyBatch — KI-001 regression', () => {
           : Promise.resolve([]),
     );
 
-    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID);
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
 
     const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
     expect(data).toBeDefined();
@@ -169,7 +169,7 @@ describe('ClassificationService.reclassifyBatch — KI-001 regression', () => {
           : Promise.resolve([]),
     );
 
-    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID);
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
 
     const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
     expect(data).toBeDefined();

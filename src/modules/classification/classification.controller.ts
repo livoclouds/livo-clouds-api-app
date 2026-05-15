@@ -35,6 +35,7 @@ export class ClassificationController {
   @ApiOperation({ summary: 'Re-run classification for an import batch' })
   async reclassifyBatch(
     @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
     @Param('batchId') batchId: string,
   ) {
     const batch = await this.prisma.importBatch.findFirst({
@@ -45,6 +46,7 @@ export class ClassificationController {
     const summary = await this.classificationService.reclassifyBatch(
       req.condominiumId,
       batchId,
+      user.sub,
     );
     return { data: summary };
   }
@@ -54,6 +56,7 @@ export class ClassificationController {
   @ApiOperation({ summary: 'Manually match a transaction to a resident' })
   async manualMatch(
     @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
     @Param('id') transactionId: string,
     @Body() dto: ManualMatchDto,
   ) {
@@ -66,6 +69,7 @@ export class ClassificationController {
       req.condominiumId,
       transactionId,
       dto.residentId,
+      user.sub,
     );
     return { data: { success: true } };
   }
@@ -75,6 +79,7 @@ export class ClassificationController {
   @ApiOperation({ summary: 'Manually classify a transaction with custom fields' })
   async manualClassify(
     @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
     @Param('id') transactionId: string,
     @Body() dto: ManualClassifyDto,
   ) {
@@ -87,6 +92,7 @@ export class ClassificationController {
       req.condominiumId,
       transactionId,
       dto,
+      user.sub,
     );
     return { data: { success: true } };
   }
@@ -96,6 +102,7 @@ export class ClassificationController {
   @ApiOperation({ summary: 'Remove resident match from a transaction' })
   async unmatch(
     @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
     @Param('id') transactionId: string,
   ) {
     const tx = await this.prisma.transaction.findFirst({
@@ -103,7 +110,11 @@ export class ClassificationController {
     });
     if (!tx) throw new NotFoundException('Transaction not found');
 
-    await this.classificationService.unmatch(req.condominiumId, transactionId);
+    await this.classificationService.unmatch(
+      req.condominiumId,
+      transactionId,
+      user.sub,
+    );
     return { data: { success: true } };
   }
 

@@ -46,8 +46,8 @@ describe('CalendarReclassifyService.run', () => {
     await service.run(payload());
 
     expect(classification.reclassifyBatch).toHaveBeenCalledTimes(2);
-    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-A');
-    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-B');
+    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-A', null);
+    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-B', null);
   });
 
   it('does not call reclassifyBatch when no transactions fall in the window', async () => {
@@ -104,7 +104,7 @@ describe('CalendarReclassifyService.run', () => {
     await service.run(payload());
 
     expect(classification.reclassifyBatch).toHaveBeenCalledTimes(1);
-    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-B');
+    expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-B', null);
   });
 
 });
