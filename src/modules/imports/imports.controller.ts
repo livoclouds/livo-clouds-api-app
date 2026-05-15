@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -53,6 +54,7 @@ export class ImportsController {
 
   @Post('upload')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload bank statement files (PDF or XLSX, max 5)' })
   async upload(
@@ -85,6 +87,7 @@ export class ImportsController {
 
   @Post('confirm')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Persist parsed bank statement transactions' })
   confirm(
     @Request() req: { condominiumId: string },
