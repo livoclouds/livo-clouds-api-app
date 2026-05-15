@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
@@ -13,8 +14,10 @@ import { AuditService } from '../audit/audit.service';
 import { ClassificationService } from '../classification/classification.service';
 import { StorageService } from '../storage/storage.service';
 import { SettingsService } from '../settings/settings.service';
-import { ConfirmImportDto } from './dto/confirm-import.dto';
+import { ConfirmImportDto, ParsedTransactionDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
+import { ImportsParserService } from './parser';
+import type { ParsedRow as ServerParsedRow } from './parser';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -137,6 +140,93 @@ function validateRows<T extends ParsedRow>(
   };
 }
 
+// UF-001 reconciliation — compare client preview rows to server-parsed rows.
+// Server rows are the persistence source of truth; the diff is informational
+// (audit trail only). Matching is positional after sorting by date+description
+// to be resilient to insertion order differences across parser versions.
+export interface ReconciliationSample {
+  rowIndex: number;
+  field: 'date' | 'description' | 'amount';
+  client: string | number;
+  server: string | number;
+}
+
+export interface ReconciliationReport {
+  clientRowCount: number;
+  serverRowCount: number;
+  mismatchCount: number;
+  sampleMismatches: ReconciliationSample[];
+}
+
+function normalizeForCompare(s: string): string {
+  return s.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function reconcileRows(
+  clientRows: ParsedTransactionDto[],
+  serverRows: ServerParsedRow[],
+): ReconciliationReport {
+  const sampleMismatches: ReconciliationSample[] = [];
+  let mismatchCount = 0;
+
+  const len = Math.max(clientRows.length, serverRows.length);
+  for (let i = 0; i < len; i++) {
+    const c = clientRows[i];
+    const s = serverRows[i];
+    if (!c || !s) {
+      mismatchCount++;
+      if (sampleMismatches.length < 5) {
+        sampleMismatches.push({
+          rowIndex: i,
+          field: 'description',
+          client: c ? `${c.description}` : '<missing>',
+          server: s ? `${s.description}` : '<missing>',
+        });
+      }
+      continue;
+    }
+    let rowMismatch = false;
+    if (c.date !== s.date) {
+      rowMismatch = true;
+      if (sampleMismatches.length < 5) {
+        sampleMismatches.push({ rowIndex: i, field: 'date', client: c.date, server: s.date });
+      }
+    }
+    if (normalizeForCompare(c.description) !== normalizeForCompare(s.description)) {
+      rowMismatch = true;
+      if (sampleMismatches.length < 5) {
+        sampleMismatches.push({
+          rowIndex: i,
+          field: 'description',
+          client: c.description,
+          server: s.description,
+        });
+      }
+    }
+    const clientAmount = (c.credits ?? 0) - (c.charges ?? 0);
+    const serverAmount = (s.credits ?? 0) - (s.charges ?? 0);
+    if (Math.abs(clientAmount - serverAmount) > 0.005) {
+      rowMismatch = true;
+      if (sampleMismatches.length < 5) {
+        sampleMismatches.push({
+          rowIndex: i,
+          field: 'amount',
+          client: clientAmount,
+          server: serverAmount,
+        });
+      }
+    }
+    if (rowMismatch) mismatchCount++;
+  }
+
+  return {
+    clientRowCount: clientRows.length,
+    serverRowCount: serverRows.length,
+    mismatchCount,
+    sampleMismatches,
+  };
+}
+
 @Injectable()
 export class ImportsService {
   private readonly logger = new Logger(ImportsService.name);
@@ -147,6 +237,8 @@ export class ImportsService {
     private readonly classification: ClassificationService,
     private readonly settings: SettingsService,
     private readonly audit: AuditService,
+    private readonly parser: ImportsParserService,
+    private readonly config: ConfigService,
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
@@ -370,9 +462,11 @@ export class ImportsService {
       this.logger.log(`upload: created PENDING batch id=${batch.id}, R2 configured=${this.storage.isConfigured()}`);
 
       const warnings: string[] = [];
+      const strictR2 = this.config.get<boolean>('storage.strictR2Retention') ?? true;
 
       if (this.storage.isConfigured()) {
         const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${file.originalname}`;
+        let r2Failed = false;
         try {
           this.logger.log(`upload: uploading to R2, key=${storageKey}`);
           await this.storage.uploadFile(storageKey, file.buffer, file.mimetype);
@@ -382,11 +476,11 @@ export class ImportsService {
           });
           this.logger.log(`upload: R2 upload complete, key=${storageKey}`);
         } catch (err) {
+          r2Failed = true;
           this.logger.error(
             'upload: R2 upload failed',
             err instanceof Error ? err.stack : String(err),
           );
-          warnings.push('storage.retentionFailed');
           await this.audit.log({
             condominiumId,
             userId: user.sub,
@@ -395,13 +489,40 @@ export class ImportsService {
             module: 'imports',
             entityType: 'ImportBatch',
             entityId: batch.id,
-            result: 'WARNING',
-            description: 'storage.retentionFailed',
+            result: 'ERROR',
+            description: err instanceof Error ? err.message : 'storage.retentionFailed',
             afterState: {
               fileName: file.originalname,
               storageProvider: 'r2',
+              errorCode: 'STORAGE_UNAVAILABLE',
+              strictR2,
             },
           });
+        }
+
+        if (r2Failed) {
+          if (strictR2) {
+            // UF-016 strict mode — roll back the orphan ImportBatch so confirm()
+            // can never persist transactions for a file that has no retained copy.
+            this.logger.warn(`upload: strict mode — deleting orphan batch ${batch.id}`);
+            try {
+              await this.prisma.importBatch.delete({ where: { id: batch.id } });
+            } catch (delErr) {
+              this.logger.error(
+                'upload: failed to delete orphan batch',
+                delErr instanceof Error ? delErr.stack : String(delErr),
+              );
+            }
+            dedupByHash.delete(fileHash);
+            results.push({
+              fileName: file.originalname,
+              status: 'error',
+              message: 'Storage is currently unavailable. Please try again later.',
+              errorCode: 'STORAGE_UNAVAILABLE',
+            });
+            continue;
+          }
+          warnings.push('storage.retentionFailed');
         }
       }
 
@@ -443,6 +564,7 @@ export class ImportsService {
       duplicateFile: boolean;
       classification?: { total: number; classified: number; needsReview: number; unmatched: number };
       validationReport?: ValidationReport;
+      reconciliation?: ReconciliationReport;
     }[] = [];
 
     let totalImported = 0;
@@ -490,9 +612,58 @@ export class ImportsService {
       // If COMPLETED with 0 transactions, fall through and treat it like a PENDING batch
       // (reuse the record in the $transaction block below).
 
-      // CLAUDE.md §11 Stage 3 — domain validation with 30 % abort threshold.
+      // UF-001 / UF-015 trust-boundary enforcement —
+      // the server re-derives transactions from the R2 file and uses *its own* parsed
+      // rows as the persistence source of truth. Client-supplied `file.transactions`
+      // is reduced to a preview/reconciliation signal that never crosses the
+      // persistence boundary.
+      if (!existing) {
+        throw new ConflictException({
+          code: 'IMPORT_BATCH_NOT_FOUND',
+          reason: 'No matching import batch for this fileHash. Upload the file before confirming.',
+          fileName: file.fileName,
+        });
+      }
+      if (!existing.storageKey || existing.storageProvider !== 'r2') {
+        throw new ConflictException({
+          code: 'IMPORT_BATCH_NO_STORAGE',
+          reason: 'Cannot confirm: no retained file in storage for this batch',
+          existingBatchId: existing.id,
+        });
+      }
+
+      this.logger.log(`confirm: re-downloading file from R2 key=${existing.storageKey}`);
+      const r2Buffer = await this.storage.downloadFile(existing.storageKey);
+
+      // UF-015 — re-verify the R2 object content matches the hash the API
+      // recorded at upload time. The client-supplied fileHash is never trusted
+      // as an authorization decision; the API's stored hash is the integrity anchor.
+      const canonicalHash = crypto
+        .createHash('sha256')
+        .update(r2Buffer)
+        .digest('hex');
+      if (canonicalHash !== existing.fileHash) {
+        this.logger.error(
+          `confirm: R2 content hash mismatch for batch ${existing.id} (stored=${existing.fileHash.slice(0, 16)}, r2=${canonicalHash.slice(0, 16)})`,
+        );
+        throw new ConflictException({
+          code: 'IMPORT_HASH_MISMATCH',
+          reason: 'The retained file content does not match the recorded hash. Re-upload required.',
+          existingBatchId: existing.id,
+        });
+      }
+
+      // UF-001 — server-side canonical re-parse. These rows replace the
+      // client-supplied array for all persistence-side computations.
+      const { transactions: serverParsedRaw, warnings: parserWarnings } =
+        await this.parser.parseBuffer(r2Buffer, existing.fileType);
+      this.logger.log(
+        `confirm: server re-parse produced ${serverParsedRaw.length} rows (client sent ${file.transactions.length})`,
+      );
+
+      // CLAUDE.md §11 Stage 3 — domain validation runs over server rows now.
       const { valid: validTransactions, report: validationReport } = validateRows(
-        file.transactions,
+        serverParsedRaw,
       );
       if (validationReport.invalidRatio > INVALID_ROWS_THRESHOLD) {
         // GlobalExceptionFilter strips extra payload fields; encode a human-readable
@@ -522,64 +693,74 @@ export class ImportsService {
       const finalBalance =
         validTransactions[validTransactions.length - 1]?.balance ?? 0;
 
-      const batch = await this.prisma.$transaction(async (tx) => {
-        let importBatch;
+      // UF-001 reconciliation — compare client-supplied preview rows against
+      // server re-parsed rows. The server's view always wins; mismatch is logged
+      // as an audit event but never blocks the import.
+      const reconciliation = reconcileRows(file.transactions, serverParsedRaw);
+      if (reconciliation.mismatchCount > 0) {
+        this.logger.warn(
+          `confirm: client/server reconciliation mismatch for ${file.fileName} — ${reconciliation.mismatchCount} rows differ (client=${reconciliation.clientRowCount}, server=${reconciliation.serverRowCount})`,
+        );
+        await this.audit.log({
+          condominiumId,
+          userId: user.sub,
+          action: 'IMPORT_TAMPERING_DETECTED',
+          actionCategory: 'READ',
+          module: 'imports',
+          entityType: 'ImportBatch',
+          entityId: existing.id,
+          result: 'WARNING',
+          description: `Client/server payload reconciliation mismatch (${reconciliation.mismatchCount} rows)`,
+          afterState: {
+            fileName: file.fileName,
+            clientRowCount: reconciliation.clientRowCount,
+            serverRowCount: reconciliation.serverRowCount,
+            mismatchCount: reconciliation.mismatchCount,
+            sampleMismatches: reconciliation.sampleMismatches,
+          },
+        });
+      }
 
-        if (existing) {
-          // PENDING batch from upload step — update to COMPLETED, preserve storageKey.
-          // Optimistic precondition: the row must still match the (updatedAt, status)
-          // pair we loaded outside the transaction. If a parallel confirm modified or
-          // completed it in between, updateMany returns count=0 and we abort instead
-          // of double-inserting transactions.
-          this.logger.log(`confirm: updating PENDING batch ${existing.id} to COMPLETED`);
-          const conditional = await tx.importBatch.updateMany({
-            where: {
-              id: existing.id,
-              updatedAt: existing.updatedAt,
-              status: { not: 'COMPLETED' },
-            },
-            data: {
-              importedById: user.sub,
-              status: 'COMPLETED',
-              totalRows: validTransactions.length,
-              totalIncome,
-              totalExpenses,
-              finalBalance,
-              transactionCount: validTransactions.length,
-              warnings: file.warnings,
-              completedAt: new Date(),
-            },
-          });
-          if (conditional.count === 0) {
-            throw new ConflictException({
-              code: 'IMPORT_BATCH_RACE',
-              reason: 'Import batch was modified or completed by another request',
-              existingBatchId: existing.id,
-            });
-          }
-          importBatch = await tx.importBatch.findUniqueOrThrow({
-            where: { id: existing.id },
-          });
-        } else {
-          importBatch = await tx.importBatch.create({
-            data: {
-              condominiumId,
-              importedById: user.sub,
-              fileName: file.fileName,
-              fileType: file.fileType,
-              fileSizeBytes: file.fileSizeBytes,
-              fileHash: file.fileHash,
-              status: 'COMPLETED',
-              totalRows: validTransactions.length,
-              totalIncome,
-              totalExpenses,
-              finalBalance,
-              transactionCount: validTransactions.length,
-              warnings: file.warnings,
-              completedAt: new Date(),
-            },
+      // Persisted warnings combine the client-side parser warnings (forwarded
+      // for backward compat) with any server-side parser warnings, since the
+      // server-parsed rows are what is actually being stored.
+      const mergedWarnings = [...(file.warnings ?? []), ...parserWarnings];
+
+      // PENDING batch from upload step — update to COMPLETED, preserve storageKey.
+      // Optimistic precondition: the row must still match the (updatedAt, status)
+      // pair we loaded outside the transaction. If a parallel confirm modified or
+      // completed it in between, updateMany returns count=0 and we abort instead
+      // of double-inserting transactions.
+      const batch = await this.prisma.$transaction(async (tx) => {
+        this.logger.log(`confirm: updating PENDING batch ${existing.id} to COMPLETED`);
+        const conditional = await tx.importBatch.updateMany({
+          where: {
+            id: existing.id,
+            updatedAt: existing.updatedAt,
+            status: { not: 'COMPLETED' },
+          },
+          data: {
+            importedById: user.sub,
+            status: 'COMPLETED',
+            totalRows: validTransactions.length,
+            totalIncome,
+            totalExpenses,
+            finalBalance,
+            transactionCount: validTransactions.length,
+            warnings: mergedWarnings,
+            completedAt: new Date(),
+          },
+        });
+        if (conditional.count === 0) {
+          throw new ConflictException({
+            code: 'IMPORT_BATCH_RACE',
+            reason: 'Import batch was modified or completed by another request',
+            existingBatchId: existing.id,
           });
         }
+        const importBatch = await tx.importBatch.findUniqueOrThrow({
+          where: { id: existing.id },
+        });
 
         const CHUNK = 500;
         for (let i = 0; i < validTransactions.length; i += CHUNK) {
@@ -621,10 +802,15 @@ export class ImportsService {
         duplicateFile: false,
         classification: classificationSummary,
         validationReport,
+        reconciliation,
       });
 
       totalImported += validTransactions.length;
 
+      const auditResult =
+        validationReport.invalidRows > 0 || reconciliation.mismatchCount > 0
+          ? 'WARNING'
+          : 'SUCCESS';
       await this.audit.log({
         condominiumId,
         userId: user.sub,
@@ -633,7 +819,7 @@ export class ImportsService {
         module: 'imports',
         entityType: 'ImportBatch',
         entityId: batch.id,
-        result: validationReport.invalidRows > 0 ? 'WARNING' : 'SUCCESS',
+        result: auditResult,
         afterState: {
           fileName: file.fileName,
           transactionCount: validTransactions.length,
@@ -642,6 +828,11 @@ export class ImportsService {
           totalExpenses,
           finalBalance,
           classification: classificationSummary,
+          reconciliation: {
+            clientRowCount: reconciliation.clientRowCount,
+            serverRowCount: reconciliation.serverRowCount,
+            mismatchCount: reconciliation.mismatchCount,
+          },
         },
       });
       } catch (err) {
