@@ -654,6 +654,73 @@ describe('ClassificationService.manualClassify — REV-003 optimistic locking', 
   });
 });
 
+describe('ClassificationService.manualClassify — REV-004 strict unit resolution', () => {
+  it('throws BadRequestException UNIT_NOT_FOUND when unitNumber is non-empty and unresolved', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.resident.findFirst.mockResolvedValue(null);
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(
+        CONDOMINIUM_ID,
+        TX_ID,
+        { unitNumber: '9999' },
+        USER_ID,
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect((caught as { getStatus(): number }).getStatus()).toBe(400);
+    expect(
+      (caught as { getResponse(): unknown }).getResponse(),
+    ).toMatchObject({ code: 'UNIT_NOT_FOUND', field: 'unitNumber', unitNumber: '9999' });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('explicitly clears residentId when unitNumber is empty string (admin chose to clear)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      description: 'Test',
+      residentId: 'res-prev',
+      unitNumberDetected: '5',
+      paymentConcept: null,
+      paymentPeriodMonth: null,
+      paymentPeriodYear: null,
+      transactionDate: NOW,
+      matchSource: 'MANUAL',
+      classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.manualClassify(
+      CONDOMINIUM_ID,
+      TX_ID,
+      { unitNumber: '' },
+      USER_ID,
+    );
+
+    expect(prisma.resident.findFirst).not.toHaveBeenCalled();
+    expect(prisma.transaction.updateMany.mock.calls[0][0].data).toMatchObject({
+      unitNumberDetected: null,
+      residentId: null,
+    });
+    expect(prisma.auditLog.create.mock.calls[0][0].data.afterState).toMatchObject({
+      residentId: null,
+      unitNumberDetected: null,
+    });
+  });
+});
+
 describe('ClassificationService.unmatch — REV-003 optimistic locking', () => {
   it('throws ConflictException and skips audit when updateMany count is 0', async () => {
     const prisma = makePrismaMock();
@@ -703,6 +770,33 @@ describe('ClassificationService.unmatch — REV-003 optimistic locking', () => {
     expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({
       action: 'TRANSACTION_UNMATCHED',
       userId: USER_ID,
+    });
+  });
+
+  it('writes MANUAL_UNMATCHED (not NO_MATCH) so reports can distinguish admin overrides — REV-016', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: NOW,
+      residentId: 'res-prev',
+      matchSource: 'MANUAL',
+      classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+    });
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.unmatch(CONDOMINIUM_ID, TX_ID, USER_ID);
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.transaction.updateMany.mock.calls[0][0].data).toMatchObject({
+      requiresReviewReason: RequiresReviewReason.MANUAL_UNMATCHED,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      residentId: null,
+    });
+    expect(prisma.auditLog.create.mock.calls[0][0].data.afterState).toMatchObject({
+      requiresReviewReason: RequiresReviewReason.MANUAL_UNMATCHED,
     });
   });
 });

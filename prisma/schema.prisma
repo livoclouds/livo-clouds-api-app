@@ -172,6 +172,7 @@ enum RequiresReviewReason {
   LOW_CONFIDENCE
   NO_MATCH
   TERRACE_AMBIGUOUS
+  MANUAL_UNMATCHED
 }
 
 enum ReconciliationStatus {
