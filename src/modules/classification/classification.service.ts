@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
@@ -511,14 +511,13 @@ export class ClassificationService {
         }
       }
 
-      await Promise.all(
-        Array.from(groups.values()).map(({ ids, data }) =>
-          this.prisma.transaction.updateMany({
-            where: { condominiumId, id: { in: ids } },
-            data,
-          }),
-        ),
+      const updates = Array.from(groups.values()).map(({ ids, data }) =>
+        this.prisma.transaction.updateMany({
+          where: { condominiumId, id: { in: ids } },
+          data,
+        }),
       );
+      await this.prisma.$transaction(updates);
     }
 
     await this.upsertMonthlySummaries(condominiumId, batchId);
@@ -599,49 +598,69 @@ export class ClassificationService {
       throw new Error('Resident not found in this condominium');
     }
 
-    const existing = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
-      select: {
-        residentId: true,
-        matchSource: true,
-        classificationStatus: true,
-        requiresReviewReason: true,
-        matchedRuleId: true,
-      },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          updatedAt: true,
+          residentId: true,
+          matchSource: true,
+          classificationStatus: true,
+          requiresReviewReason: true,
+          matchedRuleId: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('Transaction not found');
 
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        residentId,
-        matchSource: MatchSource.MANUAL,
-        confidenceScore: new Prisma.Decimal('1.0000'),
-        matchedAt: new Date(),
-        classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
-        requiresReviewReason: null,
-        matchedRuleId: null,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_MATCHED_MANUALLY',
-        actionCategory: 'CLASSIFICATION',
-        module: 'classification',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: existing ?? {},
-        afterState: {
+      const result = await tx.transaction.updateMany({
+        where: {
+          id: transactionId,
+          condominiumId,
+          updatedAt: existing.updatedAt,
+        },
+        data: {
           residentId,
           matchSource: MatchSource.MANUAL,
+          confidenceScore: new Prisma.Decimal('1.0000'),
+          matchedAt: new Date(),
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
           requiresReviewReason: null,
           matchedRuleId: null,
         },
-        result: 'SUCCESS',
-      },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_MATCHED_MANUALLY',
+          actionCategory: 'CLASSIFICATION',
+          module: 'classification',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: {
+            residentId: existing.residentId,
+            matchSource: existing.matchSource,
+            classificationStatus: existing.classificationStatus,
+            requiresReviewReason: existing.requiresReviewReason,
+            matchedRuleId: existing.matchedRuleId,
+          },
+          afterState: {
+            residentId,
+            matchSource: MatchSource.MANUAL,
+            classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+            requiresReviewReason: null,
+            matchedRuleId: null,
+          },
+          result: 'SUCCESS',
+        },
+      });
     });
   }
 
@@ -658,23 +677,6 @@ export class ClassificationService {
     },
     userId: string,
   ): Promise<void> {
-    const existingTx = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
-      select: {
-        description: true,
-        residentId: true,
-        unitNumberDetected: true,
-        paymentConcept: true,
-        paymentPeriodMonth: true,
-        paymentPeriodYear: true,
-        transactionDate: true,
-        matchSource: true,
-        classificationStatus: true,
-        requiresReviewReason: true,
-        matchedRuleId: true,
-      },
-    });
-
     let residentId: string | undefined;
     if (dto.unitNumber) {
       const resident = await this.prisma.resident.findFirst({
@@ -684,90 +686,119 @@ export class ClassificationService {
       if (resident) residentId = resident.id;
     }
 
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        ...(dto.unitNumber !== undefined && { unitNumberDetected: dto.unitNumber || null }),
-        ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
-        ...(dto.paymentPeriodMonth !== undefined && { paymentPeriodMonth: dto.paymentPeriodMonth }),
-        ...(dto.paymentPeriodYear !== undefined && { paymentPeriodYear: dto.paymentPeriodYear }),
-        ...(dto.transactionDate !== undefined && { transactionDate: new Date(dto.transactionDate) }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(residentId !== undefined && { residentId }),
-        matchSource: MatchSource.MANUAL,
-        confidenceScore: new Prisma.Decimal('1.0000'),
-        matchedAt: new Date(),
-        classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
-        requiresReviewReason: null,
-        matchedRuleId: null,
-      },
-    });
-
-    const descriptionForPattern = dto.description ?? existingTx?.description;
-    if (descriptionForPattern) {
-      await this.prisma.reconciliationCorrectionPattern.upsert({
-        where: {
-          condominiumId_originalDescription: {
-            condominiumId,
-            originalDescription: descriptionForPattern,
-          },
-        },
-        create: {
-          condominiumId,
-          originalDescription: descriptionForPattern,
-          selectedUnitNumber: dto.unitNumber ?? null,
-          selectedResidentId: residentId ?? null,
-          selectedConcept: dto.paymentConcept ?? null,
-          occurrenceCount: 1,
-          lastSeenAt: new Date(),
-        },
-        update: {
-          selectedUnitNumber: dto.unitNumber ?? null,
-          selectedResidentId: residentId ?? null,
-          selectedConcept: dto.paymentConcept ?? null,
-          occurrenceCount: { increment: 1 },
-          lastSeenAt: new Date(),
+    await this.prisma.$transaction(async (tx) => {
+      const existingTx = await tx.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          updatedAt: true,
+          description: true,
+          residentId: true,
+          unitNumberDetected: true,
+          paymentConcept: true,
+          paymentPeriodMonth: true,
+          paymentPeriodYear: true,
+          transactionDate: true,
+          matchSource: true,
+          classificationStatus: true,
+          requiresReviewReason: true,
+          matchedRuleId: true,
         },
       });
-    }
+      if (!existingTx) throw new NotFoundException('Transaction not found');
 
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_CLASSIFIED_MANUALLY',
-        actionCategory: 'CLASSIFICATION',
-        module: 'classification',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: existingTx
-          ? {
-              residentId: existingTx.residentId,
-              unitNumberDetected: existingTx.unitNumberDetected,
-              paymentConcept: existingTx.paymentConcept,
-              paymentPeriodMonth: existingTx.paymentPeriodMonth,
-              paymentPeriodYear: existingTx.paymentPeriodYear,
-              transactionDate: existingTx.transactionDate,
-              matchSource: existingTx.matchSource,
-              classificationStatus: existingTx.classificationStatus,
-              requiresReviewReason: existingTx.requiresReviewReason,
-              matchedRuleId: existingTx.matchedRuleId,
-            }
-          : {},
-        afterState: {
-          residentId: residentId ?? existingTx?.residentId ?? null,
-          unitNumberDetected: dto.unitNumber !== undefined ? (dto.unitNumber || null) : existingTx?.unitNumberDetected,
-          paymentConcept: dto.paymentConcept !== undefined ? (dto.paymentConcept || null) : existingTx?.paymentConcept,
-          paymentPeriodMonth: dto.paymentPeriodMonth !== undefined ? dto.paymentPeriodMonth : existingTx?.paymentPeriodMonth,
-          paymentPeriodYear: dto.paymentPeriodYear !== undefined ? dto.paymentPeriodYear : existingTx?.paymentPeriodYear,
-          transactionDate: dto.transactionDate !== undefined ? new Date(dto.transactionDate) : existingTx?.transactionDate,
+      const result = await tx.transaction.updateMany({
+        where: {
+          id: transactionId,
+          condominiumId,
+          updatedAt: existingTx.updatedAt,
+        },
+        data: {
+          ...(dto.unitNumber !== undefined && { unitNumberDetected: dto.unitNumber || null }),
+          ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
+          ...(dto.paymentPeriodMonth !== undefined && { paymentPeriodMonth: dto.paymentPeriodMonth }),
+          ...(dto.paymentPeriodYear !== undefined && { paymentPeriodYear: dto.paymentPeriodYear }),
+          ...(dto.transactionDate !== undefined && { transactionDate: new Date(dto.transactionDate) }),
+          ...(dto.description !== undefined && { description: dto.description }),
+          ...(residentId !== undefined && { residentId }),
           matchSource: MatchSource.MANUAL,
+          confidenceScore: new Prisma.Decimal('1.0000'),
+          matchedAt: new Date(),
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
           requiresReviewReason: null,
           matchedRuleId: null,
         },
-        result: 'SUCCESS',
-      },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      const descriptionForPattern = dto.description ?? existingTx.description;
+      if (descriptionForPattern) {
+        await tx.reconciliationCorrectionPattern.upsert({
+          where: {
+            condominiumId_originalDescription: {
+              condominiumId,
+              originalDescription: descriptionForPattern,
+            },
+          },
+          create: {
+            condominiumId,
+            originalDescription: descriptionForPattern,
+            selectedUnitNumber: dto.unitNumber ?? null,
+            selectedResidentId: residentId ?? null,
+            selectedConcept: dto.paymentConcept ?? null,
+            occurrenceCount: 1,
+            lastSeenAt: new Date(),
+          },
+          update: {
+            selectedUnitNumber: dto.unitNumber ?? null,
+            selectedResidentId: residentId ?? null,
+            selectedConcept: dto.paymentConcept ?? null,
+            occurrenceCount: { increment: 1 },
+            lastSeenAt: new Date(),
+          },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_CLASSIFIED_MANUALLY',
+          actionCategory: 'CLASSIFICATION',
+          module: 'classification',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: {
+            residentId: existingTx.residentId,
+            unitNumberDetected: existingTx.unitNumberDetected,
+            paymentConcept: existingTx.paymentConcept,
+            paymentPeriodMonth: existingTx.paymentPeriodMonth,
+            paymentPeriodYear: existingTx.paymentPeriodYear,
+            transactionDate: existingTx.transactionDate,
+            matchSource: existingTx.matchSource,
+            classificationStatus: existingTx.classificationStatus,
+            requiresReviewReason: existingTx.requiresReviewReason,
+            matchedRuleId: existingTx.matchedRuleId,
+          },
+          afterState: {
+            residentId: residentId ?? existingTx.residentId ?? null,
+            unitNumberDetected: dto.unitNumber !== undefined ? (dto.unitNumber || null) : existingTx.unitNumberDetected,
+            paymentConcept: dto.paymentConcept !== undefined ? (dto.paymentConcept || null) : existingTx.paymentConcept,
+            paymentPeriodMonth: dto.paymentPeriodMonth !== undefined ? dto.paymentPeriodMonth : existingTx.paymentPeriodMonth,
+            paymentPeriodYear: dto.paymentPeriodYear !== undefined ? dto.paymentPeriodYear : existingTx.paymentPeriodYear,
+            transactionDate: dto.transactionDate !== undefined ? new Date(dto.transactionDate) : existingTx.transactionDate,
+            matchSource: MatchSource.MANUAL,
+            classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+            requiresReviewReason: null,
+            matchedRuleId: null,
+          },
+          result: 'SUCCESS',
+        },
+      });
     });
   }
 
@@ -776,49 +807,69 @@ export class ClassificationService {
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    const existing = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
-      select: {
-        residentId: true,
-        matchSource: true,
-        classificationStatus: true,
-        requiresReviewReason: true,
-        matchedRuleId: true,
-      },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          updatedAt: true,
+          residentId: true,
+          matchSource: true,
+          classificationStatus: true,
+          requiresReviewReason: true,
+          matchedRuleId: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('Transaction not found');
 
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        residentId: null,
-        matchSource: null,
-        confidenceScore: null,
-        matchedAt: null,
-        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-        requiresReviewReason: RequiresReviewReason.NO_MATCH,
-        matchedRuleId: null,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_UNMATCHED',
-        actionCategory: 'CLASSIFICATION',
-        module: 'classification',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: existing ?? {},
-        afterState: {
+      const result = await tx.transaction.updateMany({
+        where: {
+          id: transactionId,
+          condominiumId,
+          updatedAt: existing.updatedAt,
+        },
+        data: {
           residentId: null,
           matchSource: null,
+          confidenceScore: null,
+          matchedAt: null,
           classificationStatus: ClassificationStatus.NEEDS_REVIEW,
           requiresReviewReason: RequiresReviewReason.NO_MATCH,
           matchedRuleId: null,
         },
-        result: 'SUCCESS',
-      },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_UNMATCHED',
+          actionCategory: 'CLASSIFICATION',
+          module: 'classification',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: {
+            residentId: existing.residentId,
+            matchSource: existing.matchSource,
+            classificationStatus: existing.classificationStatus,
+            requiresReviewReason: existing.requiresReviewReason,
+            matchedRuleId: existing.matchedRuleId,
+          },
+          afterState: {
+            residentId: null,
+            matchSource: null,
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+            requiresReviewReason: RequiresReviewReason.NO_MATCH,
+            matchedRuleId: null,
+          },
+          result: 'SUCCESS',
+        },
+      });
     });
   }
 
