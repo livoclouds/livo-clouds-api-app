@@ -103,7 +103,8 @@ export class ImportsController {
   remove(
     @Request() req: { condominiumId: string },
     @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.importsService.remove(req.condominiumId, id);
+    return this.importsService.remove(req.condominiumId, id, user);
   }
 }
