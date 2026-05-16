@@ -1072,14 +1072,35 @@ export class ImportsService {
     }
   }
 
-  async remove(condominiumId: string, id: string) {
-    await this.findOne(condominiumId, id);
+  async remove(condominiumId: string, id: string, user: JwtPayload) {
+    const existing = await this.findOne(condominiumId, id);
 
     const result = await this.prisma.importBatch.updateMany({
       where: { id, condominiumId },
       data: { status: 'FAILED', errorMessage: 'Deleted by user' },
     });
     if (result.count === 0) throw new NotFoundException('Import batch not found');
+
+    await this.audit.log({
+      condominiumId,
+      userId: user.sub,
+      action: 'IMPORT_DELETED',
+      actionCategory: 'DELETE',
+      module: 'imports',
+      entityType: 'ImportBatch',
+      entityId: id,
+      result: 'SUCCESS',
+      beforeState: {
+        fileName: existing.fileName,
+        status: existing.status,
+        transactionCount: existing.transactionCount,
+      },
+      afterState: {
+        status: 'FAILED',
+        errorMessage: 'Deleted by user',
+      },
+    });
+
     return this.findOne(condominiumId, id);
   }
 }
