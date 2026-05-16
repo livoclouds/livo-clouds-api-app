@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()

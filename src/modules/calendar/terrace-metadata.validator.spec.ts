@@ -141,11 +141,13 @@ describe('validateTerraceMetadata', () => {
   // ── Optional string fields ──────────────────────────────────────────────────
 
   it('accepts object without optional setupNotes and postEventReviewNotes', () => {
-    const { setupNotes: _s, postEventReviewNotes: _p, ...rest } = validPayload() as {
-      setupNotes: string;
-      postEventReviewNotes: string;
+    const rest = validPayload() as {
+      setupNotes?: string;
+      postEventReviewNotes?: string;
       [k: string]: unknown;
     };
+    delete rest.setupNotes;
+    delete rest.postEventReviewNotes;
     const r = validateTerraceMetadata(rest);
     expect(r.valid).toBe(true);
     if (r.valid) {
@@ -326,7 +328,8 @@ describe('validateTerraceMetadata', () => {
   });
 
   it('accepts omitted customKeywords and defaults to empty array', () => {
-    const { customKeywords: _c, ...rest } = validPayload() as { customKeywords: unknown; [k: string]: unknown };
+    const rest = validPayload() as { customKeywords: unknown; [k: string]: unknown };
+    delete rest.customKeywords;
     const r = validateTerraceMetadata(rest);
     expect(r.valid).toBe(true);
     if (r.valid) expect(r.data.customKeywords).toEqual([]);

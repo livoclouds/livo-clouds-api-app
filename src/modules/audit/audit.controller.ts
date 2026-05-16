@@ -1,5 +1,5 @@
-import { Controller, Get, Param, Query, Request, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, Request, UseGuards } from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
