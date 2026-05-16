@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsISO8601, IsOptional, IsPositive, IsUUID, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsISO8601, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ClassificationStatus, FlowType } from '@prisma/client';
 
@@ -39,4 +39,12 @@ export class ListTransactionsDto {
   @IsOptional()
   @IsUUID()
   importBatchId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  @Matches(/^[a-zA-Z0-9_,]+$/, {
+    message: 'columns must be a comma-separated list of allowlisted column IDs',
+  })
+  columns?: string;
 }

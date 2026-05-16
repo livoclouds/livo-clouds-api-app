@@ -1,5 +1,7 @@
-import { Controller, Get, Query, Request, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Request, Res, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import type { FastifyReply } from 'fastify';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { TransactionsService } from './transactions.service';
@@ -27,6 +29,27 @@ export class TransactionsController {
     @Query() query: ListTransactionsDto,
   ) {
     return this.transactionsService.findUnmatched(req.condominiumId, query);
+  }
+
+  @Get('classified/export.csv')
+  @Throttle({ burst: { limit: 2, ttl: 30_000 }, sustained: { limit: 10, ttl: 300_000 } })
+  @ApiOperation({ summary: 'Export Classified-PENDING transactions as a streamed CSV' })
+  async exportClassified(
+    @Request() req: { condominiumId: string },
+    @Param('condominiumSlug') condominiumSlug: string,
+    @Query() query: ListTransactionsDto,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const stream = this.transactionsService.exportClassifiedCsv(req.condominiumId, query);
+    const filenameDate = new Date().toISOString().slice(0, 10);
+    const filename = `classified-transactions_${condominiumSlug}_${filenameDate}.csv`;
+
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .header('Cache-Control', 'no-store');
+
+    return reply.send(stream);
   }
 
   @Get('classified')
