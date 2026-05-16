@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,6 +9,9 @@ import {
   Query,
   Request,
   UseGuards,
+  UsePipes,
+  ValidationError,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -27,6 +31,48 @@ interface MultipartFile {
   mimetype: string;
   size: number;
 }
+
+// Phase 2 IMP-012 — controller-scoped ValidationPipe so DTO failures on
+// POST /imports/confirm surface as code:'VALIDATION_FAILED' instead of the
+// generic 'BAD_REQUEST'. Global pipe behavior is preserved for every other
+// endpoint.
+function flattenValidationErrors(
+  errors: ValidationError[],
+  parentPath = '',
+): { field: string; messages: string[] }[] {
+  const flat: { field: string; messages: string[] }[] = [];
+  for (const err of errors) {
+    const field = parentPath ? `${parentPath}.${err.property}` : err.property;
+    if (err.constraints) {
+      flat.push({ field, messages: Object.values(err.constraints) });
+    }
+    if (err.children && err.children.length > 0) {
+      flat.push(...flattenValidationErrors(err.children, field));
+    }
+  }
+  return flat;
+}
+
+const confirmValidationPipe = new ValidationPipe({
+  whitelist: true,
+  transform: true,
+  transformOptions: { enableImplicitConversion: true },
+  exceptionFactory: (errors) => {
+    const fields = flattenValidationErrors(errors);
+    const summary = fields
+      .slice(0, 3)
+      .map((f) => `${f.field}: ${f.messages[0]}`)
+      .join('; ');
+    return new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      reason:
+        summary.length > 0
+          ? `Invalid confirm payload — ${summary}`
+          : 'Invalid confirm payload',
+      fields,
+    });
+  },
+});
 
 @ApiTags('Imports')
 @Controller('condominiums/:condominiumSlug/imports')
@@ -88,6 +134,7 @@ export class ImportsController {
   @Post('confirm')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
+  @UsePipes(confirmValidationPipe)
   @ApiOperation({ summary: 'Persist parsed bank statement transactions' })
   confirm(
     @Request() req: { condominiumId: string },
