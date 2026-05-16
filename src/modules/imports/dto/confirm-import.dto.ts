@@ -7,6 +7,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -103,6 +104,12 @@ export class FileImportDto {
     message: 'fileHash must be a 64-character lowercase hex string (SHA-256)',
   })
   fileHash: string;
+
+  // Phase 3: optional explicit batch reference. When provided, confirm prefers
+  // id-based lookup over fileHash and validates tenant ownership.
+  @IsOptional()
+  @IsUUID('4', { message: 'batchId must be a valid UUID v4' })
+  batchId?: string;
 
   @IsInt({ message: 'fileSizeBytes must be a non-negative integer' })
   @Min(1)

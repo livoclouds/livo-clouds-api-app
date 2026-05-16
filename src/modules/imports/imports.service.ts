@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -635,12 +636,44 @@ export class ImportsService {
         });
       }
 
-      this.logger.log(`confirm: file=${file.fileName}, transactions=${file.transactions.length}, hash=${file.fileHash.slice(0, 16)}...`);
+      this.logger.log(
+        `confirm: file=${file.fileName}, batchId=${file.batchId ?? 'none'}, transactions=${file.transactions.length}, hash=${file.fileHash.slice(0, 16)}...`,
+      );
 
-      const existing = await this.prisma.importBatch.findFirst({
-        where: { condominiumId, fileHash: file.fileHash },
-        include: { _count: { select: { transactions: true } } },
-      });
+      // Phase 3: prefer explicit batchId lookup when the client provides one.
+      // Preserves fileHash fallback for backward compatibility.
+      type BatchWithCount = Prisma.ImportBatchGetPayload<{
+        include: { _count: { select: { transactions: true } } };
+      }>;
+      let existing: BatchWithCount | null = null;
+
+      if (file.batchId) {
+        // Unscoped lookup first — required to distinguish 403 (cross-tenant) from 404 (missing).
+        const byId = await this.prisma.importBatch.findUnique({
+          where: { id: file.batchId },
+          include: { _count: { select: { transactions: true } } },
+        });
+        if (!byId) {
+          throw new NotFoundException({
+            code: 'BATCH_NOT_FOUND',
+            reason: 'No import batch found for the provided batchId. Upload the file before confirming.',
+            fileName: file.fileName,
+          });
+        }
+        if (byId.condominiumId !== condominiumId) {
+          throw new ForbiddenException({
+            code: 'BATCH_CROSS_TENANT',
+            reason: 'The provided batchId does not belong to this condominium.',
+            fileName: file.fileName,
+          });
+        }
+        existing = byId;
+      } else {
+        existing = await this.prisma.importBatch.findFirst({
+          where: { condominiumId, fileHash: file.fileHash },
+          include: { _count: { select: { transactions: true } } },
+        });
+      }
 
       // UF-007 — PROCESSING is now a steady-state for async classification.
       // A re-confirm during the brief async window must not re-enter the
@@ -936,7 +969,10 @@ export class ImportsService {
       });
       } catch (err) {
         const exceptionPayload =
-          err instanceof BadRequestException || err instanceof ConflictException
+          err instanceof BadRequestException ||
+          err instanceof ConflictException ||
+          err instanceof ForbiddenException ||
+          err instanceof NotFoundException
             ? (err.getResponse() as Record<string, unknown>)
             : undefined;
         const errorCode =
