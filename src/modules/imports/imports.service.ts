@@ -146,7 +146,7 @@ function validateRows<T extends ParsedRow>(
 // to be resilient to insertion order differences across parser versions.
 export interface ReconciliationSample {
   rowIndex: number;
-  field: 'date' | 'description' | 'amount';
+  field: 'date' | 'description' | 'amount' | 'balance' | 'rowCount';
   client: string | number;
   server: string | number;
 }
@@ -216,7 +216,29 @@ function reconcileRows(
         });
       }
     }
+    // Phase 2 IMP-001 — balance is an explicit tamper vector per the audit
+    // acceptance criteria. Same currency tolerance as amount.
+    if (Math.abs((c.balance ?? 0) - (s.balance ?? 0)) > 0.005) {
+      rowMismatch = true;
+      if (sampleMismatches.length < 5) {
+        sampleMismatches.push({
+          rowIndex: i,
+          field: 'balance',
+          client: c.balance ?? 0,
+          server: s.balance ?? 0,
+        });
+      }
+    }
     if (rowMismatch) mismatchCount++;
+  }
+
+  if (clientRows.length !== serverRows.length && sampleMismatches.length < 5) {
+    sampleMismatches.push({
+      rowIndex: -1,
+      field: 'rowCount',
+      client: clientRows.length,
+      server: serverRows.length,
+    });
   }
 
   return {
@@ -729,11 +751,17 @@ export class ImportsService {
       const finalBalance =
         validTransactions[validTransactions.length - 1]?.balance ?? 0;
 
-      // UF-001 reconciliation — compare client-supplied preview rows against
-      // server re-parsed rows. The server's view always wins; mismatch is logged
-      // as an audit event but never blocks the import.
+      // Phase 2 IMP-001 — strict trust-boundary enforcement. Reconciliation
+      // compares the client preview rows against the server re-parsed rows
+      // (the persistence source of truth). Any structural mismatch — modified
+      // credit/debit/date/description/balance, or row-count delta — is treated
+      // as tampering and the confirm is rejected with PAYLOAD_MISMATCH. The
+      // IMPORT_TAMPERING_DETECTED audit row is written first so the forensic
+      // trace survives the rejection.
       const reconciliation = reconcileRows(file.transactions, serverParsedRaw);
-      if (reconciliation.mismatchCount > 0) {
+      const rowCountMismatch =
+        reconciliation.clientRowCount !== reconciliation.serverRowCount;
+      if (reconciliation.mismatchCount > 0 || rowCountMismatch) {
         this.logger.warn(
           `confirm: client/server reconciliation mismatch for ${file.fileName} — ${reconciliation.mismatchCount} rows differ (client=${reconciliation.clientRowCount}, server=${reconciliation.serverRowCount})`,
         );
@@ -754,6 +782,17 @@ export class ImportsService {
             mismatchCount: reconciliation.mismatchCount,
             sampleMismatches: reconciliation.sampleMismatches,
           },
+        });
+        throw new BadRequestException({
+          code: 'PAYLOAD_MISMATCH',
+          reason:
+            'Confirm payload does not match the file on the server. The preview was altered or the file changed between upload and confirm. Re-upload the file and retry.',
+          fileName: file.fileName,
+          existingBatchId: existing.id,
+          clientRowCount: reconciliation.clientRowCount,
+          serverRowCount: reconciliation.serverRowCount,
+          mismatchCount: reconciliation.mismatchCount,
+          sampleMismatches: reconciliation.sampleMismatches,
         });
       }
 
