@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(npm test *)",
+      "Bash(npm run lint)",
+      "Bash(npm run build)",
+      "Bash(npm run test:e2e *)",
+      "Bash(npx tsc *)",
+      "Bash(npx prisma *)",
+      "Bash(PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=* npx prisma *)",
+      "Bash(npx --prefix * tsc *)",
+      "Bash(lsof -i *)",
+      "Bash(pkill -f *)",
+      "Bash(until gh *)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:www.prisma.io)",
+      "WebFetch(domain:nestjs.com)",
+      "Read(/Users/hiperezr/Code/github/livoclouds/livo-clouds-web-app/**)",
+      "Read(/Users/hiperezr/code/github/livoclouds/livo-clouds-web-app/**)"
+    ]
+  }
+}
