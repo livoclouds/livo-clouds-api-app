@@ -144,6 +144,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/reopen')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Reopen a transaction back to PENDING reconciliation status' })
   async reopenTransaction(
     @Request() req: { condominiumId: string },

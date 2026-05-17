@@ -1118,6 +1118,61 @@ export class ClassificationService {
     });
   }
 
+  private async unmarkTerraceEventPaid(
+    calendarEventId: string,
+    transactionId: string,
+    condominiumId: string,
+    userId: string,
+  ): Promise<void> {
+    const ev = await this.prisma.calendarEvent.findFirst({
+      where: { id: calendarEventId, condominiumId, deletedAt: null },
+      select: { metadata: true },
+    });
+    if (!ev) {
+      this.logger.warn(
+        `unmarkTerraceEventPaid: event ${calendarEventId} not found or deleted — skipping revert`,
+      );
+      return;
+    }
+
+    const validation = validateTerraceMetadata(ev.metadata);
+    if (!validation.valid) {
+      this.logger.warn(
+        `unmarkTerraceEventPaid: corrupt metadata on event ${calendarEventId} — ${validation.error}`,
+      );
+      return;
+    }
+    if (validation.data.paymentStatus === 'PENDING') {
+      this.logger.debug(
+        `unmarkTerraceEventPaid: event ${calendarEventId} already PENDING — skipping`,
+      );
+      return;
+    }
+
+    const updatedMetadata = { ...validation.data, paymentStatus: 'PENDING' as const };
+
+    await this.prisma.calendarEvent.update({
+      where: { id: calendarEventId },
+      data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        condominiumId,
+        userId,
+        action: 'TERRACE_BOOKING_PAYMENT_REVERTED',
+        actionCategory: 'RECONCILIATION',
+        module: 'calendar',
+        entityType: 'CalendarEvent',
+        entityId: calendarEventId,
+        beforeState: { paymentStatus: validation.data.paymentStatus },
+        afterState: { paymentStatus: 'PENDING', linkedTransactionId: transactionId },
+        result: 'SUCCESS',
+        description: `Terrace booking payment reverted via transaction ${transactionId} reopen`,
+      },
+    });
+  }
+
   async ignoreTransaction(
     condominiumId: string,
     transactionId: string,
@@ -1164,39 +1219,71 @@ export class ClassificationService {
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    const tx = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
+    let capturedDate: Date | undefined;
+    let capturedCalendarEventId: string | null | undefined;
+
+    await this.prisma.$transaction(async (prisma) => {
+      const tx = await prisma.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+      });
+      if (!tx) throw new NotFoundException('Transaction not found');
+
+      if (tx.reconciliationStatus === ReconciliationStatus.PENDING) {
+        throw new BadRequestException({
+          code: 'INVALID_STATE_TRANSITION',
+          reason: 'Transaction is already PENDING and cannot be reopened.',
+        });
+      }
+
+      capturedDate = tx.transactionDate;
+      capturedCalendarEventId = tx.matchedCalendarEventId;
+      const before = { reconciliationStatus: tx.reconciliationStatus };
+
+      const result = await prisma.transaction.updateMany({
+        where: { id: transactionId, condominiumId, updatedAt: tx.updatedAt },
+        data: {
+          reconciliationStatus: ReconciliationStatus.PENDING,
+          reconciledById: null,
+          reconciledAt: null,
+        },
+      });
+
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_REOPENED',
+          actionCategory: 'RECONCILIATION',
+          module: 'transactions',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: before,
+          afterState: { reconciliationStatus: ReconciliationStatus.PENDING },
+          result: 'SUCCESS',
+        },
+      });
     });
-    if (!tx) throw new NotFoundException('Transaction not found');
 
-    const before = { reconciliationStatus: tx.reconciliationStatus };
+    const uniqueMonths = new Set<string>();
+    const d = new Date(capturedDate!);
+    uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
+    await Promise.all(
+      Array.from(uniqueMonths).map((key) => {
+        const [year, month] = key.split('-').map(Number);
+        return this.upsertSummaryForMonth(condominiumId, year, month);
+      }),
+    );
 
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        reconciliationStatus: ReconciliationStatus.PENDING,
-        reconciledById: null,
-        reconciledAt: null,
-      },
-    });
-
-    const d = new Date(tx.transactionDate);
-    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_REOPENED',
-        actionCategory: 'RECONCILIATION',
-        module: 'transactions',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: before,
-        afterState: { reconciliationStatus: ReconciliationStatus.PENDING },
-        result: 'SUCCESS',
-      },
-    });
+    if (capturedCalendarEventId) {
+      await this.unmarkTerraceEventPaid(capturedCalendarEventId, transactionId, condominiumId, userId);
+    }
   }
 
   async bulkReconcile(
@@ -1208,7 +1295,7 @@ export class ClassificationService {
     // Verify all IDs belong to this condominium (IDOR protection)
     const existing = await this.prisma.transaction.findMany({
       where: { id: { in: ids }, condominiumId },
-      select: { id: true, transactionDate: true, reconciliationStatus: true },
+      select: { id: true, transactionDate: true, reconciliationStatus: true, matchedCalendarEventId: true },
     });
 
     if (existing.length !== ids.length) {
@@ -1246,6 +1333,17 @@ export class ClassificationService {
         return this.upsertSummaryForMonth(condominiumId, year, month);
       }),
     );
+
+    if (action === 'reopen') {
+      const toRevert = existing.filter(
+        (t) => t.matchedCalendarEventId && t.reconciliationStatus === ReconciliationStatus.APPROVED,
+      );
+      await Promise.all(
+        toRevert.map((t) =>
+          this.unmarkTerraceEventPaid(t.matchedCalendarEventId!, t.id, condominiumId, userId),
+        ),
+      );
+    }
 
     const actionMap: Record<string, string> = {
       approve: 'TRANSACTIONS_BULK_APPROVED',
