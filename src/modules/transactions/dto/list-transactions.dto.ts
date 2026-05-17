@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsISO8601, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsISO8601, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ClassificationStatus, FlowType } from '@prisma/client';
 
@@ -47,4 +47,14 @@ export class ListTransactionsDto {
     message: 'columns must be a comma-separated list of allowlisted column IDs',
   })
   columns?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['reconciledAt', 'transactionDate', 'paymentConcept', 'unit'])
+  sortBy?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['asc', 'desc'])
+  sortDir?: string;
 }
