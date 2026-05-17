@@ -1,5 +1,5 @@
 import { IsEnum, IsIn, IsInt, IsISO8601, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ClassificationStatus, FlowType } from '@prisma/client';
 
 export class ListTransactionsDto {
@@ -57,4 +57,10 @@ export class ListTransactionsDto {
   @IsString()
   @IsIn(['asc', 'desc'])
   sortDir?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  q?: string;
 }

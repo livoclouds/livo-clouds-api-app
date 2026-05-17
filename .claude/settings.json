@@ -1,6 +1,6 @@
 {
   "worktree": {
-    "bgIsolation": "none"
+    "bgIsolation": "worktree"
   },
   "permissions": {
     "allow": [
