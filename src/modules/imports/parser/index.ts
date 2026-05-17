@@ -1,13 +1,36 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { parseExcelBuffer } from './excel.parser';
 import { parsePdfBuffer } from './pdf.parser';
-import type { ParsedRow } from './types';
+import type { ParsedRow, DetectedPeriod } from './types';
 
-export type { ParsedRow };
+export type { ParsedRow, DetectedPeriod };
+export { buildPeriods } from './types';
 
 export interface ServerParseResult {
   transactions: ParsedRow[];
   warnings: string[];
+}
+
+export interface PreviewFileResult {
+  id: string;
+  fileName: string;
+  fileType: 'xlsx' | 'pdf';
+  fileSizeBytes: number;
+  fileHash: string;
+  status: 'success' | 'warning' | 'error' | 'duplicate';
+  statusMessage?: string;
+  periods: DetectedPeriod[];
+  transactionCount: number;
+  totalIncome: number;
+  totalExpenses: number;
+  finalBalance: number;
+  transactions: ParsedRow[];
+  warnings: string[];
+  processedAt: string;
+}
+
+export interface PreviewApiResponse {
+  results: PreviewFileResult[];
 }
 
 @Injectable()
