@@ -1,6 +1,11 @@
 {
+  "worktree": {
+    "bgIsolation": "none"
+  },
   "permissions": {
     "allow": [
+      "Read(**)",
+      "Write(**)",
       "Bash(git *)",
       "Bash(gh pr *)",
       "Bash(gh api *)",
