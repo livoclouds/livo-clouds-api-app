@@ -22,8 +22,8 @@
       "WebFetch(domain:docs.github.com)",
       "WebFetch(domain:www.prisma.io)",
       "WebFetch(domain:nestjs.com)",
-      "Read(/Users/hiperezr/Code/github/livoclouds/livo-clouds-web-app/**)",
-      "Read(/Users/hiperezr/code/github/livoclouds/livo-clouds-web-app/**)"
+      "Read(~/Code/github/livoclouds/livo-clouds-web-app/**)",
+      "Read(~/code/github/livoclouds/livo-clouds-web-app/**)"
     ]
   }
 }
