@@ -131,6 +131,52 @@ export class ImportsController {
     return this.importsService.upload(req.condominiumId, files, user);
   }
 
+  @Post('preview')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Parse bank statement files for preview (no storage)' })
+  async preview(
+    @Request() req: FastifyRequest & { condominiumId: string },
+  ) {
+    const files: MultipartFile[] = [];
+    let storedHashes: string[] = [];
+    let clientIds: string[] = [];
+
+    if (req.isMultipart()) {
+      const parts = req.parts();
+      for await (const part of parts) {
+        if (part.type === 'file') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            chunks.push(chunk as Buffer);
+          }
+          const buffer = Buffer.concat(chunks);
+          files.push({
+            buffer,
+            originalname: part.filename,
+            mimetype: part.mimetype,
+            size: buffer.length,
+          });
+        } else if (part.fieldname === 'storedHashes') {
+          try {
+            storedHashes = JSON.parse(part.value as string);
+          } catch {
+            // ignore malformed field — treat as empty
+          }
+        } else if (part.fieldname === 'clientIds') {
+          try {
+            clientIds = JSON.parse(part.value as string);
+          } catch {
+            // ignore malformed field — treat as empty
+          }
+        }
+      }
+    }
+
+    return this.importsService.preview(req.condominiumId, files, storedHashes, clientIds);
+  }
+
   @Post('confirm')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })

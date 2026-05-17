@@ -17,8 +17,8 @@ import { StorageService } from '../storage/storage.service';
 import { SettingsService } from '../settings/settings.service';
 import { ConfirmImportDto, ParsedTransactionDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
-import { ImportsParserService } from './parser';
-import type { ParsedRow as ServerParsedRow } from './parser';
+import { ImportsParserService, buildPeriods } from './parser';
+import type { ParsedRow as ServerParsedRow, PreviewFileResult, PreviewApiResponse } from './parser';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -576,6 +576,133 @@ export class ImportsService {
     }
 
     return results;
+  }
+
+  async preview(
+    _condominiumId: string,
+    files: { buffer: Buffer; originalname: string; mimetype: string; size: number }[],
+    storedHashes: string[],
+    clientIds: string[],
+  ): Promise<PreviewApiResponse> {
+    const results: PreviewFileResult[] = [];
+
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      const id = clientIds[index] ?? crypto.randomUUID();
+      const base: PreviewFileResult = {
+        id,
+        fileName: file.originalname,
+        fileType: 'xlsx',
+        fileSizeBytes: file.size,
+        fileHash: '',
+        status: 'error',
+        periods: [],
+        transactionCount: 0,
+        totalIncome: 0,
+        totalExpenses: 0,
+        finalBalance: 0,
+        transactions: [],
+        warnings: [],
+        processedAt: new Date().toISOString(),
+      };
+
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        results.push({
+          ...base,
+          statusMessage: `File exceeds 20 MB limit (${(file.size / 1024 / 1024).toFixed(1)} MB)`,
+        });
+        continue;
+      }
+
+      const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+
+      if (storedHashes.includes(hash)) {
+        const ext = file.originalname.toLowerCase().endsWith('.pdf') ? 'pdf' : 'xlsx';
+        results.push({
+          ...base,
+          fileType: ext,
+          fileHash: hash,
+          status: 'duplicate',
+          statusMessage: 'This file has already been imported previously.',
+        });
+        continue;
+      }
+
+      const isXlsx = isXlsxMagicBytes(file.buffer);
+      const isPdf = isPdfMagicBytes(file.buffer);
+
+      if (!isXlsx && !isPdf) {
+        results.push({
+          ...base,
+          fileHash: hash,
+          statusMessage: 'File content does not match a valid PDF or Excel format.',
+        });
+        continue;
+      }
+
+      const fileType: 'xlsx' | 'pdf' = isXlsx ? 'xlsx' : 'pdf';
+
+      try {
+        const { transactions, warnings } = await this.parser.parseBuffer(
+          file.buffer,
+          fileType,
+        );
+
+        if (transactions.length > MAX_ROWS_PER_IMPORT) {
+          results.push({
+            ...base,
+            fileType,
+            fileHash: hash,
+            statusMessage: `File exceeds the ${MAX_ROWS_PER_IMPORT.toLocaleString()}-row import limit (${transactions.length.toLocaleString()} rows).`,
+          });
+          continue;
+        }
+
+        const totalIncome = transactions.reduce((sum, tx) => sum + tx.credits, 0);
+        const totalExpenses = transactions.reduce((sum, tx) => sum + tx.charges, 0);
+        const sorted = [...transactions].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+        );
+        const finalBalance = sorted[0]?.balance ?? 0;
+        const periods = buildPeriods(transactions);
+
+        const status =
+          transactions.length === 0 ? 'error' : warnings.length > 0 ? 'warning' : 'success';
+
+        results.push({
+          id,
+          fileName: file.originalname,
+          fileType,
+          fileSizeBytes: file.size,
+          fileHash: hash,
+          status,
+          statusMessage:
+            transactions.length === 0
+              ? 'No transactions could be extracted from this file.'
+              : undefined,
+          periods,
+          transactionCount: transactions.length,
+          totalIncome,
+          totalExpenses,
+          finalBalance,
+          transactions,
+          warnings,
+          processedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        results.push({
+          ...base,
+          fileType,
+          fileHash: hash,
+          statusMessage:
+            err instanceof Error
+              ? err.message
+              : 'An unexpected error occurred while parsing the file.',
+        });
+      }
+    }
+
+    return { results };
   }
 
   async confirm(
