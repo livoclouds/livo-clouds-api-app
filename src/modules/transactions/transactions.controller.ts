@@ -69,4 +69,13 @@ export class TransactionsController {
   ) {
     return this.transactionsService.findReconciled(req.condominiumId, query);
   }
+
+  @Get(':id/audit-chain')
+  @ApiOperation({ summary: 'Return chronological audit chain for a single transaction' })
+  getAuditChain(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+  ) {
+    return this.transactionsService.getAuditChain(req.condominiumId, id);
+  }
 }

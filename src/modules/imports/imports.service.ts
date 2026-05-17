@@ -254,6 +254,17 @@ function reconcileRows(
 export class ImportsService {
   private readonly logger = new Logger(ImportsService.name);
 
+  private sanitizeFileName(name: string): string {
+    return (
+      name
+        .replace(/[/\\]/g, '_')           // path separators → underscore
+        .replace(/\x00/g, '')             // null bytes removed
+        .replace(/^\.+/, '')              // leading dots stripped
+        .replace(/[^\w\s.\-()\[\]]/g, '_') // other unsafe chars → underscore
+        .trim() || 'unnamed'              // guarantee non-empty
+    );
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -489,7 +500,7 @@ export class ImportsService {
       const strictR2 = this.config.get<boolean>('storage.strictR2Retention') ?? true;
 
       if (this.storage.isConfigured()) {
-        const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${file.originalname}`;
+        const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${this.sanitizeFileName(file.originalname)}`;
         let r2Failed = false;
         try {
           this.logger.log(`upload: uploading to R2, key=${storageKey}`);

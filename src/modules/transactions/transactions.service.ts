@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ClassificationStatus, Prisma } from '@prisma/client';
 import { Readable } from 'node:stream';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -221,12 +221,24 @@ export class TransactionsService {
       if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
     }
 
+    const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
+    const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput> = {
+      reconciledAt:    { reconciledAt: safeSortDir },
+      transactionDate: { transactionDate: safeSortDir },
+      paymentConcept:  { paymentConcept: safeSortDir },
+      unit:            { resident: { unitNumber: safeSortDir } },
+    };
+    const orderBy: Prisma.TransactionOrderByWithRelationInput =
+      dto.sortBy && sortAllowlist[dto.sortBy]
+        ? sortAllowlist[dto.sortBy]
+        : { reconciledAt: safeSortDir };
+
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { reconciledAt: 'desc' },
+        orderBy,
         include: {
           resident: { select: { id: true, unitNumber: true, firstName: true, lastName: true } },
           importBatch: { select: { id: true, fileName: true } },
@@ -340,6 +352,24 @@ export class TransactionsService {
     if (truncated) {
       yield `# TRUNCATED: results exceeded ${EXPORT_HARD_CAP} rows; refine filters\r\n`;
     }
+  }
+
+  async getAuditChain(condominiumId: string, transactionId: string) {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, condominiumId },
+      select: { id: true },
+    });
+    if (!tx) throw new NotFoundException('Transaction not found');
+
+    return this.prisma.auditLog.findMany({
+      where: { entityId: transactionId },
+      include: {
+        user: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   private buildExportRow(
