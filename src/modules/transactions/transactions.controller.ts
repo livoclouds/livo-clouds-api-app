@@ -61,6 +61,27 @@ export class TransactionsController {
     return this.transactionsService.findClassified(req.condominiumId, query);
   }
 
+  @Get('reconciled/export.csv')
+  @Throttle({ burst: { limit: 2, ttl: 30_000 }, sustained: { limit: 10, ttl: 300_000 } })
+  @ApiOperation({ summary: 'Export Reconciliation History as a streamed CSV' })
+  async exportReconciled(
+    @Request() req: { condominiumId: string },
+    @Param('condominiumSlug') condominiumSlug: string,
+    @Query() query: ListTransactionsDto,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const stream = this.transactionsService.exportReconciledCsv(req.condominiumId, query);
+    const filenameDate = new Date().toISOString().slice(0, 10);
+    const filename = `reconciliation-history_${condominiumSlug}_${filenameDate}.csv`;
+
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .header('Cache-Control', 'no-store');
+
+    return reply.send(stream);
+  }
+
   @Get('reconciled')
   @ApiOperation({ summary: 'List reconciled transactions (APPROVED or IGNORED)' })
   findReconciled(

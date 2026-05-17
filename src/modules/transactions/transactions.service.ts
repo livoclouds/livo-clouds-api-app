@@ -35,6 +35,31 @@ const EXPORT_MANDATORY_COLUMNS: readonly ExportColumnId[] = ['rowNumber', 'descr
 const EXPORT_HARD_CAP = 50_000;
 const EXPORT_CHUNK_SIZE = 1_000;
 
+const RECONCILED_EXPORT_COLUMN_IDS = [
+  'date', 'description', 'payerName', 'amount', 'flowType',
+  'reconciliationStatus', 'classificationStatus',
+  'resident', 'unit', 'paymentConcept', 'paymentPeriod',
+  'reconciledBy', 'reconciledAt', 'importFile',
+] as const;
+type ReconciledExportColumnId = (typeof RECONCILED_EXPORT_COLUMN_IDS)[number];
+
+const RECONCILED_EXPORT_HEADER_LABEL: Record<ReconciledExportColumnId, string> = {
+  date:                 'Date',
+  description:          'Description',
+  payerName:            'Payer Name',
+  amount:               'Amount',
+  flowType:             'Flow Type',
+  reconciliationStatus: 'Status',
+  classificationStatus: 'Classification',
+  resident:             'Resident',
+  unit:                 'Unit',
+  paymentConcept:       'Concept',
+  paymentPeriod:        'Period',
+  reconciledBy:         'Reconciled By',
+  reconciledAt:         'Reconciled At',
+  importFile:           'Import File',
+};
+
 function escapeCsvValue(input: unknown): string {
   if (input === null || input === undefined) return '';
   const str = String(input);
@@ -219,6 +244,13 @@ export class TransactionsService {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
       if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+    }
+    // ILIKE scan on unindexed columns — acceptable at current dataset size
+    if (dto.q && dto.q.trim().length > 0) {
+      where.OR = [
+        { payerName: { contains: dto.q, mode: 'insensitive' } },
+        { description: { contains: dto.q, mode: 'insensitive' } },
+      ];
     }
 
     const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
@@ -422,5 +454,132 @@ export class TransactionsService {
         }
       })
       .join(',');
+  }
+
+  exportReconciledCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
+    const { flowType, dateFrom, dateTo, importBatchId } = dto;
+    const reconciliationStatus = (dto as ListTransactionsDto & { reconciliationStatus?: string }).reconciliationStatus;
+
+    const where: Prisma.TransactionWhereInput = {
+      condominiumId,
+      reconciliationStatus: reconciliationStatus
+        ? (reconciliationStatus as 'APPROVED' | 'IGNORED')
+        : { in: ['APPROVED', 'IGNORED'] },
+    };
+    if (flowType) where.flowType = flowType;
+    if (importBatchId) where.importBatchId = importBatchId;
+    if (dateFrom || dateTo) {
+      where.transactionDate = {};
+      if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
+      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+    }
+    // ILIKE scan on unindexed columns — acceptable at current dataset size
+    if (dto.q && dto.q.trim().length > 0) {
+      where.OR = [
+        { payerName: { contains: dto.q, mode: 'insensitive' } },
+        { description: { contains: dto.q, mode: 'insensitive' } },
+      ];
+    }
+
+    return Readable.from(this.streamReconciledRows(where));
+  }
+
+  private async *streamReconciledRows(
+    where: Prisma.TransactionWhereInput,
+  ): AsyncGenerator<string> {
+    yield '﻿';
+    yield RECONCILED_EXPORT_COLUMN_IDS
+      .map((c) => escapeCsvValue(RECONCILED_EXPORT_HEADER_LABEL[c]))
+      .join(',') + '\r\n';
+
+    let cursor: string | undefined;
+    let exported = 0;
+    let truncated = false;
+
+    while (exported < EXPORT_HARD_CAP) {
+      const chunk = await this.prisma.transaction.findMany({
+        where,
+        take: EXPORT_CHUNK_SIZE,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        orderBy: { id: 'asc' },
+        include: {
+          resident: { select: { id: true, unitNumber: true, firstName: true, lastName: true } },
+          importBatch: { select: { id: true, fileName: true } },
+          reconciledBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
+
+      if (chunk.length === 0) break;
+
+      for (const tx of chunk) {
+        if (exported >= EXPORT_HARD_CAP) {
+          truncated = true;
+          break;
+        }
+        exported += 1;
+        yield this.buildReconciledExportRow(tx) + '\r\n';
+      }
+
+      cursor = chunk[chunk.length - 1].id;
+      if (chunk.length < EXPORT_CHUNK_SIZE) break;
+    }
+
+    if (truncated) {
+      yield `# TRUNCATED: results exceeded ${EXPORT_HARD_CAP} rows; refine filters\r\n`;
+    }
+  }
+
+  private buildReconciledExportRow(
+    tx: Prisma.TransactionGetPayload<{
+      include: {
+        resident: { select: { id: true; unitNumber: true; firstName: true; lastName: true } };
+        importBatch: { select: { id: true; fileName: true } };
+        reconciledBy: { select: { id: true; firstName: true; lastName: true } };
+      };
+    }>,
+  ): string {
+    const amount = (() => {
+      const absolute =
+        (tx.credits != null ? Number(tx.credits) : null) ??
+        (tx.charges != null ? Number(tx.charges) : null) ??
+        0;
+      return tx.flowType === 'INCOME' ? absolute : -absolute;
+    })();
+
+    const period =
+      tx.paymentPeriodYear != null && tx.paymentPeriodMonth != null
+        ? `${tx.paymentPeriodYear}-${String(tx.paymentPeriodMonth).padStart(2, '0')}`
+        : '';
+
+    const residentName = tx.resident
+      ? `${tx.resident.firstName} ${tx.resident.lastName}`.trim()
+      : '';
+
+    const reconciledByName = tx.reconciledBy
+      ? `${tx.reconciledBy.firstName} ${tx.reconciledBy.lastName}`.trim()
+      : '';
+
+    const reconciledAt = tx.reconciledAt
+      ? tx.reconciledAt.toISOString().replace('T', ' ').slice(0, 19)
+      : '';
+
+    return RECONCILED_EXPORT_COLUMN_IDS.map((column) => {
+      switch (column) {
+        case 'date':              return escapeCsvValue(tx.transactionDate.toISOString().slice(0, 10));
+        case 'description':       return escapeCsvValue(tx.description);
+        case 'payerName':         return escapeCsvValue(tx.payerName ?? '');
+        case 'amount':            return escapeCsvValue(amount.toFixed(2));
+        case 'flowType':          return escapeCsvValue(tx.flowType);
+        case 'reconciliationStatus': return escapeCsvValue(tx.reconciliationStatus);
+        case 'classificationStatus': return escapeCsvValue(tx.classificationStatus);
+        case 'resident':          return escapeCsvValue(residentName);
+        case 'unit':              return escapeCsvValue(tx.resident?.unitNumber ?? '');
+        case 'paymentConcept':    return escapeCsvValue(tx.paymentConcept ?? '');
+        case 'paymentPeriod':     return escapeCsvValue(period);
+        case 'reconciledBy':      return escapeCsvValue(reconciledByName);
+        case 'reconciledAt':      return escapeCsvValue(reconciledAt);
+        case 'importFile':        return escapeCsvValue(tx.importBatch?.fileName ?? '');
+      }
+    }).join(',');
   }
 }
