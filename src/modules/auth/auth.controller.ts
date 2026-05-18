@@ -2,13 +2,13 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
+  Ip,
   Post,
-  Req,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtPayload } from '../../common/types';
@@ -25,32 +25,35 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login with email and password' })
-  login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.authService.login(dto, {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+  login(
+    @Body() dto: LoginDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.authService.login(dto, { ipAddress, userAgent });
   }
 
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Rotate refresh token' })
-  refresh(@Body() dto: RefreshTokenDto, @Req() req: Request) {
-    return this.authService.refresh(dto.refreshToken, {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+  refresh(
+    @Body() dto: RefreshTokenDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.authService.refresh(dto.refreshToken, { ipAddress, userAgent });
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Revoke refresh token' })
-  logout(@Body() dto: RefreshTokenDto, @Req() req: Request) {
-    return this.authService.logout(dto.refreshToken, {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+  logout(
+    @Body() dto: RefreshTokenDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.authService.logout(dto.refreshToken, { ipAddress, userAgent });
   }
 
   @Get('me')
