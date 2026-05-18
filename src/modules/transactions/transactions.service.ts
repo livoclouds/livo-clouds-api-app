@@ -179,6 +179,17 @@ export class TransactionsService {
     const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId } = dto;
     const skip = (page - 1) * limit;
 
+    if (
+      classificationStatus !== undefined &&
+      classificationStatus !== ClassificationStatus.AUTO &&
+      classificationStatus !== ClassificationStatus.MANUAL_OVERRIDE
+    ) {
+      throw new BadRequestException({
+        code: 'INVALID_CLASSIFICATION_STATUS',
+        reason: 'Only AUTO and MANUAL_OVERRIDE are accepted on the classified endpoint.',
+      });
+    }
+
     const where: Prisma.TransactionWhereInput = {
       condominiumId,
       classificationStatus: classificationStatus ?? { in: ['AUTO', 'MANUAL_OVERRIDE'] },
