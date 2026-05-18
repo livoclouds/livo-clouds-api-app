@@ -6,6 +6,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import { AppModule } from './app.module';
 
@@ -20,6 +21,16 @@ async function bootstrap() {
   const corsOrigins = configService.get<string[]>('cors.origins', [
     'http://localhost:3000',
   ]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await app.register(helmet as any, {
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    hsts:
+      process.env.NODE_ENV === 'production'
+        ? { maxAge: 31536000, includeSubDomains: true }
+        : false,
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await app.register(multipart as any, { limits: { fileSize: 20 * 1024 * 1024, files: 5 } });
