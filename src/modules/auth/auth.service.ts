@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -14,10 +15,13 @@ import { LoginDto } from './dto/login.dto';
 interface AuthContext {
   ipAddress?: string;
   userAgent?: string;
+  requestId?: string;
 }
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   // Computed once at service startup to flatten response timing when a user is not found.
   // bcrypt.compare against this hash always fails but takes the same time as a real comparison,
   // preventing timing-based email enumeration (LOG-016).
@@ -31,6 +35,8 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto, ctx?: AuthContext) {
+    const startMs = Date.now();
+
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, deletedAt: null },
       include: { condominium: { select: { slug: true } } },
@@ -40,6 +46,13 @@ export class AuthService {
       // Run dummy comparison to match timing of the wrong-password path (LOG-016).
       // Cannot write audit log: userId unknown for non-existent email.
       await bcrypt.compare(dto.password, this.DUMMY_HASH);
+      this.logger.warn(JSON.stringify({
+        event: 'auth.login.failed',
+        reason: 'INVALID_CREDENTIALS',
+        requestId: ctx?.requestId,
+        latencyMs: Date.now() - startMs,
+        ip: ctx?.ipAddress,
+      }));
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -61,6 +74,14 @@ export class AuthService {
       } catch {
         // Audit failure must not block authentication
       }
+      this.logger.warn(JSON.stringify({
+        event: 'auth.login.failed',
+        reason: 'ACCOUNT_INACTIVE',
+        userId: user.id,
+        requestId: ctx?.requestId,
+        latencyMs: Date.now() - startMs,
+        ip: ctx?.ipAddress,
+      }));
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -81,6 +102,14 @@ export class AuthService {
       } catch {
         // Audit failure must not block authentication
       }
+      this.logger.warn(JSON.stringify({
+        event: 'auth.login.failed',
+        reason: 'INVALID_PASSWORD',
+        userId: user.id,
+        requestId: ctx?.requestId,
+        latencyMs: Date.now() - startMs,
+        ip: ctx?.ipAddress,
+      }));
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -116,6 +145,15 @@ export class AuthService {
       // Audit failure must not block authentication
     }
 
+    this.logger.log(JSON.stringify({
+      event: 'auth.login.success',
+      userId: user.id,
+      condominiumId: user.condominiumId,
+      requestId: ctx?.requestId,
+      latencyMs: Date.now() - startMs,
+      ip: ctx?.ipAddress,
+    }));
+
     return {
       accessToken,
       refreshToken,
@@ -134,6 +172,8 @@ export class AuthService {
   }
 
   async refresh(token: string, ctx?: AuthContext) {
+    const startMs = Date.now();
+
     // Fetch without revokedAt filter so we can distinguish reuse from never-issued (LOG-011).
     const stored = await this.prisma.refreshToken.findFirst({
       where: { token },
@@ -169,6 +209,12 @@ export class AuthService {
       } catch {
         // Audit failure must not block security response
       }
+      this.logger.error(JSON.stringify({
+        event: 'auth.refresh.reuse_detected',
+        userId: stored.userId,
+        requestId: ctx?.requestId,
+        ip: ctx?.ipAddress,
+      }));
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
@@ -209,6 +255,14 @@ export class AuthService {
       // Audit failure must not block token refresh
     }
 
+    this.logger.log(JSON.stringify({
+      event: 'auth.refresh.success',
+      userId: user.id,
+      requestId: ctx?.requestId,
+      latencyMs: Date.now() - startMs,
+      ip: ctx?.ipAddress,
+    }));
+
     return { accessToken, refreshToken, sessionDuration: user.sessionDuration };
   }
 
@@ -239,6 +293,19 @@ export class AuthService {
       } catch {
         // Audit failure must not block logout
       }
+      this.logger.log(JSON.stringify({
+        event: 'auth.logout.success',
+        userId: stored.userId,
+        requestId: ctx?.requestId,
+        ip: ctx?.ipAddress,
+      }));
+    } else {
+      this.logger.warn(JSON.stringify({
+        event: 'auth.logout.noop',
+        reason: 'TOKEN_NOT_FOUND_OR_REVOKED',
+        requestId: ctx?.requestId,
+        ip: ctx?.ipAddress,
+      }));
     }
   }
 
