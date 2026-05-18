@@ -1,6 +1,4 @@
 import {
-  HttpException,
-  HttpStatus,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -20,6 +18,11 @@ interface AuthContext {
 
 @Injectable()
 export class AuthService {
+  // Computed once at service startup to flatten response timing when a user is not found.
+  // bcrypt.compare against this hash always fails but takes the same time as a real comparison,
+  // preventing timing-based email enumeration (LOG-016).
+  private readonly DUMMY_HASH = bcrypt.hashSync('livo-dummy-hash-placeholder', 12);
+
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
@@ -34,8 +37,30 @@ export class AuthService {
     });
 
     if (!user) {
+      // Run dummy comparison to match timing of the wrong-password path (LOG-016).
       // Cannot write audit log: userId unknown for non-existent email.
-      // Anonymous login-failure audit logging requires schema change (Phase 2).
+      await bcrypt.compare(dto.password, this.DUMMY_HASH);
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Check account status before bcrypt to avoid unnecessary computation (LOG-008).
+    // Returns the same generic error as wrong-password to prevent account enumeration.
+    if (!user.isActive) {
+      try {
+        await this.auditService.log({
+          userId: user.id,
+          condominiumId: user.condominiumId ?? undefined,
+          action: 'AUTH_LOGIN_FAILED',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'WARNING',
+          description: 'Login failed: account inactive',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block authentication
+      }
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -59,33 +84,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    if (!user.isActive) {
-      try {
-        await this.auditService.log({
-          userId: user.id,
-          condominiumId: user.condominiumId ?? undefined,
-          action: 'AUTH_LOGIN_FAILED',
-          actionCategory: 'AUTH',
-          module: 'auth',
-          result: 'WARNING',
-          description: 'Login failed: account inactive',
-          ipAddress: ctx?.ipAddress,
-          userAgent: ctx?.userAgent,
-        });
-      } catch {
-        // Audit failure must not block authentication
-      }
-      throw new HttpException(
-        { code: 'AUTH_ACCOUNT_INACTIVE', message: 'Account is inactive.' },
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() },
-    });
-
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
@@ -94,7 +92,13 @@ export class AuthService {
       condominiumSlug: user.condominium?.slug ?? null,
     };
 
+    // Generate tokens first; only advance lastLoginAt if this succeeds (LOG-013).
     const { accessToken, refreshToken } = await this.generateTokens(payload);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
 
     try {
       await this.auditService.log({
@@ -130,8 +134,9 @@ export class AuthService {
   }
 
   async refresh(token: string, ctx?: AuthContext) {
+    // Fetch without revokedAt filter so we can distinguish reuse from never-issued (LOG-011).
     const stored = await this.prisma.refreshToken.findFirst({
-      where: { token, revokedAt: null },
+      where: { token },
       include: {
         user: {
           include: { condominium: { select: { slug: true } } },
@@ -139,7 +144,35 @@ export class AuthService {
       },
     });
 
-    if (!stored || stored.expiresAt < new Date()) {
+    if (!stored) {
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    // Reuse detection: token exists but was already rotated — potential token theft (LOG-011).
+    if (stored.revokedAt !== null) {
+      await this.prisma.refreshToken.updateMany({
+        where: { userId: stored.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      try {
+        await this.auditService.log({
+          userId: stored.userId,
+          condominiumId: stored.user?.condominiumId ?? undefined,
+          action: 'AUTH_REFRESH_REUSE_DETECTED',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'ERROR',
+          description: 'Refresh token reuse detected; all active tokens revoked',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block security response
+      }
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    if (stored.expiresAt < new Date()) {
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
@@ -231,6 +264,21 @@ export class AuthService {
     };
   }
 
+  // Parses duration strings like '7d', '14d', '1h', '30m', '60s' into milliseconds.
+  // Returns fallback when the format is not recognized.
+  private parseDurationMs(duration: string, fallback: number): number {
+    const match = /^(\d+)(s|m|h|d)$/.exec(duration);
+    if (!match) return fallback;
+    const value = parseInt(match[1], 10);
+    const units: Record<string, number> = {
+      s: 1_000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+    };
+    return value * units[match[2]];
+  }
+
   private async generateTokens(payload: JwtPayload) {
     const accessToken = this.jwtService.sign(payload);
 
@@ -245,8 +293,9 @@ export class AuthService {
       expiresIn: refreshExpiresIn,
     });
 
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    // Derive DB expiresAt from the configured refresh TTL so both stay in sync (LOG-010).
+    const refreshDurationMs = this.parseDurationMs(refreshExpiresIn, 7 * 86_400_000);
+    const expiresAt = new Date(Date.now() + refreshDurationMs);
 
     await this.prisma.refreshToken.create({
       data: {
