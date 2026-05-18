@@ -2,14 +2,18 @@ import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { UserRole } from '../../common/types';
 import { AuthController } from './auth.controller';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 interface AuthServiceMock {
   login: jest.Mock;
   refresh: jest.Mock;
   logout: jest.Mock;
   getMe: jest.Mock;
+  forgotPassword: jest.Mock;
+  resetPassword: jest.Mock;
 }
 
 function makeServiceMock(): AuthServiceMock {
@@ -18,6 +22,8 @@ function makeServiceMock(): AuthServiceMock {
     refresh: jest.fn().mockResolvedValue({ accessToken: 'at', refreshToken: 'rt' }),
     logout: jest.fn().mockResolvedValue(undefined),
     getMe: jest.fn().mockResolvedValue({ id: 'user-1', email: 'u@test.local' }),
+    forgotPassword: jest.fn().mockResolvedValue({ message: 'If an account...' }),
+    resetPassword: jest.fn().mockResolvedValue({ message: 'Password reset successfully' }),
   };
 }
 
@@ -188,6 +194,90 @@ describe('AuthController', () => {
       controller.getMe(jwtPayload);
 
       expect(svc.getMe).toHaveBeenCalledWith('user-uuid-1');
+    });
+
+    it('forgotPassword() delegates to authService.forgotPassword with dto and context', () => {
+      const dto = Object.assign(new ForgotPasswordDto(), { email: 'user@test.local' });
+      controller.forgotPassword(dto, ctx.ipAddress, ctx.userAgent, ctx.requestId);
+
+      expect(svc.forgotPassword).toHaveBeenCalledWith(dto, {
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+        requestId: ctx.requestId,
+      });
+    });
+
+    it('resetPassword() delegates to authService.resetPassword with dto and context', () => {
+      const dto = Object.assign(new ResetPasswordDto(), {
+        token: 'test-raw-token',
+        newPassword: 'NewPass1234!',
+      });
+      controller.resetPassword(dto, ctx.ipAddress, ctx.userAgent, ctx.requestId);
+
+      expect(svc.resetPassword).toHaveBeenCalledWith(dto, {
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+        requestId: ctx.requestId,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('ForgotPasswordDto validation', () => {
+    async function validateForgotDto(data: Record<string, unknown>) {
+      const dto = plainToInstance(ForgotPasswordDto, data);
+      return validate(dto);
+    }
+
+    it('passes with a valid email', async () => {
+      const errors = await validateForgotDto({ email: 'user@test.local' });
+      expect(errors).toHaveLength(0);
+    });
+
+    it('fails when email is missing', async () => {
+      const errors = await validateForgotDto({});
+      const fields = errors.map((e) => e.property);
+      expect(fields).toContain('email');
+    });
+
+    it('fails when email is not a valid email format', async () => {
+      const errors = await validateForgotDto({ email: 'not-an-email' });
+      const fields = errors.map((e) => e.property);
+      expect(fields).toContain('email');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('ResetPasswordDto validation', () => {
+    async function validateResetDto(data: Record<string, unknown>) {
+      const dto = plainToInstance(ResetPasswordDto, data);
+      return validate(dto);
+    }
+
+    it('passes with a valid token and password of 8+ characters', async () => {
+      const errors = await validateResetDto({
+        token: 'abc123',
+        newPassword: 'NewPass1!',
+      });
+      expect(errors).toHaveLength(0);
+    });
+
+    it('fails when token is missing', async () => {
+      const errors = await validateResetDto({ newPassword: 'NewPass1!' });
+      const fields = errors.map((e) => e.property);
+      expect(fields).toContain('token');
+    });
+
+    it('fails when newPassword is shorter than 8 characters', async () => {
+      const errors = await validateResetDto({ token: 'abc123', newPassword: 'short' });
+      const fields = errors.map((e) => e.property);
+      expect(fields).toContain('newPassword');
+    });
+
+    it('fails when newPassword is missing', async () => {
+      const errors = await validateResetDto({ token: 'abc123' });
+      const fields = errors.map((e) => e.property);
+      expect(fields).toContain('newPassword');
     });
   });
 });
