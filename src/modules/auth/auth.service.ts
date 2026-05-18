@@ -10,7 +10,13 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { JwtPayload, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { LoginDto } from './dto/login.dto';
+
+interface AuthContext {
+  ipAddress?: string;
+  userAgent?: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -18,24 +24,57 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private auditService: AuditService,
   ) {}
 
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, ctx?: AuthContext) {
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, deletedAt: null },
       include: { condominium: { select: { slug: true } } },
     });
 
     if (!user) {
+      // Cannot write audit log: userId unknown for non-existent email.
+      // Anonymous login-failure audit logging requires schema change (Phase 2).
       throw new UnauthorizedException('Invalid credentials');
     }
 
     const passwordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!passwordValid) {
+      try {
+        await this.auditService.log({
+          userId: user.id,
+          condominiumId: user.condominiumId ?? undefined,
+          action: 'AUTH_LOGIN_FAILED',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'ERROR',
+          description: 'Login failed: invalid password',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block authentication
+      }
       throw new UnauthorizedException('Invalid credentials');
     }
 
     if (!user.isActive) {
+      try {
+        await this.auditService.log({
+          userId: user.id,
+          condominiumId: user.condominiumId ?? undefined,
+          action: 'AUTH_LOGIN_FAILED',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'WARNING',
+          description: 'Login failed: account inactive',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block authentication
+      }
       throw new HttpException(
         { code: 'AUTH_ACCOUNT_INACTIVE', message: 'Account is inactive.' },
         HttpStatus.UNAUTHORIZED,
@@ -57,6 +96,22 @@ export class AuthService {
 
     const { accessToken, refreshToken } = await this.generateTokens(payload);
 
+    try {
+      await this.auditService.log({
+        userId: user.id,
+        condominiumId: user.condominiumId ?? undefined,
+        action: 'AUTH_LOGIN_SUCCESS',
+        actionCategory: 'AUTH',
+        module: 'auth',
+        result: 'SUCCESS',
+        description: 'User logged in successfully',
+        ipAddress: ctx?.ipAddress,
+        userAgent: ctx?.userAgent,
+      });
+    } catch {
+      // Audit failure must not block authentication
+    }
+
     return {
       accessToken,
       refreshToken,
@@ -74,7 +129,7 @@ export class AuthService {
     };
   }
 
-  async refresh(token: string) {
+  async refresh(token: string, ctx?: AuthContext) {
     const stored = await this.prisma.refreshToken.findFirst({
       where: { token, revokedAt: null },
       include: {
@@ -104,14 +159,54 @@ export class AuthService {
     };
 
     const { accessToken, refreshToken } = await this.generateTokens(payload);
+
+    try {
+      await this.auditService.log({
+        userId: user.id,
+        condominiumId: user.condominiumId ?? undefined,
+        action: 'AUTH_REFRESH',
+        actionCategory: 'AUTH',
+        module: 'auth',
+        result: 'SUCCESS',
+        description: 'Session token refreshed',
+        ipAddress: ctx?.ipAddress,
+        userAgent: ctx?.userAgent,
+      });
+    } catch {
+      // Audit failure must not block token refresh
+    }
+
     return { accessToken, refreshToken, sessionDuration: user.sessionDuration };
   }
 
-  async logout(token: string) {
+  async logout(token: string, ctx?: AuthContext) {
+    const stored = await this.prisma.refreshToken.findFirst({
+      where: { token, revokedAt: null },
+      select: { userId: true, user: { select: { condominiumId: true } } },
+    });
+
     await this.prisma.refreshToken.updateMany({
       where: { token, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+
+    if (stored) {
+      try {
+        await this.auditService.log({
+          userId: stored.userId,
+          condominiumId: stored.user?.condominiumId ?? undefined,
+          action: 'AUTH_LOGOUT',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'SUCCESS',
+          description: 'User logged out',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block logout
+      }
+    }
   }
 
   async getMe(userId: string) {
