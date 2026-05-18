@@ -31,8 +31,9 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Ip() ipAddress: string,
     @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
   ) {
-    return this.authService.login(dto, { ipAddress, userAgent });
+    return this.authService.login(dto, { ipAddress, userAgent, requestId });
   }
 
   @Public()
@@ -43,8 +44,9 @@ export class AuthController {
     @Body() dto: RefreshTokenDto,
     @Ip() ipAddress: string,
     @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
   ) {
-    return this.authService.refresh(dto.refreshToken, { ipAddress, userAgent });
+    return this.authService.refresh(dto.refreshToken, { ipAddress, userAgent, requestId });
   }
 
   @Post('logout')
@@ -54,8 +56,9 @@ export class AuthController {
     @Body() dto: RefreshTokenDto,
     @Ip() ipAddress: string,
     @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
   ) {
-    return this.authService.logout(dto.refreshToken, { ipAddress, userAgent });
+    return this.authService.logout(dto.refreshToken, { ipAddress, userAgent, requestId });
   }
 
   @Get('me')
