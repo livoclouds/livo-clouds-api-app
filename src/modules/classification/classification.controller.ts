@@ -53,6 +53,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/match')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Manually match a transaction to a resident' })
   async manualMatch(
     @Request() req: { condominiumId: string },
@@ -76,6 +77,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/classify')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Manually classify a transaction with custom fields' })
   async manualClassify(
     @Request() req: { condominiumId: string },
@@ -99,6 +101,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/unmatch')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Remove resident match from a transaction' })
   async unmatch(
     @Request() req: { condominiumId: string },
@@ -120,6 +123,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/approve')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Approve a transaction so it affects official financial data' })
   async approveTransaction(
     @Request() req: { condominiumId: string },
@@ -132,6 +136,7 @@ export class ClassificationController {
 
   @Patch('transactions/:id/ignore')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Ignore a transaction so it is excluded from financial data' })
   async ignoreTransaction(
     @Request() req: { condominiumId: string },
