@@ -14,8 +14,10 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtPayload } from '../../common/types';
 import { AuthService } from './auth.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -59,6 +61,34 @@ export class AuthController {
     @Headers('x-request-id') requestId?: string,
   ) {
     return this.authService.logout(dto.refreshToken, { ipAddress, userAgent, requestId });
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ burst: { limit: 3, ttl: 60_000 }, sustained: { limit: 5, ttl: 600_000 } })
+  @ApiOperation({ summary: 'Request a password reset email' })
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    return this.authService.forgotPassword(dto, { ipAddress, userAgent, requestId });
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ burst: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Reset password using a valid reset token' })
+  resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    return this.authService.resetPassword(dto, { ipAddress, userAgent, requestId });
   }
 
   @Get('me')

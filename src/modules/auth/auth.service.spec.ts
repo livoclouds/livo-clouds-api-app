@@ -1,4 +1,4 @@
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { UserRole } from '../../common/types';
 import { AuthService } from './auth.service';
@@ -17,6 +17,7 @@ const CONDOMINIUM_SLUG = 'test-condo';
 interface PrismaMock {
   user: {
     findFirst: jest.Mock;
+    findMany: jest.Mock;
     update: jest.Mock;
   };
   refreshToken: {
@@ -25,6 +26,16 @@ interface PrismaMock {
     update: jest.Mock;
     updateMany: jest.Mock;
   };
+  passwordResetToken: {
+    create: jest.Mock;
+    findUnique: jest.Mock;
+    update: jest.Mock;
+  };
+  $transaction: jest.Mock;
+}
+
+interface EmailMock {
+  sendPasswordResetEmail: jest.Mock;
 }
 
 interface AuditMock {
@@ -40,9 +51,10 @@ interface ConfigMock {
 }
 
 function makePrismaMock(): PrismaMock {
-  return {
+  const mock: PrismaMock = {
     user: {
       findFirst: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue(undefined),
     },
     refreshToken: {
@@ -51,7 +63,18 @@ function makePrismaMock(): PrismaMock {
       update: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    passwordResetToken: {
+      create: jest.fn().mockResolvedValue(undefined),
+      findUnique: jest.fn(),
+      update: jest.fn().mockResolvedValue(undefined),
+    },
+    $transaction: jest.fn().mockImplementation((ops: unknown[]) => Promise.all(ops)),
   };
+  return mock;
+}
+
+function makeEmailMock(): EmailMock {
+  return { sendPasswordResetEmail: jest.fn().mockResolvedValue(undefined) };
 }
 
 function makeAuditMock(): AuditMock {
@@ -79,12 +102,14 @@ function makeService(
   audit: AuditMock,
   jwt: JwtMock = makeJwtMock(),
   config: ConfigMock = makeConfigMock(),
+  email: EmailMock = makeEmailMock(),
 ): AuthService {
   return new AuthService(
     prisma as never,
     jwt as never,
     config as never,
     audit as never,
+    email as never,
   );
 }
 
@@ -141,6 +166,7 @@ describe('AuthService', () => {
   let prisma: PrismaMock;
   let audit: AuditMock;
   let jwt: JwtMock;
+  let email: EmailMock;
   let service: AuthService;
   const bcryptCompare = bcrypt.compare as jest.Mock;
 
@@ -148,7 +174,8 @@ describe('AuthService', () => {
     prisma = makePrismaMock();
     audit = makeAuditMock();
     jwt = makeJwtMock();
-    service = makeService(prisma, audit, jwt);
+    email = makeEmailMock();
+    service = makeService(prisma, audit, jwt, makeConfigMock(), email);
     bcryptCompare.mockReset();
   });
 
@@ -538,6 +565,201 @@ describe('AuthService', () => {
       const result = await service.getMe(USER_ID);
 
       expect(result.condominium).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('forgotPassword', () => {
+    it('returns the same generic message when no user is found (anti-enumeration)', async () => {
+      prisma.user.findMany.mockResolvedValue([]);
+
+      const result = await service.forgotPassword({ email: 'ghost@test.local' });
+
+      expect(result.message).toMatch(/if an account/i);
+    });
+
+    it('returns the same generic message when a user is found', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+
+      const result = await service.forgotPassword({ email: 'user@test.local' });
+
+      expect(result.message).toMatch(/if an account/i);
+    });
+
+    it('creates a PasswordResetToken for each matched user', async () => {
+      const user1 = activeUser({ id: 'user-1', condominiumId: 'cond-1' });
+      const user2 = { ...activeUser(), id: 'user-2', condominiumId: 'cond-2' };
+      prisma.user.findMany.mockResolvedValue([user1, user2]);
+
+      await service.forgotPassword({ email: 'user@test.local' });
+
+      expect(prisma.passwordResetToken.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('stores a SHA-256 hash — not the raw token', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+
+      await service.forgotPassword({ email: 'user@test.local' });
+
+      const callArg = prisma.passwordResetToken.create.mock.calls[0][0];
+      const tokenHash: string = callArg.data.tokenHash;
+      // SHA-256 hex digest is always 64 characters
+      expect(tokenHash).toHaveLength(64);
+      expect(tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('calls emailService.sendPasswordResetEmail once per matched user', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+
+      await service.forgotPassword({ email: 'user@test.local' });
+
+      expect(email.sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+      expect(email.sendPasswordResetEmail).toHaveBeenCalledWith(
+        'user@test.local',
+        expect.any(String),
+      );
+    });
+
+    it('does not call emailService when no users are found', async () => {
+      prisma.user.findMany.mockResolvedValue([]);
+
+      await service.forgotPassword({ email: 'ghost@test.local' });
+
+      expect(email.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not block the response when audit write throws', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+      audit.log.mockRejectedValue(new Error('Audit DB unavailable'));
+
+      await expect(
+        service.forgotPassword({ email: 'user@test.local' }),
+      ).resolves.toMatchObject({ message: expect.any(String) });
+    });
+
+    it('does not block the response when email service throws', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+      email.sendPasswordResetEmail.mockRejectedValue(new Error('Resend API down'));
+
+      await expect(
+        service.forgotPassword({ email: 'user@test.local' }),
+      ).resolves.toMatchObject({ message: expect.any(String) });
+    });
+
+    it('writes PASSWORD_RESET_REQUESTED audit for each matched user', async () => {
+      prisma.user.findMany.mockResolvedValue([activeUser()]);
+
+      await service.forgotPassword({ email: 'user@test.local' });
+
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'PASSWORD_RESET_REQUESTED',
+          result: 'SUCCESS',
+          userId: USER_ID,
+        }),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('resetPassword', () => {
+    function validResetToken(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        id: 'reset-token-uuid-1',
+        userId: USER_ID,
+        tokenHash: expect.any(String),
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+        usedAt: null,
+        user: activeUser(),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      // Default bcrypt.hash mock for new password hashing
+      (bcrypt.hash as jest.Mock) = jest.fn().mockResolvedValue('new-hashed-password');
+    });
+
+    it('returns a success message when token is valid', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validResetToken());
+
+      const result = await service.resetPassword({
+        token: 'valid-raw-token',
+        newPassword: 'NewPass1234!',
+      });
+
+      expect(result.message).toMatch(/password reset/i);
+    });
+
+    it('throws BadRequestException when token is not found', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.resetPassword({ token: 'bad-token', newPassword: 'NewPass1234!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException when token is already used', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(
+        validResetToken({ usedAt: new Date('2026-05-18T00:00:00Z') }),
+      );
+
+      await expect(
+        service.resetPassword({ token: 'used-token', newPassword: 'NewPass1234!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException when token is expired', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(
+        validResetToken({ expiresAt: new Date('2026-01-01T00:00:00Z') }),
+      );
+
+      await expect(
+        service.resetPassword({ token: 'expired-token', newPassword: 'NewPass1234!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException when user is inactive', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(
+        validResetToken({ user: activeUser({ isActive: false }) }),
+      );
+
+      await expect(
+        service.resetPassword({ token: 'valid-token', newPassword: 'NewPass1234!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('executes update, token mark-as-used, and refresh revocation in a transaction', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validResetToken());
+
+      await service.resetPassword({ token: 'valid-raw-token', newPassword: 'NewPass1234!' });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      const ops = prisma.$transaction.mock.calls[0][0];
+      expect(ops).toHaveLength(3);
+    });
+
+    it('writes PASSWORD_RESET_COMPLETED audit on success', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validResetToken());
+
+      await service.resetPassword({ token: 'valid-raw-token', newPassword: 'NewPass1234!' });
+
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'PASSWORD_RESET_COMPLETED',
+          result: 'SUCCESS',
+          userId: USER_ID,
+        }),
+      );
+    });
+
+    it('does not block the reset when audit write throws', async () => {
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validResetToken());
+      audit.log.mockRejectedValue(new Error('Audit DB unavailable'));
+
+      await expect(
+        service.resetPassword({ token: 'valid-raw-token', newPassword: 'NewPass1234!' }),
+      ).resolves.toMatchObject({ message: expect.any(String) });
     });
   });
 });

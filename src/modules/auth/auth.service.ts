@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -7,10 +8,14 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes } from 'crypto';
 import { JwtPayload, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { EmailService } from '../email/email.service';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 interface AuthContext {
   ipAddress?: string;
@@ -32,6 +37,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private auditService: AuditService,
+    private emailService: EmailService,
   ) {}
 
   async login(dto: LoginDto, ctx?: AuthContext) {
@@ -307,6 +313,127 @@ export class AuthService {
         ip: ctx?.ipAddress,
       }));
     }
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto, ctx?: AuthContext) {
+    const startMs = Date.now();
+
+    // A given email can exist in multiple condominiums (composite unique on [condominiumId, email]).
+    // Send one reset email per matched account so every account can be reset independently.
+    const users = await this.prisma.user.findMany({
+      where: { email: dto.email, isActive: true, deletedAt: null },
+    });
+
+    for (const user of users) {
+      const rawToken = randomBytes(32).toString('hex');
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 30 * 60_000);
+
+      await this.prisma.passwordResetToken.create({
+        data: { userId: user.id, tokenHash, expiresAt },
+      });
+
+      // Fire-and-forget — email failure must not expose user existence or block response.
+      this.emailService.sendPasswordResetEmail(dto.email, rawToken).catch(() => undefined);
+
+      try {
+        await this.auditService.log({
+          userId: user.id,
+          condominiumId: user.condominiumId ?? undefined,
+          action: 'PASSWORD_RESET_REQUESTED',
+          actionCategory: 'AUTH',
+          module: 'auth',
+          result: 'SUCCESS',
+          description: 'Password reset requested',
+          ipAddress: ctx?.ipAddress,
+          userAgent: ctx?.userAgent,
+        });
+      } catch {
+        // Audit failure must not block the reset flow
+      }
+    }
+
+    this.logger.log(JSON.stringify({
+      event: 'auth.forgot_password.requested',
+      matchCount: users.length,
+      requestId: ctx?.requestId,
+      latencyMs: Date.now() - startMs,
+      ip: ctx?.ipAddress,
+    }));
+
+    // Always return the same message regardless of match count — prevents email enumeration.
+    return { message: 'If an account with that email exists, a reset link has been sent' };
+  }
+
+  async resetPassword(dto: ResetPasswordDto, ctx?: AuthContext) {
+    const startMs = Date.now();
+
+    const tokenHash = createHash('sha256').update(dto.token).digest('hex');
+
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+
+    if (!record) {
+      throw new BadRequestException('INVALID_RESET_TOKEN');
+    }
+
+    if (record.usedAt !== null) {
+      throw new BadRequestException('RESET_TOKEN_ALREADY_USED');
+    }
+
+    if (record.expiresAt < new Date()) {
+      throw new BadRequestException('RESET_TOKEN_EXPIRED');
+    }
+
+    if (!record.user.isActive || record.user.deletedAt !== null) {
+      throw new BadRequestException('INVALID_RESET_TOKEN');
+    }
+
+    // Salt rounds match UsersService.SALT_ROUNDS (12).
+    const newHash = await bcrypt.hash(dto.newPassword, 12);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: { passwordHash: newHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: record.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    try {
+      await this.auditService.log({
+        userId: record.userId,
+        condominiumId: record.user.condominiumId ?? undefined,
+        action: 'PASSWORD_RESET_COMPLETED',
+        actionCategory: 'AUTH',
+        module: 'auth',
+        result: 'SUCCESS',
+        description: 'Password reset completed; all active sessions revoked',
+        ipAddress: ctx?.ipAddress,
+        userAgent: ctx?.userAgent,
+      });
+    } catch {
+      // Audit failure must not block the reset completion
+    }
+
+    this.logger.log(JSON.stringify({
+      event: 'auth.reset_password.completed',
+      userId: record.userId,
+      requestId: ctx?.requestId,
+      latencyMs: Date.now() - startMs,
+      ip: ctx?.ipAddress,
+    }));
+
+    return { message: 'Password reset successfully' };
   }
 
   async getMe(userId: string) {

@@ -8,6 +8,7 @@ import appConfig from './config/app.config';
 import corsConfig from './config/cors.config';
 import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
+import emailConfig from './config/email.config';
 import storageConfig from './config/storage.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -40,7 +41,7 @@ import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar
     ConfigModule.forRoot({
       isGlobal: true,
       ignoreEnvFile: process.env.NODE_ENV === 'production',
-      load: [appConfig, corsConfig, databaseConfig, jwtConfig, storageConfig],
+      load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig],
     }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([
