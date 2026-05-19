@@ -10,6 +10,7 @@ import databaseConfig from './config/database.config';
 import jwtConfig from './config/jwt.config';
 import emailConfig from './config/email.config';
 import storageConfig from './config/storage.config';
+import whatsappConfig from './config/whatsapp.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -34,6 +35,7 @@ import { UsersModule } from './modules/users/users.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 
 @Module({
   controllers: [HealthController],
@@ -41,7 +43,7 @@ import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar
     ConfigModule.forRoot({
       isGlobal: true,
       ignoreEnvFile: process.env.NODE_ENV === 'production',
-      load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig],
+      load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig, whatsappConfig],
     }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([
@@ -79,6 +81,7 @@ import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar
     ReconciliationRulesModule,
     CalendarModule,
     CalendarReclassifyModule,
+    WhatsAppModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

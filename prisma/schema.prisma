@@ -202,6 +202,56 @@ enum CalendarEventVisibility {
   PRIVATE
 }
 
+enum WhatsAppCredentialStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  ERROR
+  REVOKED
+}
+
+enum WhatsAppConversationStatus {
+  BOT_ACTIVE
+  ESCALATED
+  ADMIN_HANDLING
+  RESOLVED
+}
+
+enum WhatsAppMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppMessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  STICKER
+  LOCATION
+  CONTACTS
+  INTERACTIVE
+  TEMPLATE
+  UNSUPPORTED
+}
+
+enum WhatsAppMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+enum WhatsAppUnregisteredContactStatus {
+  NEW
+  REVIEWED
+  REGISTERED
+  IGNORED
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -231,6 +281,12 @@ model Condominium {
   paymentAllocations                PaymentAllocation[]
   reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
   calendarEvents                    CalendarEvent[]
+  whatsAppCredential                WhatsAppCredential?
+  whatsAppBotConfig                 WhatsAppBotConfig?
+  whatsAppFaqs                      WhatsAppFaq[]
+  whatsAppConversations             WhatsAppConversation[]
+  whatsAppUnregisteredContacts      WhatsAppUnregisteredContact[]
+  whatsAppNotificationPrefs         WhatsAppNotificationPreference[]
 
   @@map("condominiums")
 }
@@ -313,8 +369,14 @@ model User {
   auditLogs          AuditLog[]
   notifications      Notification[]
   reconciledTransactions    Transaction[]   @relation("ReconciledBy")
-  createdCalendarEvents     CalendarEvent[] @relation("CreatedCalendarEvents")
-  updatedCalendarEvents     CalendarEvent[] @relation("UpdatedCalendarEvents")
+  createdCalendarEvents     CalendarEvent[]          @relation("CreatedCalendarEvents")
+  updatedCalendarEvents     CalendarEvent[]          @relation("UpdatedCalendarEvents")
+  whatsAppFaqsCreated       WhatsAppFaq[]            @relation("FaqCreatedBy")
+  whatsAppFaqsUpdated       WhatsAppFaq[]            @relation("FaqUpdatedBy")
+  whatsAppMessagesSent      WhatsAppMessage[]
+  whatsAppConvsTakenOver    WhatsAppConversation[]   @relation("ConversationTakenOverBy")
+  whatsAppConvsResolved     WhatsAppConversation[]   @relation("ConversationResolvedBy")
+  whatsAppNotificationPrefs WhatsAppNotificationPreference[]
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -384,6 +446,7 @@ model Resident {
   paymentAllocations                PaymentAllocation[]
   reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
   calendarEvents                    CalendarEvent[]
+  whatsAppConversations             WhatsAppConversation[]
 
   @@unique([condominiumId, unitNumber])
   @@index([condominiumId])
@@ -826,4 +889,178 @@ model CalendarEvent {
   @@index([condominiumId, parentEventId])
   @@index([deletedAt])
   @@map("calendar_events")
+}
+
+// ─── WhatsApp / Communications ────────────────────────────────────────────────
+
+model WhatsAppCredential {
+  id                    String                   @id @default(uuid())
+  condominiumId         String                   @unique
+  phoneNumberId         String
+  phoneNumberDisplay    String
+  businessAccountId     String
+  accessTokenCiphertext String
+  accessTokenIv         String
+  accessTokenAuthTag    String
+  webhookVerifyToken    String
+  status                WhatsAppCredentialStatus @default(PENDING)
+  verifiedAt            DateTime?
+  lastWebhookReceivedAt DateTime?
+  lastApiErrorAt        DateTime?
+  lastApiErrorMessage   String?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("whatsapp_credentials")
+}
+
+model WhatsAppBotConfig {
+  id                        String   @id @default(uuid())
+  condominiumId             String   @unique
+  isEnabled                 Boolean  @default(false)
+  welcomeMessage            String   @default("¡Hola! Soy el asistente virtual de tu condominio. ¿En qué puedo ayudarte?")
+  fallbackMessage           String   @default("No encontré información sobre eso. Puedo intentar ayudarte con otra pregunta.")
+  escalationMessage         String   @default("Te conectaré con un administrador en breve.")
+  offHoursMessage           String   @default("La administración está fuera de horario. Próximo horario: {{nextDay}} a las {{nextTime}}.")
+  escalationKeywords        String[] @default(["admin", "humano", "persona", "ayuda"])
+  identityCaptureEnabled    Boolean  @default(true)
+  identityCapturePrompt     String   @default("Para brindarte mejor atención, ¿podrías indicarme tu número de departamento y nombre?")
+  whitelistEnabled          Boolean  @default(false)
+  whitelistedPhoneNumbers   String[]
+  conversationRetentionDays Int      @default(90)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_bot_configs")
+}
+
+model WhatsAppFaq {
+  id              String    @id @default(uuid())
+  condominiumId   String
+  category        String?
+  triggers        String[]
+  answer          String
+  sortOrder       Int       @default(0)
+  isActive        Boolean   @default(true)
+  usageCount      Int       @default(0)
+  lastUsedAt      DateTime?
+  createdByUserId String
+  updatedByUserId String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  createdBy   User        @relation("FaqCreatedBy", fields: [createdByUserId], references: [id])
+  updatedBy   User        @relation("FaqUpdatedBy", fields: [updatedByUserId], references: [id])
+
+  @@index([condominiumId, isActive, sortOrder])
+  @@index([condominiumId, category])
+  @@map("whatsapp_faqs")
+}
+
+model WhatsAppConversation {
+  id                    String                     @id @default(uuid())
+  condominiumId         String
+  residentId            String?
+  unregisteredContactId String?
+  phoneNumber           String
+  contactName           String?
+  status                WhatsAppConversationStatus @default(BOT_ACTIVE)
+  isOutOfHoursQueue     Boolean                    @default(false)
+  lastInboundAt         DateTime?
+  lastOutboundAt        DateTime?
+  escalatedAt           DateTime?
+  takenOverByUserId     String?
+  takenOverAt           DateTime?
+  resolvedAt            DateTime?
+  resolvedByUserId      String?
+  consecutiveFaqMisses  Int                        @default(0)
+  unreadCountForAdmin   Int                        @default(0)
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+
+  condominium         Condominium                  @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  resident            Resident?                    @relation(fields: [residentId], references: [id])
+  takenOverBy         User?                        @relation("ConversationTakenOverBy", fields: [takenOverByUserId], references: [id])
+  resolvedBy          User?                        @relation("ConversationResolvedBy", fields: [resolvedByUserId], references: [id])
+  unregisteredContact WhatsAppUnregisteredContact? @relation(fields: [unregisteredContactId], references: [id])
+  messages            WhatsAppMessage[]
+
+  @@unique([condominiumId, phoneNumber, status])
+  @@index([condominiumId, status, lastInboundAt])
+  @@index([condominiumId, residentId])
+  @@index([condominiumId, unregisteredContactId])
+  @@map("whatsapp_conversations")
+}
+
+model WhatsAppMessage {
+  id              String                   @id @default(uuid())
+  conversationId  String
+  direction       WhatsAppMessageDirection
+  messageType     WhatsAppMessageType      @default(TEXT)
+  textContent     String?
+  mediaMetaId     String?
+  mediaMimeType   String?
+  mediaFilename   String?
+  mediaCaption    String?
+  mediaSizeBytes  Int?
+  sentByBot       Boolean                  @default(false)
+  sentByUserId    String?
+  metaMessageId   String                   @unique
+  status          WhatsAppMessageStatus
+  errorCode       String?
+  errorMessage    String?
+  createdAt       DateTime                 @default(now())
+  deliveredAt     DateTime?
+  readAt          DateTime?
+
+  conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sentBy       User?                @relation(fields: [sentByUserId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([status])
+  @@map("whatsapp_messages")
+}
+
+model WhatsAppUnregisteredContact {
+  id                   String                            @id @default(uuid())
+  condominiumId        String
+  phoneNumber          String
+  capturedUnitNumber   String?
+  capturedName         String?
+  conversationCount    Int                               @default(1)
+  messageCount         Int                               @default(0)
+  lastSeenAt           DateTime
+  status               WhatsAppUnregisteredContactStatus @default(NEW)
+  registeredResidentId String?
+  notes                String?
+  createdAt            DateTime                          @default(now())
+  updatedAt            DateTime                          @updatedAt
+
+  condominium   Condominium           @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  conversations WhatsAppConversation[]
+
+  @@unique([condominiumId, phoneNumber])
+  @@index([condominiumId, status, lastSeenAt])
+  @@map("whatsapp_unregistered_contacts")
+}
+
+model WhatsAppNotificationPreference {
+  id                 String   @id @default(uuid())
+  userId             String
+  condominiumId      String
+  notifyOnEscalation Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, condominiumId])
+  @@map("whatsapp_notification_preferences")
 }
