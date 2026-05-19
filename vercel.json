@@ -1,0 +1,37 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "buildCommand": "pnpm prisma generate && pnpm build",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "builds": [
+    {
+      "src": "dist/src/main.vercel.js",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "dist/**",
+          "node_modules/.prisma/**",
+          "node_modules/@prisma/client/**"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "dist/src/main.vercel.js"
+    }
+  ],
+  "functions": {
+    "dist/src/main.vercel.js": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "crons": [
+    {
+      "path": "/internal/cron/renotify",
+      "schedule": "*/1 * * * *"
+    }
+  ]
+}

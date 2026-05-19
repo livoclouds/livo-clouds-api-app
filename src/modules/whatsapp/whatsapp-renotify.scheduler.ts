@@ -1,10 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import { WhatsAppConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
 
 const MAX_BATCH_SIZE = 50;
+
+export interface RenotifyScanResult {
+  scanned: number;
+  dispatched: number;
+}
 
 @Injectable()
 export class WhatsAppRenotifyScheduler {
@@ -15,8 +19,7 @@ export class WhatsAppRenotifyScheduler {
     private dispatcher: WhatsAppNotificationDispatcherService,
   ) {}
 
-  @Cron(CronExpression.EVERY_MINUTE)
-  async scanAndReNotify(): Promise<void> {
+  async scanAndReNotify(): Promise<RenotifyScanResult> {
     const candidates = await this.prisma.whatsAppConversation.findMany({
       where: {
         status: WhatsAppConversationStatus.ESCALATED,
@@ -30,7 +33,7 @@ export class WhatsAppRenotifyScheduler {
       },
       take: MAX_BATCH_SIZE,
     });
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) return { scanned: 0, dispatched: 0 };
 
     const configByCondo = new Map<string, number>();
     const condominiumIds = Array.from(new Set(candidates.map((c) => c.condominiumId)));
@@ -62,17 +65,20 @@ export class WhatsAppRenotifyScheduler {
       const elapsedMs = now - (c.firstNotifiedAt?.getTime() ?? now);
       return elapsedMs >= minutes * 60_000;
     });
-    if (due.length === 0) return;
+    if (due.length === 0) return { scanned: candidates.length, dispatched: 0 };
 
     this.logger.log(`[scanAndReNotify] dispatching re-notify for ${due.length} conversation(s)`);
+    let dispatched = 0;
     for (const c of due) {
       try {
         await this.dispatcher.dispatchReNotification(c.id);
+        dispatched += 1;
       } catch (err) {
         this.logger.error(
           `[scanAndReNotify] conversation=${c.id} failed: ${(err as Error).message}`,
         );
       }
     }
+    return { scanned: candidates.length, dispatched };
   }
 }

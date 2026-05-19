@@ -1627,3 +1627,92 @@ Use this checklist when modifying the web frontend to consume this API.
 
 □ Never expose raw tokens in browser logs, analytics payloads, or error reporting tools
 ```
+
+---
+
+## 28. Deployment to Vercel
+
+The API runs on Vercel as a Node serverless function (`@vercel/node` runtime). The Fastify NestJS app is wrapped in a cached singleton handler at `src/main.vercel.ts` so each cold start bootstraps once and warm invocations reuse the instance.
+
+### Build configuration
+
+`vercel.json` at the repo root pins:
+- `buildCommand`: `pnpm prisma generate && pnpm build`
+- `installCommand`: `pnpm install --frozen-lockfile`
+- Output: `dist/main.vercel.js` served via `@vercel/node` builder
+- `includeFiles` makes sure Prisma client + engines ship with the function
+- `routes`: every path proxied to the single handler
+- `functions.maxDuration`: 60s (Vercel Pro limit)
+- `functions.memory`: 1024 MB
+- `crons`: `*/1 * * * *` → `POST /internal/cron/renotify` (see "Cron" section below)
+
+### Required environment variables (Vercel dashboard)
+
+Configure these for **Production** and **Preview** environments:
+
+| Var | Notes |
+|---|---|
+| `DATABASE_URL` | Neon pooler endpoint (`ep-<id>-pooler.<region>.neon.tech`) — production Neon branch URL |
+| `DIRECT_URL` | Neon direct endpoint (same host without `-pooler`) — used by `prisma migrate deploy` |
+| `JWT_SECRET` | Auth signing secret (copy from local `.env`) |
+| `JWT_REFRESH_SECRET` | Refresh token secret |
+| `WHATSAPP_META_APP_SECRET` | Meta WhatsApp App secret |
+| `WHATSAPP_ENCRYPTION_KEY` | 64-char hex used to encrypt WhatsApp credentials at rest |
+| `WHATSAPP_GRAPH_API_VERSION` | e.g. `v20.0` |
+| `WHATSAPP_ESCALATION_TEMPLATE_NAME` | `escalation_notification` (must match Meta-approved template) |
+| `WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE` | `es_MX` |
+| `WEB_APP_URL` | `https://app.livoclouds.com` (used to build deep links in admin notifications) |
+| `CORS_ORIGIN` | Comma-separated list, e.g. `https://app.livoclouds.com,http://localhost:3000` |
+| `CRON_SECRET` | 32+ char random secret. Vercel injects it as `Authorization: Bearer <CRON_SECRET>` on cron HTTP calls |
+| `NODE_ENV` | `production` |
+
+Do NOT set `PORT` — Vercel manages it.
+
+Generate `CRON_SECRET`:
+```bash
+openssl rand -hex 32
+```
+
+### Domain setup
+
+1. Vercel dashboard → API project → Settings → Domains → add `api.livoclouds.com`
+2. In Cloudflare DNS (zone `livoclouds.com`): add `CNAME api → cname.vercel-dns.com` with **proxy status: DNS only** (gray, not orange — Vercel manages SSL)
+3. SSL is auto-provisioned via Let's Encrypt (~1 min after DNS validates)
+
+### Cron — re-notification scanner
+
+WhatsApp re-notifications run via Vercel Cron Jobs (not `@nestjs/schedule`, which doesn't work on serverless):
+- Vercel calls `POST /internal/cron/renotify` every minute
+- The endpoint validates `Authorization: Bearer ${CRON_SECRET}` (timing-safe comparison)
+- Calls `WhatsAppRenotifyScheduler.scanAndReNotify()` and returns `{ ok, scanned, dispatched }`
+
+**Important**: Vercel Cron at 1-minute frequency requires the **Pro plan**. The Hobby plan limits crons to 1 execution per day, which means the re-notify timer effectively won't fire as designed. The rest of the Phase 2 flow (escalation dispatch on `BOT_ACTIVE → ESCALATED`, take-over, return-to-bot, system-channel webhook bootstrap) does not depend on the cron and works on any plan.
+
+### Local test of the cron endpoint
+
+```bash
+# Set CRON_SECRET in your .env (any string for dev)
+echo 'CRON_SECRET=dev-secret-local-only' >> .env
+pnpm start:dev
+
+# In another terminal:
+curl -X POST http://localhost:3001/internal/cron/renotify \
+  -H "Authorization: Bearer dev-secret-local-only"
+# Expected: {"ok": true, "scanned": 0, "dispatched": 0}
+
+# Without auth:
+curl -X POST http://localhost:3001/internal/cron/renotify
+# Expected: 401 Unauthorized
+```
+
+### Deploy
+
+Vercel auto-deploys on push to `main` (or merge of a PR). To trigger a manual deploy without code changes (e.g., after rotating env vars): Vercel dashboard → Deployments → ⋯ → Redeploy.
+
+### Caveats
+
+- **Cold starts** add ~2-5s latency on the first request after inactivity (NestJS bootstrap time). Within Meta's 20s webhook timeout, but visible to users.
+- **No long-running processes**: any future feature requiring in-memory state (WebSockets, in-process queues, in-memory cache) will not work and must be moved to a long-running platform (Railway, Render) or external store (Redis).
+- **`rawBody: true` is load-bearing for HMAC webhook validation** — both `src/main.ts` and `src/main.vercel.ts` must preserve it. See KI-WC-11 in the Communications docs.
+- **Prisma connection pooling**: Vercel functions create many short-lived processes, so `DATABASE_URL` must use the Neon pooler endpoint (`-pooler` in the hostname). The non-pooler `DIRECT_URL` is only used by `prisma migrate deploy`.
+
