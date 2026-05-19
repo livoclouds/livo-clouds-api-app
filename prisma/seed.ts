@@ -418,6 +418,58 @@ async function main() {
   }
   console.log(`✅ Condominiums: ${condominiums.length}`);
 
+  // ─── Bank Profiles (Default per condominium) ───────────────────────────────
+  const DEFAULT_PROFILE_ALIASES = [
+    {
+      key: 'date', label: 'Fecha', system: true, required: true,
+      aliases: ['fecha movimiento', 'fecha', 'date', 'fecha operación', 'fecha valor'],
+    },
+    {
+      key: 'description', label: 'Descripción', system: true, required: true,
+      aliases: ['descripción', 'descripcion', 'concepto', 'description'],
+    },
+    {
+      key: 'charges', label: 'Cargos', system: true, required: true,
+      aliases: ['cargos', 'cargo', 'débito', 'debito', 'charges', 'retiros'],
+    },
+    {
+      key: 'credits', label: 'Abonos', system: true, required: true,
+      aliases: ['abonos', 'abono', 'crédito', 'credito', 'credits', 'depósitos', 'depositos'],
+    },
+    {
+      key: 'balance', label: 'Saldo', system: true, required: true,
+      aliases: ['saldo', 'balance'],
+    },
+    {
+      key: 'transactionNumber', label: 'Número', system: false, required: false,
+      aliases: ['no.', 'núm.', 'número', 'num.', 'num', '#'],
+    },
+    {
+      key: 'time', label: 'Hora', system: false, required: false,
+      aliases: ['hora', 'hour', 'time'],
+    },
+    {
+      key: 'receipt', label: 'Recibo', system: false, required: false,
+      aliases: ['recibo', 'folio', 'receipt', 'referencia', 'ref'],
+    },
+  ];
+
+  for (const condo of condominiums) {
+    await prisma.bankProfile.create({
+      data: {
+        condominiumId: condo.id,
+        name: 'Default',
+        bankName: null,
+        isDefault: true,
+        isActive: true,
+        useSameForPdf: true,
+        excelAliases: DEFAULT_PROFILE_ALIASES,
+        pdfAliases: [],
+      },
+    });
+  }
+  console.log(`✅ Bank profiles: ${condominiums.length} (one Default per condominium)`);
+
   // ─── Reconciliation Rules ──────────────────────────────────────────────────
 
   const baseRules = (condominiumId: string) => [
