@@ -142,6 +142,7 @@ export class ImportsController {
     const files: MultipartFile[] = [];
     let storedHashes: string[] = [];
     let clientIds: string[] = [];
+    let bankProfileId: string | undefined;
 
     if (req.isMultipart()) {
       const parts = req.parts();
@@ -170,11 +171,20 @@ export class ImportsController {
           } catch {
             // ignore malformed field — treat as empty
           }
+        } else if (part.fieldname === 'bankProfileId') {
+          const raw = String(part.value ?? '').trim();
+          if (raw.length > 0) bankProfileId = raw;
         }
       }
     }
 
-    return this.importsService.preview(req.condominiumId, files, storedHashes, clientIds);
+    return this.importsService.preview(
+      req.condominiumId,
+      files,
+      storedHashes,
+      clientIds,
+      bankProfileId,
+    );
   }
 
   @Post('confirm')

@@ -17,8 +17,9 @@ import { StorageService } from '../storage/storage.service';
 import { SettingsService } from '../settings/settings.service';
 import { ConfirmImportDto, ParsedTransactionDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
-import { ImportsParserService, buildPeriods } from './parser';
+import { ImportsParserService, buildPeriods, ImportProfileMismatchError } from './parser';
 import type { ParsedRow as ServerParsedRow, PreviewFileResult, PreviewApiResponse } from './parser';
+import { BankProfilesService } from '../bank-profiles/bank-profiles.service';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -273,6 +274,7 @@ export class ImportsService {
     private readonly audit: AuditService,
     private readonly parser: ImportsParserService,
     private readonly config: ConfigService,
+    private readonly bankProfiles: BankProfilesService,
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
@@ -590,10 +592,11 @@ export class ImportsService {
   }
 
   async preview(
-    _condominiumId: string,
+    condominiumId: string,
     files: { buffer: Buffer; originalname: string; mimetype: string; size: number }[],
     storedHashes: string[],
     clientIds: string[],
+    bankProfileId?: string,
   ): Promise<PreviewApiResponse> {
     const results: PreviewFileResult[] = [];
 
@@ -654,9 +657,16 @@ export class ImportsService {
       const fileType: 'xlsx' | 'pdf' = isXlsx ? 'xlsx' : 'pdf';
 
       try {
+        const profileContext = await this.bankProfiles.resolveFieldsForBatch({
+          condominiumId,
+          bankProfileId,
+          fileType,
+        });
+
         const { transactions, warnings } = await this.parser.parseBuffer(
           file.buffer,
           fileType,
+          profileContext.fields,
         );
 
         if (transactions.length > MAX_ROWS_PER_IMPORT) {
@@ -701,6 +711,17 @@ export class ImportsService {
           processedAt: new Date().toISOString(),
         });
       } catch (err) {
+        if (err instanceof ImportProfileMismatchError) {
+          throw new BadRequestException({
+            code: 'PROFILE_MISMATCH',
+            reason:
+              'The selected bank profile does not match the columns found in this file. Update the profile or pick a different one.',
+            fileName: file.originalname,
+            missingFields: err.missingFields,
+            actualHeaders: err.actualHeaders,
+            bankProfileId: bankProfileId ?? null,
+          });
+        }
         results.push({
           ...base,
           fileType,

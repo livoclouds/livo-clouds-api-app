@@ -294,6 +294,7 @@ model Condominium {
   whatsAppConversations            WhatsAppConversation[]
   whatsAppUnregisteredContacts     WhatsAppUnregisteredContact[]
   whatsAppNotificationPrefs        WhatsAppNotificationPreference[]
+  bankProfiles                     BankProfile[]
 
   @@map("condominiums")
 }
@@ -604,6 +605,7 @@ model ImportBatch {
   id               String       @id @default(uuid())
   condominiumId    String
   importedById     String
+  bankProfileId    String?
   fileName         String
   fileType         String
   fileSizeBytes    Int
@@ -625,13 +627,39 @@ model ImportBatch {
 
   condominium  Condominium   @relation(fields: [condominiumId], references: [id])
   importedBy   User          @relation(fields: [importedById], references: [id])
+  bankProfile  BankProfile?  @relation(fields: [bankProfileId], references: [id], onDelete: SetNull)
   transactions Transaction[]
 
   @@index([condominiumId])
   @@index([fileHash])
   @@index([status])
   @@index([createdAt])
+  @@index([bankProfileId])
   @@map("import_batches")
+}
+
+model BankProfile {
+  id            String   @id @default(uuid())
+  condominiumId String
+  name          String
+  bankName      String?
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  useSameForPdf Boolean  @default(true)
+  excelAliases  Json
+  pdfAliases    Json     @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  condominium   Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  importBatches ImportBatch[]
+
+  @@unique([condominiumId, name])
+  @@index([condominiumId, isActive])
+  @@index([condominiumId, isDefault])
+  @@map("bank_profiles")
 }
 
 model Transaction {
