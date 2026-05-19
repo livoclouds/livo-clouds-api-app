@@ -1,5 +1,13 @@
 import ExcelJS from 'exceljs';
 import type { ParsedRow } from './types';
+import {
+  buildAliasIndex,
+  DEFAULT_FIELD_DEFINITIONS,
+  type FieldDefinition,
+  findMissingRequiredFields,
+  ImportProfileMismatchError,
+  matchHeaderToFieldKey,
+} from './default-aliases';
 
 const MONTH_ALIASES: Record<string, number> = {
   enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
@@ -9,19 +17,6 @@ const MONTH_ALIASES: Record<string, number> = {
   january: 1, february: 2, march: 3, april: 4, june: 6,
   july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
   jan: 1, apr: 4, aug: 8, dec: 12,
-};
-
-const COLUMN_ALIASES: Record<string, string[]> = {
-  transactionNumber: ['no.', 'núm.', 'número', 'num.', 'num', '#'],
-  date: ['fecha movimiento', 'fecha', 'date', 'fecha operación', 'fecha valor'],
-  time: ['hora', 'hour', 'time'],
-  receipt: ['recibo', 'folio', 'receipt', 'referencia', 'ref'],
-  description: ['descripción', 'descripcion', 'concepto', 'description'],
-  charges: ['cargos', 'cargo', 'débito', 'debito', 'charges', 'retiros'],
-  credits: [
-    'abonos', 'abono', 'crédito', 'credito', 'credits', 'depósitos', 'depositos',
-  ],
-  balance: ['saldo', 'balance'],
 };
 
 function cellText(cell: ExcelJS.Cell): string {
@@ -38,13 +33,6 @@ function cellText(cell: ExcelJS.Cell): string {
   return String(cell.value);
 }
 
-function findColumnKey(headerText: string): string | null {
-  const lower = headerText.trim().toLowerCase();
-  for (const [key, aliases] of Object.entries(COLUMN_ALIASES)) {
-    if (aliases.some((alias) => lower.includes(alias))) return key;
-  }
-  return null;
-}
 
 function parseTextDate(raw: string): Date | null {
   const s = raw.trim();
@@ -129,9 +117,19 @@ export interface ExcelParseResult {
   warnings: string[];
 }
 
+export interface ExcelParseOptions {
+  fields?: FieldDefinition[];
+}
+
 export async function parseExcelBuffer(
   buffer: Buffer,
+  options: ExcelParseOptions = {},
 ): Promise<ExcelParseResult> {
+  const fields = options.fields && options.fields.length > 0
+    ? options.fields
+    : DEFAULT_FIELD_DEFINITIONS;
+  const aliasIndex = buildAliasIndex(fields);
+
   const warnings: string[] = [];
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
@@ -143,13 +141,17 @@ export async function parseExcelBuffer(
 
   let headerRowIndex = -1;
   const columnMap: Record<string, number> = {};
+  let detectedHeaders: string[] = [];
 
   sheet.eachRow({ includeEmpty: false }, (row, rowIndex) => {
     if (headerRowIndex !== -1) return;
     let matches = 0;
     const candidateMap: Record<string, number> = {};
+    const candidateHeaders: string[] = [];
     row.eachCell({ includeEmpty: false }, (cell, colIndex) => {
-      const key = findColumnKey(cellText(cell));
+      const text = cellText(cell);
+      if (text) candidateHeaders.push(text);
+      const key = matchHeaderToFieldKey(text, aliasIndex);
       if (key) {
         matches++;
         if (!candidateMap[key]) candidateMap[key] = colIndex;
@@ -158,6 +160,7 @@ export async function parseExcelBuffer(
     if (matches >= 4) {
       headerRowIndex = rowIndex;
       Object.assign(columnMap, candidateMap);
+      detectedHeaders = candidateHeaders;
     }
   });
 
@@ -165,9 +168,15 @@ export async function parseExcelBuffer(
     return {
       transactions: [],
       warnings: [
-        'Could not detect header row. Ensure the file has columns for date, description, charges, credits, and balance.',
+        'Could not detect header row. Ensure the file has columns matching the active bank profile.',
       ],
     };
+  }
+
+  const resolvedKeys = new Set(Object.keys(columnMap));
+  const missing = findMissingRequiredFields(fields, resolvedKeys);
+  if (missing.length > 0) {
+    throw new ImportProfileMismatchError(missing, detectedHeaders);
   }
 
   const transactions: ParsedRow[] = [];

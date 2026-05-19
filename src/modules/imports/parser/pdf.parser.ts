@@ -1,5 +1,13 @@
 import pdfParse from 'pdf-parse';
 import type { ParsedRow } from './types';
+import {
+  buildAliasIndex,
+  DEFAULT_FIELD_DEFINITIONS,
+  type FieldDefinition,
+  findMissingRequiredFields,
+  ImportProfileMismatchError,
+  matchHeaderToFieldKey,
+} from './default-aliases';
 
 const SPANISH_MONTHS: Record<string, number> = {
   enero: 1,
@@ -15,23 +23,6 @@ const SPANISH_MONTHS: Record<string, number> = {
   noviembre: 11,
   diciembre: 12,
 };
-
-const HEADER_KEYWORDS = [
-  'fecha',
-  'date',
-  'descripción',
-  'descripcion',
-  'description',
-  'concepto',
-  'cargos',
-  'cargo',
-  'abonos',
-  'abono',
-  'saldo',
-  'balance',
-  'hora',
-  'recibo',
-];
 
 const DATE_SPANISH_RE =
   /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+(\d{4})/i;
@@ -74,13 +65,32 @@ function extractAmounts(line: string): number[] {
   );
 }
 
-function isHeaderLine(line: string): boolean {
-  const lower = line.toLowerCase();
-  let hits = 0;
-  for (const kw of HEADER_KEYWORDS) {
-    if (lower.includes(kw)) hits++;
+function tokenizeHeader(line: string): string[] {
+  return line
+    .split(/[\s|·•\t]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
+
+function isHeaderLine(
+  line: string,
+  aliasIndex: { key: string; normalizedAliases: string[] }[],
+): { isHeader: boolean; matchedKeys: Set<string>; tokens: string[] } {
+  const tokens = tokenizeHeader(line);
+  const matchedKeys = new Set<string>();
+  for (const token of tokens) {
+    const key = matchHeaderToFieldKey(token, aliasIndex);
+    if (key) matchedKeys.add(key);
   }
-  return hits >= 3;
+  if (matchedKeys.size < 3) {
+    const lower = line.toLowerCase();
+    for (const entry of aliasIndex) {
+      if (entry.normalizedAliases.some((alias) => lower.includes(alias))) {
+        matchedKeys.add(entry.key);
+      }
+    }
+  }
+  return { isHeader: matchedKeys.size >= 3, matchedKeys, tokens };
 }
 
 export interface PdfParseResult {
@@ -88,7 +98,19 @@ export interface PdfParseResult {
   warnings: string[];
 }
 
-export async function parsePdfBuffer(buffer: Buffer): Promise<PdfParseResult> {
+export interface PdfParseOptions {
+  fields?: FieldDefinition[];
+}
+
+export async function parsePdfBuffer(
+  buffer: Buffer,
+  options: PdfParseOptions = {},
+): Promise<PdfParseResult> {
+  const fields = options.fields && options.fields.length > 0
+    ? options.fields
+    : DEFAULT_FIELD_DEFINITIONS;
+  const aliasIndex = buildAliasIndex(fields);
+
   const warnings: string[] = [];
 
   let data: Awaited<ReturnType<typeof pdfParse>>;
@@ -117,9 +139,14 @@ export async function parsePdfBuffer(buffer: Buffer): Promise<PdfParseResult> {
     .filter((l) => l.length > 0);
 
   let headerLineIndex = -1;
+  let headerMatchedKeys = new Set<string>();
+  let headerTokens: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (isHeaderLine(lines[i])) {
+    const detection = isHeaderLine(lines[i], aliasIndex);
+    if (detection.isHeader) {
       headerLineIndex = i;
+      headerMatchedKeys = detection.matchedKeys;
+      headerTokens = detection.tokens;
       break;
     }
   }
@@ -128,6 +155,11 @@ export async function parsePdfBuffer(buffer: Buffer): Promise<PdfParseResult> {
     warnings.push(
       'Could not detect column headers in the PDF. Attempting best-effort line parsing.',
     );
+  } else {
+    const missing = findMissingRequiredFields(fields, headerMatchedKeys);
+    if (missing.length > 0) {
+      throw new ImportProfileMismatchError(missing, headerTokens);
+    }
   }
 
   const dataLines =
@@ -176,7 +208,7 @@ export async function parsePdfBuffer(buffer: Buffer): Promise<PdfParseResult> {
         balance,
         flowType: credits > 0 ? 'income' : 'expense',
       };
-    } else if (currentTx && !isHeaderLine(line)) {
+    } else if (currentTx && !isHeaderLine(line, aliasIndex).isHeader) {
       const amounts = extractAmounts(line);
       if (amounts.length > 0 && currentTx.balance === 0) {
         const [c, cr, b] = amounts;

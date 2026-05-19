@@ -36,6 +36,7 @@ import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconc
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
+import { BankProfilesModule } from './modules/bank-profiles/bank-profiles.module';
 
 @Module({
   controllers: [HealthController],
@@ -82,6 +83,7 @@ import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
     CalendarModule,
     CalendarReclassifyModule,
     WhatsAppModule,
+    BankProfilesModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

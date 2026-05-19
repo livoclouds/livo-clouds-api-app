@@ -2,9 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { parseExcelBuffer } from './excel.parser';
 import { parsePdfBuffer } from './pdf.parser';
 import type { ParsedRow, DetectedPeriod } from './types';
+import type { FieldDefinition } from './default-aliases';
 
 export type { ParsedRow, DetectedPeriod };
 export { buildPeriods } from './types';
+export {
+  DEFAULT_FIELD_DEFINITIONS,
+  SYSTEM_FIELD_KEYS,
+  ImportProfileMismatchError,
+  type FieldDefinition,
+  type SystemFieldKey,
+} from './default-aliases';
 
 export interface ServerParseResult {
   transactions: ParsedRow[];
@@ -40,13 +48,14 @@ export class ImportsParserService {
   async parseBuffer(
     buffer: Buffer,
     fileType: string,
+    fields?: FieldDefinition[],
   ): Promise<ServerParseResult> {
     const normalized = fileType.toLowerCase();
     if (normalized === 'xlsx' || normalized.includes('spreadsheet')) {
-      return parseExcelBuffer(buffer);
+      return parseExcelBuffer(buffer, { fields });
     }
     if (normalized === 'pdf' || normalized.includes('pdf')) {
-      return parsePdfBuffer(buffer);
+      return parsePdfBuffer(buffer, { fields });
     }
     this.logger.warn(`parseBuffer: unsupported fileType=${fileType}`);
     return {
