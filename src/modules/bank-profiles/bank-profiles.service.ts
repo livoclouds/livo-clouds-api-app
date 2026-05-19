@@ -217,7 +217,7 @@ export class BankProfilesService {
     });
 
     if (referenced > 0) {
-      const updated = await this.prisma.bankProfile.update({
+      await this.prisma.bankProfile.update({
         where: { id },
         data: { isActive: false, isDefault: false, updatedBy: user.sub },
       });
