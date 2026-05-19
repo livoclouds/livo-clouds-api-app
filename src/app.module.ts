@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerUserGuard } from './common/guards/throttler-user.guard';
 import appConfig from './config/app.config';
@@ -46,6 +47,7 @@ import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
       load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig, whatsappConfig],
     }),
     EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
         // Burst protection: max 20 requests in 10 seconds per user

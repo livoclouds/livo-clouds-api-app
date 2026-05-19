@@ -7,6 +7,11 @@ interface MetaSendTextResponse {
   messages: { id: string }[];
 }
 
+export interface TemplateBodyParam {
+  type: 'text';
+  text: string;
+}
+
 export interface PhoneValidationResult {
   isWhatsAppBusiness: boolean;
   hasMessagesPermission: boolean;
@@ -35,6 +40,43 @@ export class WhatsAppMetaClientService {
       to,
       type: 'text',
       text: { body: text },
+    };
+
+    const response = await this.fetchWithRetry(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const data = (await response.json()) as MetaSendTextResponse;
+    return { messageId: data.messages?.[0]?.id ?? '' };
+  }
+
+  async sendTemplateMessage(
+    phoneNumberId: string,
+    accessToken: string,
+    to: string,
+    templateName: string,
+    languageCode: string,
+    bodyParams: TemplateBodyParam[] = [],
+  ): Promise<{ messageId: string }> {
+    const url = `https://graph.facebook.com/${this.graphApiVersion}/${phoneNumberId}/messages`;
+    const components = bodyParams.length
+      ? [{ type: 'body', parameters: bodyParams }]
+      : [];
+    const body = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components,
+      },
     };
 
     const response = await this.fetchWithRetry(url, {

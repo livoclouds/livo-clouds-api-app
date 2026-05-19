@@ -1,0 +1,195 @@
+import { BadRequestException } from '@nestjs/common';
+import { WhatsAppNotifyChannel } from '@prisma/client';
+import * as encryptionUtil from '../../common/utils/encryption.util';
+import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
+
+function makeService(overrides: {
+  existingPreference?: Record<string, unknown> | null;
+  phoneConflict?: boolean;
+  residentMatch?: boolean;
+  credential?: Record<string, unknown> | null;
+  recentInbound?: boolean;
+  metaOk?: boolean;
+} = {}) {
+  const base = {
+    id: 'pref-1',
+    userId: 'user-1',
+    condominiumId: 'condo-1',
+    notifyOnEscalation: true,
+    notifyChannel: WhatsAppNotifyChannel.WHATSAPP,
+    personalPhoneNumber: null as string | null,
+    personalPhoneVerifiedAt: null as Date | null,
+    reNotifyAfterMinutes: null as number | null,
+  };
+
+  const prisma = {
+    whatsAppNotificationPreference: {
+      upsert: jest
+        .fn()
+        .mockResolvedValue(overrides.existingPreference ?? base),
+      update: jest.fn().mockImplementation(({ data }) => ({ ...base, ...(data as object) })),
+      findFirst: jest.fn().mockResolvedValue(overrides.phoneConflict ? { id: 'other' } : null),
+    },
+    resident: {
+      findFirst: jest.fn().mockResolvedValue(overrides.residentMatch ? { id: 'res-1' } : null),
+    },
+    whatsAppCredential: {
+      findUnique: jest.fn().mockResolvedValue(
+        overrides.credential === undefined
+          ? {
+              phoneNumberId: 'pnid',
+              accessTokenCiphertext: 'c',
+              accessTokenIv: 'i',
+              accessTokenAuthTag: 't',
+              status: 'ACTIVE',
+            }
+          : overrides.credential,
+      ),
+    },
+    whatsAppMessage: {
+      findFirst: jest.fn().mockResolvedValue(overrides.recentInbound ? { id: 'm' } : null),
+    },
+  };
+
+  const configService = { get: jest.fn().mockImplementation((_k, fb) => fb ?? 'x'.repeat(64)) };
+  const auditService = { log: jest.fn().mockResolvedValue(undefined) };
+  const metaClient = {
+    sendTextMessage: jest.fn(() =>
+      overrides.metaOk === false ? Promise.reject(new Error('boom')) : Promise.resolve({ messageId: 'w' }),
+    ),
+    sendTemplateMessage: jest.fn(() =>
+      overrides.metaOk === false ? Promise.reject(new Error('boom')) : Promise.resolve({ messageId: 'w' }),
+    ),
+  };
+
+  jest.spyOn(encryptionUtil, 'decrypt').mockReturnValue('access-token');
+
+  const service = new WhatsAppNotificationPreferenceService(
+    prisma as never,
+    configService as never,
+    auditService as never,
+    metaClient as never,
+  );
+  return { service, prisma, auditService, metaClient };
+}
+
+describe('WhatsAppNotificationPreferenceService.updateForCurrentUser', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('emits audit event with PII redacted', async () => {
+    const { service, auditService } = makeService();
+    await service.updateForCurrentUser('condo-1', { sub: 'user-1' } as never, {
+      notifyOnEscalation: false,
+    });
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'WHATSAPP_NOTIFICATION_PREFERENCE_UPDATED',
+        beforeState: expect.objectContaining({
+          personalPhoneConfigured: false,
+        }),
+      }),
+    );
+    const call = auditService.log.mock.calls[0][0];
+    const serialized = JSON.stringify(call);
+    expect(serialized).not.toContain('+528');
+  });
+
+  it('clears personalPhoneVerifiedAt when phone changes', async () => {
+    const { service, prisma } = makeService({
+      existingPreference: {
+        id: 'p',
+        notifyOnEscalation: true,
+        notifyChannel: WhatsAppNotifyChannel.WHATSAPP,
+        personalPhoneNumber: '+528100000001',
+        personalPhoneVerifiedAt: new Date(),
+        reNotifyAfterMinutes: null,
+      },
+    });
+    await service.updateForCurrentUser('condo-1', { sub: 'user-1' } as never, {
+      personalPhoneNumber: '+528100000002',
+    });
+    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
+    expect(data.personalPhoneNumber).toBe('+528100000002');
+    expect(data.personalPhoneVerifiedAt).toBeNull();
+  });
+
+  it('rejects when another admin has the phone number', async () => {
+    const { service } = makeService({ phoneConflict: true });
+    await expect(
+      service.updateForCurrentUser('condo-1', { sub: 'user-1' } as never, {
+        personalPhoneNumber: '+528100000099',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects when phone matches a resident', async () => {
+    const { service } = makeService({ residentMatch: true });
+    await expect(
+      service.updateForCurrentUser('condo-1', { sub: 'user-1' } as never, {
+        personalPhoneNumber: '+528100000099',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('WhatsAppNotificationPreferenceService.sendTestWhatsApp', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('uses free-form when admin window is open', async () => {
+    const { service, metaClient } = makeService({
+      existingPreference: {
+        id: 'p',
+        notifyOnEscalation: true,
+        notifyChannel: WhatsAppNotifyChannel.WHATSAPP,
+        personalPhoneNumber: '+528100000001',
+        personalPhoneVerifiedAt: new Date(),
+        reNotifyAfterMinutes: null,
+      },
+      recentInbound: true,
+    });
+    const result = await service.sendTestWhatsApp('condo-1', 'user-1');
+    expect(result).toEqual({ ok: true, via: 'free-form' });
+    expect(metaClient.sendTextMessage).toHaveBeenCalled();
+  });
+
+  it('uses template fallback when window is closed', async () => {
+    const { service, metaClient } = makeService({
+      existingPreference: {
+        id: 'p',
+        notifyOnEscalation: true,
+        notifyChannel: WhatsAppNotifyChannel.WHATSAPP,
+        personalPhoneNumber: '+528100000001',
+        personalPhoneVerifiedAt: new Date(),
+        reNotifyAfterMinutes: null,
+      },
+      recentInbound: false,
+    });
+    const result = await service.sendTestWhatsApp('condo-1', 'user-1');
+    expect(result).toEqual({ ok: true, via: 'template' });
+    expect(metaClient.sendTemplateMessage).toHaveBeenCalled();
+  });
+
+  it('throws when no phone is configured and no override given', async () => {
+    const { service } = makeService();
+    await expect(service.sendTestWhatsApp('condo-1', 'user-1')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('throws when credential is inactive', async () => {
+    const { service } = makeService({
+      existingPreference: {
+        id: 'p',
+        notifyOnEscalation: true,
+        notifyChannel: WhatsAppNotifyChannel.WHATSAPP,
+        personalPhoneNumber: '+528100000001',
+        personalPhoneVerifiedAt: new Date(),
+        reNotifyAfterMinutes: null,
+      },
+      credential: null,
+    });
+    await expect(service.sendTestWhatsApp('condo-1', 'user-1')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+});
