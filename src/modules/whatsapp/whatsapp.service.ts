@@ -315,7 +315,7 @@ export class WhatsAppService {
     const pageSize = Math.min(query.pageSize ?? 25, 100);
     const skip = (page - 1) * pageSize;
 
-    const where: Record<string, unknown> = { condominiumId };
+    const where: Record<string, unknown> = { condominiumId, isSystemChannel: false };
     if (query.status) where.status = query.status;
     if (query.unreadOnly) where.unreadCountForAdmin = { gt: 0 };
     if (query.phoneNumber) where.phoneNumber = { contains: query.phoneNumber };
@@ -339,7 +339,11 @@ export class WhatsAppService {
 
   async getUnreadCount(condominiumId: string): Promise<{ total: number }> {
     const result = await this.prisma.whatsAppConversation.aggregate({
-      where: { condominiumId, status: { not: WhatsAppConversationStatus.RESOLVED } },
+      where: {
+        condominiumId,
+        status: { not: WhatsAppConversationStatus.RESOLVED },
+        isSystemChannel: false,
+      },
       _sum: { unreadCountForAdmin: true },
     });
     return { total: result._sum.unreadCountForAdmin ?? 0 };
@@ -633,6 +637,24 @@ export class WhatsAppService {
 
     const phoneNumber = from.startsWith('+') ? from : `+${from}`;
 
+    const adminPreference = await this.prisma.whatsAppNotificationPreference.findFirst({
+      where: { condominiumId, personalPhoneNumber: phoneNumber },
+      select: { id: true, personalPhoneVerifiedAt: true },
+    });
+    if (adminPreference) {
+      await this.handleSystemChannelInbound({
+        condominiumId,
+        credential,
+        phoneNumber,
+        metaMessageId,
+        textContent,
+        msgType,
+        preferenceId: adminPreference.id,
+        alreadyVerified: Boolean(adminPreference.personalPhoneVerifiedAt),
+      });
+      return;
+    }
+
     const conversation = await this.findOrCreateConversation(condominiumId, phoneNumber);
 
     const messageTypeMap: Record<string, string> = {
@@ -701,6 +723,126 @@ export class WhatsAppService {
         status: mappedStatus as WhatsAppMessageStatus,
         ...(mappedStatus === 'DELIVERED' ? { deliveredAt: new Date() } : {}),
         ...(mappedStatus === 'READ' ? { readAt: new Date() } : {}),
+      },
+    });
+  }
+
+  private async handleSystemChannelInbound(args: {
+    condominiumId: string;
+    credential: {
+      phoneNumberId: string;
+      accessTokenCiphertext: string;
+      accessTokenIv: string;
+      accessTokenAuthTag: string;
+    };
+    phoneNumber: string;
+    metaMessageId: string;
+    textContent: string | null;
+    msgType: string;
+    preferenceId: string;
+    alreadyVerified: boolean;
+  }): Promise<void> {
+    const {
+      condominiumId,
+      credential,
+      phoneNumber,
+      metaMessageId,
+      textContent,
+      msgType,
+      preferenceId,
+      alreadyVerified,
+    } = args;
+
+    const conversation = await this.findOrCreateSystemConversation(condominiumId, phoneNumber);
+
+    const messageTypeMap: Record<string, string> = {
+      text: 'TEXT',
+      image: 'IMAGE',
+      document: 'DOCUMENT',
+      audio: 'AUDIO',
+      video: 'VIDEO',
+      sticker: 'STICKER',
+      location: 'LOCATION',
+      contacts: 'CONTACTS',
+      interactive: 'INTERACTIVE',
+      template: 'TEMPLATE',
+    };
+
+    await this.prisma.whatsAppMessage.create({
+      data: {
+        conversationId: conversation.id,
+        direction: WhatsAppMessageDirection.INBOUND,
+        messageType: (messageTypeMap[msgType] ?? 'UNSUPPORTED') as WhatsAppMessageType,
+        textContent,
+        metaMessageId,
+        status: WhatsAppMessageStatus.RECEIVED,
+      },
+    });
+
+    await this.prisma.whatsAppConversation.update({
+      where: { id: conversation.id },
+      data: { lastInboundAt: new Date() },
+    });
+
+    if (!alreadyVerified) {
+      await this.prisma.whatsAppNotificationPreference.update({
+        where: { id: preferenceId },
+        data: { personalPhoneVerifiedAt: new Date() },
+      });
+
+      try {
+        const encryptionKey = this.configService.get<string>('whatsapp.encryptionKey', '');
+        const accessToken = decrypt(
+          credential.accessTokenCiphertext,
+          credential.accessTokenIv,
+          credential.accessTokenAuthTag,
+          encryptionKey,
+        );
+        const result = await this.metaClient.sendTextMessage(
+          credential.phoneNumberId,
+          accessToken,
+          phoneNumber,
+          'Canal de notificaciones activado. Las alertas de escalamiento llegarán aquí.',
+        );
+        await this.prisma.whatsAppMessage.create({
+          data: {
+            conversationId: conversation.id,
+            direction: WhatsAppMessageDirection.OUTBOUND,
+            messageType: WhatsAppMessageType.TEXT,
+            textContent: null,
+            sentByBot: true,
+            metaMessageId: result.messageId || `system-confirm-${Date.now()}`,
+            status: WhatsAppMessageStatus.SENT,
+          },
+        });
+        await this.prisma.whatsAppConversation.update({
+          where: { id: conversation.id },
+          data: { lastOutboundAt: new Date() },
+        });
+      } catch (err) {
+        this.logger.error(
+          `[handleSystemChannelInbound] confirmation send failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  private async findOrCreateSystemConversation(condominiumId: string, phoneNumber: string) {
+    const existing = await this.prisma.whatsAppConversation.findFirst({
+      where: {
+        condominiumId,
+        phoneNumber,
+        isSystemChannel: true,
+        status: { not: WhatsAppConversationStatus.RESOLVED },
+      },
+    });
+    if (existing) return existing;
+    return this.prisma.whatsAppConversation.create({
+      data: {
+        condominiumId,
+        phoneNumber,
+        isSystemChannel: true,
+        status: WhatsAppConversationStatus.BOT_ACTIVE,
       },
     });
   }

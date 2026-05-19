@@ -12,6 +12,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { decrypt } from '../../common/utils/encryption.util';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
+import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
 import { ConfigService } from '@nestjs/config';
 
 interface BotContext {
@@ -43,6 +44,7 @@ export class WhatsAppBotService {
     private prisma: PrismaService,
     private metaClient: WhatsAppMetaClientService,
     private configService: ConfigService,
+    private notificationDispatcher: WhatsAppNotificationDispatcherService,
   ) {}
 
   async processBotPipeline(ctx: BotContext): Promise<void> {
@@ -145,8 +147,19 @@ export class WhatsAppBotService {
         escalatedAt: new Date(),
         consecutiveFaqMisses: 0,
         lastOutboundAt: new Date(),
+        firstNotifiedAt: null,
+        reNotifiedAt: null,
+        beRightWithYouSentAt: null,
       },
     });
+
+    this.notificationDispatcher
+      .dispatchEscalation(conversation.id)
+      .catch((err) =>
+        this.logger.error(
+          `[escalate] dispatchEscalation failed for ${conversation.id}: ${(err as Error).message}`,
+        ),
+      );
   }
 
   private async sendBotMessage(ctx: BotContext, text: string): Promise<void> {

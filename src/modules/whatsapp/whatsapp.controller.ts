@@ -18,6 +18,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { WhatsAppService } from './whatsapp.service';
+import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
 import { UpsertCredentialDto } from './dto/upsert-credential.dto';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
 import { CreateFaqDto } from './dto/create-faq.dto';
@@ -26,12 +27,18 @@ import { ListFaqsDto } from './dto/list-faqs.dto';
 import { ListConversationsDto } from './dto/list-conversations.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ReorderFaqsDto } from './dto/reorder-faqs.dto';
+import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
+import { TestNotificationDto } from './dto/test-notification.dto';
+import { PushSubscriptionDto } from './dto/push-subscription.dto';
 
 @ApiTags('WhatsApp')
 @Controller('condominiums/:condominiumSlug/communications/whatsapp')
 @UseGuards(CondominiumAccessGuard, RolesGuard)
 export class WhatsAppController {
-  constructor(private readonly whatsAppService: WhatsAppService) {}
+  constructor(
+    private readonly whatsAppService: WhatsAppService,
+    private readonly notificationPreferenceService: WhatsAppNotificationPreferenceService,
+  ) {}
 
   // ── Credentials ─────────────────────────────────────────────────────────────
 
@@ -249,5 +256,69 @@ export class WhatsAppController {
     @Param('conversationId') conversationId: string,
   ) {
     return this.whatsAppService.markRead(req.condominiumId, conversationId);
+  }
+
+  // ── Notification Preferences ─────────────────────────────────────────────────
+
+  @Get('notification-preference')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Get current user notification preference for this condominium' })
+  getNotificationPreference(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationPreferenceService.getForCurrentUser(req.condominiumId, user.sub);
+  }
+
+  @Patch('notification-preference')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Update notification preference' })
+  updateNotificationPreference(
+    @Request() req: { condominiumId: string },
+    @Body() dto: UpdateNotificationPreferenceDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationPreferenceService.updateForCurrentUser(req.condominiumId, user, dto);
+  }
+
+  @Post('notification-preference/test-whatsapp')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Send a test WhatsApp notification to the admin personal number' })
+  testNotification(
+    @Request() req: { condominiumId: string },
+    @Body() dto: TestNotificationDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationPreferenceService.sendTestWhatsApp(
+      req.condominiumId,
+      user.sub,
+      dto.personalPhoneNumber,
+    );
+  }
+
+  @Post('notification-preference/push-subscribe')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Store Web Push subscription (Phase 5 placeholder, no dispatch)' })
+  pushSubscribe(
+    @Request() req: { condominiumId: string },
+    @Body() dto: PushSubscriptionDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationPreferenceService.savePushSubscription(
+      req.condominiumId,
+      user.sub,
+      dto.subscription,
+    );
+  }
+
+  @Post('notification-preference/push-unsubscribe')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Remove Web Push subscription (Phase 5 placeholder)' })
+  pushUnsubscribe(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationPreferenceService.removePushSubscription(req.condominiumId, user.sub);
   }
 }

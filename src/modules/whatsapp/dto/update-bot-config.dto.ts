@@ -68,4 +68,20 @@ export class UpdateBotConfigDto {
   @Min(7)
   @Max(365)
   conversationRetentionDays?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  returnToBotMessage?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  beRightWithYouMessage?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(60)
+  reNotifyAfterMinutes?: number;
 }

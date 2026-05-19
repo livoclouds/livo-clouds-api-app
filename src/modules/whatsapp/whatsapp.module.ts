@@ -5,10 +5,20 @@ import { WhatsAppWebhookController } from './whatsapp-webhook.controller';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppBotService } from './whatsapp-bot.service';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
+import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
+import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
+import { WhatsAppRenotifyScheduler } from './whatsapp-renotify.scheduler';
 
 @Module({
   imports: [AuditModule],
   controllers: [WhatsAppController, WhatsAppWebhookController],
-  providers: [WhatsAppService, WhatsAppBotService, WhatsAppMetaClientService],
+  providers: [
+    WhatsAppService,
+    WhatsAppBotService,
+    WhatsAppMetaClientService,
+    WhatsAppNotificationPreferenceService,
+    WhatsAppNotificationDispatcherService,
+    WhatsAppRenotifyScheduler,
+  ],
 })
 export class WhatsAppModule {}

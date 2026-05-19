@@ -111,7 +111,13 @@ function makeMetaMock() {
 
 function makeBotService(prisma: ReturnType<typeof makePrismaMock>, meta = makeMetaMock()) {
   const configService = { get: jest.fn().mockReturnValue('a'.repeat(64)) };
-  return new WhatsAppBotService(prisma as never, meta as never, configService as never);
+  const dispatcher = { dispatchEscalation: jest.fn().mockResolvedValue(undefined) };
+  return new WhatsAppBotService(
+    prisma as never,
+    meta as never,
+    configService as never,
+    dispatcher as never,
+  );
 }
 
 describe('WhatsAppBotService.matchFaq', () => {
@@ -187,6 +193,10 @@ function makeConversation(overrides: Partial<{ consecutiveFaqMisses: number; sta
     resolvedAt: null,
     resolvedByUserId: null,
     unreadCountForAdmin: 0,
+    isSystemChannel: false,
+    firstNotifiedAt: null,
+    reNotifiedAt: null,
+    beRightWithYouSentAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -232,6 +242,9 @@ function makeBotConfig(overrides: Record<string, unknown> = {}) {
     whitelistEnabled: false,
     whitelistedPhoneNumbers: [],
     conversationRetentionDays: 90,
+    returnToBotMessage: null,
+    beRightWithYouMessage: 'Recibí tu mensaje. La administración te responderá tan pronto sea posible.',
+    reNotifyAfterMinutes: 5,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

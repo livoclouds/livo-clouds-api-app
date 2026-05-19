@@ -252,6 +252,13 @@ enum WhatsAppUnregisteredContactStatus {
   IGNORED
 }
 
+enum WhatsAppNotifyChannel {
+  WHATSAPP
+  PUSH
+  BOTH
+  NONE
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -264,30 +271,30 @@ model Condominium {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  settings          CondominiumSettings?
-  users             User[]
-  residents         Resident[]
-  vehicles          Vehicle[]
-  pettyCashMovements PettyCashMovement[]
-  commonAreas       CommonArea[]
-  inventoryItems    InventoryItem[]
-  importBatches            ImportBatch[]
-  transactions             Transaction[]
-  collectionRecords        CollectionRecord[]
-  auditLogs                AuditLog[]
-  notifications            Notification[]
-  financialMonthlySummaries FinancialMonthlySummary[]
-  reconciliationRules               ReconciliationRule[]
-  paymentAllocations                PaymentAllocation[]
-  reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
-  calendarEvents                    CalendarEvent[]
-  whatsAppCredential                WhatsAppCredential?
-  whatsAppBotConfig                 WhatsAppBotConfig?
-  whatsAppFaqs                      WhatsAppFaq[]
-  whatsAppConversations             WhatsAppConversation[]
-  whatsAppUnregisteredContacts      WhatsAppUnregisteredContact[]
-  whatsAppNotificationPrefs         WhatsAppNotificationPreference[]
-  bankProfiles                      BankProfile[]
+  settings                         CondominiumSettings?
+  users                            User[]
+  residents                        Resident[]
+  vehicles                         Vehicle[]
+  pettyCashMovements               PettyCashMovement[]
+  commonAreas                      CommonArea[]
+  inventoryItems                   InventoryItem[]
+  importBatches                    ImportBatch[]
+  transactions                     Transaction[]
+  collectionRecords                CollectionRecord[]
+  auditLogs                        AuditLog[]
+  notifications                    Notification[]
+  financialMonthlySummaries        FinancialMonthlySummary[]
+  reconciliationRules              ReconciliationRule[]
+  paymentAllocations               PaymentAllocation[]
+  reconciliationCorrectionPatterns ReconciliationCorrectionPattern[]
+  calendarEvents                   CalendarEvent[]
+  whatsAppCredential               WhatsAppCredential?
+  whatsAppBotConfig                WhatsAppBotConfig?
+  whatsAppFaqs                     WhatsAppFaq[]
+  whatsAppConversations            WhatsAppConversation[]
+  whatsAppUnregisteredContacts     WhatsAppUnregisteredContact[]
+  whatsAppNotificationPrefs        WhatsAppNotificationPreference[]
+  bankProfiles                     BankProfile[]
 
   @@map("condominiums")
 }
@@ -361,22 +368,22 @@ model User {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  condominium        Condominium?        @relation(fields: [condominiumId], references: [id])
-  refreshTokens      RefreshToken[]
-  passwordResetTokens PasswordResetToken[]
-  pettyCashRegistered PettyCashMovement[] @relation("RegisteredBy")
-  pettyCashUpdated   PettyCashMovement[] @relation("UpdatedBy")
-  importBatches      ImportBatch[]
-  auditLogs          AuditLog[]
-  notifications      Notification[]
-  reconciledTransactions    Transaction[]   @relation("ReconciledBy")
-  createdCalendarEvents     CalendarEvent[]          @relation("CreatedCalendarEvents")
-  updatedCalendarEvents     CalendarEvent[]          @relation("UpdatedCalendarEvents")
-  whatsAppFaqsCreated       WhatsAppFaq[]            @relation("FaqCreatedBy")
-  whatsAppFaqsUpdated       WhatsAppFaq[]            @relation("FaqUpdatedBy")
+  condominium               Condominium?                     @relation(fields: [condominiumId], references: [id])
+  refreshTokens             RefreshToken[]
+  passwordResetTokens       PasswordResetToken[]
+  pettyCashRegistered       PettyCashMovement[]              @relation("RegisteredBy")
+  pettyCashUpdated          PettyCashMovement[]              @relation("UpdatedBy")
+  importBatches             ImportBatch[]
+  auditLogs                 AuditLog[]
+  notifications             Notification[]
+  reconciledTransactions    Transaction[]                    @relation("ReconciledBy")
+  createdCalendarEvents     CalendarEvent[]                  @relation("CreatedCalendarEvents")
+  updatedCalendarEvents     CalendarEvent[]                  @relation("UpdatedCalendarEvents")
+  whatsAppFaqsCreated       WhatsAppFaq[]                    @relation("FaqCreatedBy")
+  whatsAppFaqsUpdated       WhatsAppFaq[]                    @relation("FaqUpdatedBy")
   whatsAppMessagesSent      WhatsAppMessage[]
-  whatsAppConvsTakenOver    WhatsAppConversation[]   @relation("ConversationTakenOverBy")
-  whatsAppConvsResolved     WhatsAppConversation[]   @relation("ConversationResolvedBy")
+  whatsAppConvsTakenOver    WhatsAppConversation[]           @relation("ConversationTakenOverBy")
+  whatsAppConvsResolved     WhatsAppConversation[]           @relation("ConversationResolvedBy")
   whatsAppNotificationPrefs WhatsAppNotificationPreference[]
 
   @@unique([condominiumId, email])
@@ -419,35 +426,35 @@ model PasswordResetToken {
 }
 
 model Resident {
-  id              String        @id @default(uuid())
-  condominiumId   String
-  unitNumber      String
-  residentType    ResidentType  @default(OWNER)
-  firstName       String
-  lastName        String
-  phone           String?
-  secondaryPhone  String?
-  email           String?
-  paymentStatus   PaymentStatus @default(CURRENT)
-  debt            Decimal       @default(0) @db.Decimal(12, 2)
-  monthlyFee      Decimal       @default(0) @db.Decimal(12, 2)
-  parkingSpots    Int           @default(0)
-  documentation   Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
-  notes           String?
-  deletedAt       DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id             String        @id @default(uuid())
+  condominiumId  String
+  unitNumber     String
+  residentType   ResidentType  @default(OWNER)
+  firstName      String
+  lastName       String
+  phone          String?
+  secondaryPhone String?
+  email          String?
+  paymentStatus  PaymentStatus @default(CURRENT)
+  debt           Decimal       @default(0) @db.Decimal(12, 2)
+  monthlyFee     Decimal       @default(0) @db.Decimal(12, 2)
+  parkingSpots   Int           @default(0)
+  documentation  Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
+  notes          String?
+  deletedAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  condominium       Condominium        @relation(fields: [condominiumId], references: [id])
-  vehicles          Vehicle[]
-  pets              Pet[]
-  additionalResidents AdditionalResident[]
-  transactions      Transaction[]
-  collectionRecords CollectionRecord[]
-  paymentAllocations                PaymentAllocation[]
-  reconciliationCorrectionPatterns  ReconciliationCorrectionPattern[]
-  calendarEvents                    CalendarEvent[]
-  whatsAppConversations             WhatsAppConversation[]
+  condominium                      Condominium                       @relation(fields: [condominiumId], references: [id])
+  vehicles                         Vehicle[]
+  pets                             Pet[]
+  additionalResidents              AdditionalResident[]
+  transactions                     Transaction[]
+  collectionRecords                CollectionRecord[]
+  paymentAllocations               PaymentAllocation[]
+  reconciliationCorrectionPatterns ReconciliationCorrectionPattern[]
+  calendarEvents                   CalendarEvent[]
+  whatsAppConversations            WhatsAppConversation[]
 
   @@unique([condominiumId, unitNumber])
   @@index([condominiumId])
@@ -534,9 +541,9 @@ model PettyCashMovement {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  condominium    Condominium @relation(fields: [condominiumId], references: [id])
-  registeredBy   User        @relation("RegisteredBy", fields: [registeredById], references: [id])
-  updatedBy      User?       @relation("UpdatedBy", fields: [updatedById], references: [id])
+  condominium  Condominium @relation(fields: [condominiumId], references: [id])
+  registeredBy User        @relation("RegisteredBy", fields: [registeredById], references: [id])
+  updatedBy    User?       @relation("UpdatedBy", fields: [updatedById], references: [id])
 
   @@unique([condominiumId, folio])
   @@index([condominiumId])
@@ -566,24 +573,24 @@ model CommonArea {
 }
 
 model InventoryItem {
-  id               String             @id @default(uuid())
-  condominiumId    String
-  commonAreaId     String
-  name             String
-  category         InventoryCategory  @default(OTHER)
-  brand            String?
-  model            String?
-  serialNumber     String?
-  quantity         Int                @default(1)
-  condition        InventoryCondition @default(GOOD)
-  purchaseDate     DateTime?          @db.Date
-  approximateCost  Decimal?           @db.Decimal(12, 2)
-  supplier         String?
-  hasInvoice       Boolean            @default(false)
-  invoiceNumber    String?
-  notes            String?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  id              String             @id @default(uuid())
+  condominiumId   String
+  commonAreaId    String
+  name            String
+  category        InventoryCategory  @default(OTHER)
+  brand           String?
+  model           String?
+  serialNumber    String?
+  quantity        Int                @default(1)
+  condition       InventoryCondition @default(GOOD)
+  purchaseDate    DateTime?          @db.Date
+  approximateCost Decimal?           @db.Decimal(12, 2)
+  supplier        String?
+  hasInvoice      Boolean            @default(false)
+  invoiceNumber   String?
+  notes           String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   condominium Condominium @relation(fields: [condominiumId], references: [id])
   commonArea  CommonArea  @relation(fields: [commonAreaId], references: [id])
@@ -632,21 +639,21 @@ model ImportBatch {
 }
 
 model BankProfile {
-  id              String   @id @default(uuid())
-  condominiumId   String
-  name            String
-  bankName        String?
-  isDefault       Boolean  @default(false)
-  isActive        Boolean  @default(true)
-  useSameForPdf   Boolean  @default(true)
-  excelAliases    Json
-  pdfAliases      Json     @default("[]")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  createdBy       String?
-  updatedBy       String?
+  id            String   @id @default(uuid())
+  condominiumId String
+  name          String
+  bankName      String?
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  useSameForPdf Boolean  @default(true)
+  excelAliases  Json
+  pdfAliases    Json     @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String?
+  updatedBy     String?
 
-  condominium  Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  condominium   Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
   importBatches ImportBatch[]
 
   @@unique([condominiumId, name])
@@ -656,37 +663,37 @@ model BankProfile {
 }
 
 model Transaction {
-  id                    String               @id @default(uuid())
-  condominiumId         String
-  importBatchId         String
-  residentId            String?
-  transactionDate       DateTime             @db.Date
-  description           String
-  charges               Decimal?             @db.Decimal(12, 2)
-  credits               Decimal?             @db.Decimal(12, 2)
-  balance               Decimal              @db.Decimal(12, 2)
-  flowType              FlowType
-  category              String?
-  reference             String?
-  payerName             String?
-  classificationStatus  ClassificationStatus @default(NEEDS_REVIEW)
-  unitNumberDetected    String?
-  payerNameDetected     String?
-  paymentConcept        String?
-  paymentPeriodYear     Int?
-  paymentPeriodMonth    Int?
-  matchSource           MatchSource?
-  confidenceScore       Decimal?             @db.Decimal(5, 4)
-  matchedAt             DateTime?
-  classificationVersion Int                  @default(1)
-  requiresReviewReason  RequiresReviewReason?
-  matchedRuleId              String?
-  matchedCalendarEventId     String?
-  reconciliationStatus  ReconciliationStatus @default(PENDING)
-  reconciledById        String?
-  reconciledAt          DateTime?
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
+  id                     String                @id @default(uuid())
+  condominiumId          String
+  importBatchId          String
+  residentId             String?
+  transactionDate        DateTime              @db.Date
+  description            String
+  charges                Decimal?              @db.Decimal(12, 2)
+  credits                Decimal?              @db.Decimal(12, 2)
+  balance                Decimal               @db.Decimal(12, 2)
+  flowType               FlowType
+  category               String?
+  reference              String?
+  payerName              String?
+  classificationStatus   ClassificationStatus  @default(NEEDS_REVIEW)
+  unitNumberDetected     String?
+  payerNameDetected      String?
+  paymentConcept         String?
+  paymentPeriodYear      Int?
+  paymentPeriodMonth     Int?
+  matchSource            MatchSource?
+  confidenceScore        Decimal?              @db.Decimal(5, 4)
+  matchedAt              DateTime?
+  classificationVersion  Int                   @default(1)
+  requiresReviewReason   RequiresReviewReason?
+  matchedRuleId          String?
+  matchedCalendarEventId String?
+  reconciliationStatus   ReconciliationStatus  @default(PENDING)
+  reconciledById         String?
+  reconciledAt           DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
 
   condominium          Condominium         @relation(fields: [condominiumId], references: [id])
   importBatch          ImportBatch         @relation(fields: [importBatchId], references: [id])
@@ -879,20 +886,20 @@ model ReconciliationCorrectionPattern {
 }
 
 model CalendarEvent {
-  id             String      @id @default(uuid())
+  id             String                  @id @default(uuid())
   condominiumId  String
   title          String
   description    String?
   eventType      EventType
   startDate      DateTime
   endDate        DateTime
-  allDay         Boolean     @default(false)
+  allDay         Boolean                 @default(false)
   location       String?
   unitNumber     String?
   residentId     String?
   createdById    String
   updatedById    String?
-  status         EventStatus @default(PENDING)
+  status         EventStatus             @default(PENDING)
   notes          String?
   metadata       Json?
   recurrenceRule String?
@@ -900,8 +907,8 @@ model CalendarEvent {
   timezone       String?
   visibility     CalendarEventVisibility @default(PUBLIC)
   deletedAt      DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
 
   condominium         Condominium     @relation(fields: [condominiumId], references: [id])
   resident            Resident?       @relation(fields: [residentId], references: [id])
@@ -959,6 +966,9 @@ model WhatsAppBotConfig {
   whitelistEnabled          Boolean  @default(false)
   whitelistedPhoneNumbers   String[]
   conversationRetentionDays Int      @default(90)
+  returnToBotMessage        String?
+  beRightWithYouMessage     String?  @default("Recibí tu mensaje. La administración te responderá tan pronto sea posible.")
+  reNotifyAfterMinutes      Int      @default(5)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -1009,6 +1019,10 @@ model WhatsAppConversation {
   resolvedByUserId      String?
   consecutiveFaqMisses  Int                        @default(0)
   unreadCountForAdmin   Int                        @default(0)
+  isSystemChannel       Boolean                    @default(false)
+  firstNotifiedAt       DateTime?
+  reNotifiedAt          DateTime?
+  beRightWithYouSentAt  DateTime?
   createdAt             DateTime                   @default(now())
   updatedAt             DateTime                   @updatedAt
 
@@ -1023,29 +1037,30 @@ model WhatsAppConversation {
   @@index([condominiumId, status, lastInboundAt])
   @@index([condominiumId, residentId])
   @@index([condominiumId, unregisteredContactId])
+  @@index([status, firstNotifiedAt, reNotifiedAt])
   @@map("whatsapp_conversations")
 }
 
 model WhatsAppMessage {
-  id              String                   @id @default(uuid())
-  conversationId  String
-  direction       WhatsAppMessageDirection
-  messageType     WhatsAppMessageType      @default(TEXT)
-  textContent     String?
-  mediaMetaId     String?
-  mediaMimeType   String?
-  mediaFilename   String?
-  mediaCaption    String?
-  mediaSizeBytes  Int?
-  sentByBot       Boolean                  @default(false)
-  sentByUserId    String?
-  metaMessageId   String                   @unique
-  status          WhatsAppMessageStatus
-  errorCode       String?
-  errorMessage    String?
-  createdAt       DateTime                 @default(now())
-  deliveredAt     DateTime?
-  readAt          DateTime?
+  id             String                   @id @default(uuid())
+  conversationId String
+  direction      WhatsAppMessageDirection
+  messageType    WhatsAppMessageType      @default(TEXT)
+  textContent    String?
+  mediaMetaId    String?
+  mediaMimeType  String?
+  mediaFilename  String?
+  mediaCaption   String?
+  mediaSizeBytes Int?
+  sentByBot      Boolean                  @default(false)
+  sentByUserId   String?
+  metaMessageId  String                   @unique
+  status         WhatsAppMessageStatus
+  errorCode      String?
+  errorMessage   String?
+  createdAt      DateTime                 @default(now())
+  deliveredAt    DateTime?
+  readAt         DateTime?
 
   conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sentBy       User?                @relation(fields: [sentByUserId], references: [id])
@@ -1070,7 +1085,7 @@ model WhatsAppUnregisteredContact {
   createdAt            DateTime                          @default(now())
   updatedAt            DateTime                          @updatedAt
 
-  condominium   Condominium           @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  condominium   Condominium            @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
   conversations WhatsAppConversation[]
 
   @@unique([condominiumId, phoneNumber])
@@ -1079,16 +1094,22 @@ model WhatsAppUnregisteredContact {
 }
 
 model WhatsAppNotificationPreference {
-  id                 String   @id @default(uuid())
-  userId             String
-  condominiumId      String
-  notifyOnEscalation Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                      String                @id @default(uuid())
+  userId                  String
+  condominiumId           String
+  notifyOnEscalation      Boolean               @default(true)
+  notifyChannel           WhatsAppNotifyChannel @default(WHATSAPP)
+  personalPhoneNumber     String?
+  personalPhoneVerifiedAt DateTime?
+  pushSubscriptionJson    Json?
+  reNotifyAfterMinutes    Int?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
 
   condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
   user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, condominiumId])
+  @@index([condominiumId, personalPhoneNumber])
   @@map("whatsapp_notification_preferences")
 }
