@@ -1644,7 +1644,7 @@ The API runs on Vercel as a Node serverless function (`@vercel/node` runtime). T
 - `routes`: every path proxied to the single handler
 - `functions.maxDuration`: 60s (Vercel Pro limit)
 - `functions.memory`: 1024 MB
-- `crons`: `*/1 * * * *` → `POST /internal/cron/renotify` (see "Cron" section below)
+- `crons`: `0 0 * * *` (daily) → `POST /internal/cron/renotify` — see "Cron" section below for plan tradeoffs
 
 ### Required environment variables (Vercel dashboard)
 
@@ -1686,7 +1686,9 @@ WhatsApp re-notifications run via Vercel Cron Jobs (not `@nestjs/schedule`, whic
 - The endpoint validates `Authorization: Bearer ${CRON_SECRET}` (timing-safe comparison)
 - Calls `WhatsAppRenotifyScheduler.scanAndReNotify()` and returns `{ ok, scanned, dispatched }`
 
-**Important**: Vercel Cron at 1-minute frequency requires the **Pro plan**. The Hobby plan limits crons to 1 execution per day, which means the re-notify timer effectively won't fire as designed. The rest of the Phase 2 flow (escalation dispatch on `BOT_ACTIVE → ESCALATED`, take-over, return-to-bot, system-channel webhook bootstrap) does not depend on the cron and works on any plan.
+**Important**: The Hobby plan limits cron jobs to **once per day** and rejects deploys whose schedule is more frequent. The committed `vercel.json` uses `0 0 * * *` (daily at 00:00 UTC) so it can ship on Hobby. The re-notify timer effectively won't fire on the designed cadence (every minute) under this plan — the rest of the Phase 2 flow (escalation dispatch on `BOT_ACTIVE → ESCALATED`, take-over, return-to-bot, system-channel webhook bootstrap) does not depend on the cron and works fine on any plan.
+
+When upgrading to the Pro plan, change the schedule in `vercel.json` to `*/1 * * * *` (every minute) and redeploy. No code changes required.
 
 ### Local test of the cron endpoint
 
