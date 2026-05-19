@@ -1636,14 +1636,14 @@ The API runs on Vercel as a Node serverless function (`@vercel/node` runtime). T
 
 ### Build configuration
 
-`vercel.json` at the repo root pins:
-- `buildCommand`: `pnpm prisma generate && pnpm build`
+`vercel.json` at the repo root uses the modern serverless function format (no legacy `builds` array):
+- `buildCommand`: `pnpm prisma generate && pnpm build` — produces `dist/src/main.vercel.js`
 - `installCommand`: `pnpm install --frozen-lockfile`
-- Output: `dist/main.vercel.js` served via `@vercel/node` builder
-- `includeFiles` makes sure Prisma client + engines ship with the function
-- `routes`: every path proxied to the single handler
-- `functions.maxDuration`: 60s (Vercel Pro limit)
-- `functions.memory`: 1024 MB
+- `api/index.js` is the function entry — a tiny CJS wrapper that requires `../dist/src/main.vercel` and re-exports its default `handler`
+- `functions["api/index.js"].includeFiles`: `dist/**` — bundles the compiled NestJS output (Prisma client is auto-traced from node_modules)
+- `functions["api/index.js"].maxDuration`: 60s
+- `functions["api/index.js"].memory`: 1024 MB
+- `rewrites`: every path proxied to `/api/index`
 - `crons`: `0 0 * * *` (daily) → `POST /internal/cron/renotify` — see "Cron" section below for plan tradeoffs
 
 ### Required environment variables (Vercel dashboard)
@@ -1656,8 +1656,8 @@ Configure these for **Production** and **Preview** environments:
 | `DIRECT_URL` | Neon direct endpoint (same host without `-pooler`) — used by `prisma migrate deploy` |
 | `JWT_SECRET` | Auth signing secret (copy from local `.env`) |
 | `JWT_REFRESH_SECRET` | Refresh token secret |
-| `WHATSAPP_META_APP_SECRET` | Meta WhatsApp App secret |
-| `WHATSAPP_ENCRYPTION_KEY` | 64-char hex used to encrypt WhatsApp credentials at rest |
+| `WHATSAPP_META_APP_SECRET` | Meta WhatsApp App secret. **Optional until WhatsApp is in production use** — without it, inbound webhooks fail HMAC validation and the bot stops responding to messages. Other API modules (auth, dashboard, imports, calendar) work normally. |
+| `WHATSAPP_ENCRYPTION_KEY` | 64-char hex (generate with `openssl rand -hex 32`) used to AES-256-GCM encrypt WhatsApp access tokens at rest. **Optional until WhatsApp is in production use** — without it, the WhatsApp credentials settings UI fails when an admin tries to save. Pick a value once and keep it stable across deployments; rotating it makes previously-encrypted access tokens unreadable. |
 | `WHATSAPP_GRAPH_API_VERSION` | e.g. `v20.0` |
 | `WHATSAPP_ESCALATION_TEMPLATE_NAME` | `escalation_notification` (must match Meta-approved template) |
 | `WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE` | `es_MX` |
