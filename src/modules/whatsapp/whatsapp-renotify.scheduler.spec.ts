@@ -77,7 +77,14 @@ describe('WhatsAppRenotifyScheduler.scanAndReNotify', () => {
       ],
     });
     dispatcher.dispatchReNotification.mockRejectedValueOnce(new Error('boom'));
-    await expect(scheduler.scanAndReNotify()).resolves.toBeUndefined();
+    const result = await scheduler.scanAndReNotify();
+    expect(result).toEqual({ scanned: 2, dispatched: 1 });
     expect(dispatcher.dispatchReNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns scan result with zero counts when no candidates found', async () => {
+    const { scheduler } = setup({ candidates: [] });
+    const result = await scheduler.scanAndReNotify();
+    expect(result).toEqual({ scanned: 0, dispatched: 0 });
   });
 });
