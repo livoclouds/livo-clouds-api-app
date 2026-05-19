@@ -8,6 +8,8 @@
       "src": "dist/src/main.vercel.js",
       "use": "@vercel/node",
       "config": {
+        "maxDuration": 60,
+        "memory": 1024,
         "includeFiles": [
           "dist/**",
           "node_modules/.prisma/**",
@@ -22,16 +24,10 @@
       "dest": "dist/src/main.vercel.js"
     }
   ],
-  "functions": {
-    "dist/src/main.vercel.js": {
-      "maxDuration": 60,
-      "memory": 1024
-    }
-  },
   "crons": [
     {
       "path": "/internal/cron/renotify",
-      "schedule": "*/1 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
