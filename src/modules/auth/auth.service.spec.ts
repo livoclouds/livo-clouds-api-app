@@ -1,11 +1,11 @@
 import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs';
 import { UserRole } from '../../common/types';
 import { AuthService } from './auth.service';
 
 // Mock bcrypt to avoid slow hash rounds during tests.
 // DUMMY_HASH is assigned at class instantiation; this mock keeps it cheap.
-jest.mock('bcrypt', () => ({
+jest.mock('bcryptjs', () => ({
   hashSync: jest.fn(() => '$2b$12$test-dummy-hash-placeholder'),
   compare: jest.fn(),
 }));
