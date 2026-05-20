@@ -1,13 +1,47 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
 import { ListReconciliationRulesDto } from './dto/list-reconciliation-rules.dto';
+import {
+  RECONCILIATION_RULE_MODIFIED_EVENT,
+  type ReconciliationRuleAction,
+  type ReconciliationRuleModifiedEventPayload,
+} from './events/reconciliation-notification-events';
 
 @Injectable()
 export class ReconciliationRulesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ReconciliationRulesService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
+
+  /** Best-effort notification emit — never breaks the rule write. */
+  private emitRuleModified(
+    condominiumId: string,
+    ruleId: string,
+    ruleName: string,
+    action: ReconciliationRuleAction,
+    actorUserId?: string,
+  ): void {
+    try {
+      this.events.emit(RECONCILIATION_RULE_MODIFIED_EVENT, {
+        condominiumId,
+        ruleId,
+        ruleName,
+        action,
+        actorUserId,
+      } satisfies ReconciliationRuleModifiedEventPayload);
+    } catch (err) {
+      this.logger.warn(
+        `emitRuleModified failed for rule ${ruleId}: ${String(err)}`,
+      );
+    }
+  }
 
   async findAll(condominiumId: string, dto: ListReconciliationRulesDto) {
     const page = dto.page ?? 1;
@@ -43,8 +77,12 @@ export class ReconciliationRulesService {
     });
   }
 
-  async create(condominiumId: string, dto: CreateReconciliationRuleDto) {
-    return this.prisma.reconciliationRule.create({
+  async create(
+    condominiumId: string,
+    dto: CreateReconciliationRuleDto,
+    actorUserId?: string,
+  ) {
+    const rule = await this.prisma.reconciliationRule.create({
       data: {
         condominiumId,
         name: dto.name,
@@ -58,9 +96,22 @@ export class ReconciliationRulesService {
         isActive: dto.isActive ?? true,
       },
     });
+    this.emitRuleModified(
+      condominiumId,
+      rule.id,
+      rule.name,
+      'created',
+      actorUserId,
+    );
+    return rule;
   }
 
-  async update(condominiumId: string, id: string, dto: UpdateReconciliationRuleDto) {
+  async update(
+    condominiumId: string,
+    id: string,
+    dto: UpdateReconciliationRuleDto,
+    actorUserId?: string,
+  ) {
     await this.findOneOrFail(condominiumId, id);
 
     const data: Prisma.ReconciliationRuleUpdateInput = {};
@@ -73,15 +124,38 @@ export class ReconciliationRulesService {
     if (dto.priority !== undefined) data.priority = dto.priority;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
 
-    return this.prisma.reconciliationRule.update({ where: { id }, data });
+    const rule = await this.prisma.reconciliationRule.update({
+      where: { id },
+      data,
+    });
+    // Skip the notification for a no-op PATCH (empty DTO) — only a real
+    // change is worth surfacing.
+    if (Object.keys(data).length > 0) {
+      this.emitRuleModified(
+        condominiumId,
+        rule.id,
+        rule.name,
+        'updated',
+        actorUserId,
+      );
+    }
+    return rule;
   }
 
-  async toggleActive(condominiumId: string, id: string) {
+  async toggleActive(condominiumId: string, id: string, actorUserId?: string) {
     const rule = await this.findOneOrFail(condominiumId, id);
-    return this.prisma.reconciliationRule.update({
+    const updated = await this.prisma.reconciliationRule.update({
       where: { id },
       data: { isActive: !rule.isActive },
     });
+    this.emitRuleModified(
+      condominiumId,
+      updated.id,
+      updated.name,
+      updated.isActive ? 'updated' : 'deactivated',
+      actorUserId,
+    );
+    return updated;
   }
 
   async remove(condominiumId: string, id: string) {

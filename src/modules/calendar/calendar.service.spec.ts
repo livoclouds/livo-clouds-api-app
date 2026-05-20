@@ -770,6 +770,16 @@ function terraceEvent(overrides: Record<string, unknown> = {}): Record<string, u
   });
 }
 
+// Phase 3 added separate `calendar.event_created` / `calendar.event_cancelled`
+// notification events on the same EventEmitter2. These reclassify-trigger
+// tests assert only on the CALENDAR_TERRACE_CHANGED event, so they filter the
+// emit calls down to that name rather than counting every emit.
+function terraceChangeCalls(events: { emit: jest.Mock }) {
+  return events.emit.mock.calls.filter(
+    (call) => call[0] === CALENDAR_TERRACE_CHANGED,
+  );
+}
+
 describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
   it('emits calendar.terrace.changed on TERRACE_BOOKING create with action=create and 30d window', async () => {
     const prisma = makePrismaMock();
@@ -795,8 +805,9 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
       unitNumber: '101',
     } as never);
 
-    expect(events.emit).toHaveBeenCalledTimes(1);
-    const [name, payload] = events.emit.mock.calls[0];
+    const terraceCalls = terraceChangeCalls(events);
+    expect(terraceCalls).toHaveLength(1);
+    const [name, payload] = terraceCalls[0];
     expect(name).toBe(CALENDAR_TERRACE_CHANGED);
     expect(payload.action).toBe('create');
     expect(payload.condominiumId).toBe(CONDOMINIUM_ID);
@@ -822,7 +833,7 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
       endDate: '2026-06-15T11:00:00Z',
     } as never);
 
-    expect(events.emit).not.toHaveBeenCalled();
+    expect(terraceChangeCalls(events)).toHaveLength(0);
   });
 
   it('emits on TERRACE_BOOKING update when terraceRentalAmount changes', async () => {
@@ -1090,8 +1101,9 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
 
     await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
 
-    expect(events.emit).toHaveBeenCalledTimes(1);
-    expect(events.emit.mock.calls[0][1].action).toBe('delete');
+    const terraceCalls = terraceChangeCalls(events);
+    expect(terraceCalls).toHaveLength(1);
+    expect(terraceCalls[0][1].action).toBe('delete');
   });
 
   it('does NOT emit on remove when the event was already CANCELLED', async () => {
@@ -1106,7 +1118,7 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
 
     await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
 
-    expect(events.emit).not.toHaveBeenCalled();
+    expect(terraceChangeCalls(events)).toHaveLength(0);
   });
 
   it('does NOT emit on remove of a non-terrace event', async () => {
@@ -1119,6 +1131,6 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
 
     await service.remove(CONDOMINIUM_ID, USER_ID, EVENT_ID);
 
-    expect(events.emit).not.toHaveBeenCalled();
+    expect(terraceChangeCalls(events)).toHaveLength(0);
   });
 });

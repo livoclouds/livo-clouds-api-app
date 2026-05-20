@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -29,6 +30,14 @@ import {
   CALENDAR_TERRACE_CHANGED,
   type CalendarTerraceChangedPayload,
 } from './events/calendar-terrace-changed.event';
+import {
+  CALENDAR_BOOKING_CONFIRMED_EVENT,
+  CALENDAR_EVENT_CANCELLED_EVENT,
+  CALENDAR_EVENT_CREATED_EVENT,
+  type CalendarBookingConfirmedEventPayload,
+  type CalendarEventCancelledEventPayload,
+  type CalendarEventCreatedEventPayload,
+} from './events/calendar-notification-events';
 import {
   shouldTriggerReclassifyOnCreate,
   shouldTriggerReclassifyOnDelete,
@@ -66,6 +75,8 @@ export class CalendarService {
     private events: EventEmitter2,
   ) {}
 
+  private readonly logger = new Logger(CalendarService.name);
+
   private emitTerraceChange(
     trigger: TriggerCore | null,
     action: CalendarTerraceChangedPayload['action'],
@@ -73,6 +84,15 @@ export class CalendarService {
     if (!trigger) return;
     const payload: CalendarTerraceChangedPayload = { ...trigger, action };
     this.events.emit(CALENDAR_TERRACE_CHANGED, payload);
+  }
+
+  /** Best-effort notification emit — never breaks the calendar write. */
+  private emitNotification(event: string, payload: object): void {
+    try {
+      this.events.emit(event, payload);
+    } catch (err) {
+      this.logger.warn(`emitNotification(${event}) failed: ${String(err)}`);
+    }
   }
 
   async findAll(
@@ -321,6 +341,14 @@ export class CalendarService {
       'create',
     );
 
+    this.emitNotification(CALENDAR_EVENT_CREATED_EVENT, {
+      condominiumId,
+      eventId: event.id,
+      title: event.title,
+      startsAt: event.startDate.toISOString(),
+      actorUserId: userId,
+    } satisfies CalendarEventCreatedEventPayload);
+
     return event;
   }
 
@@ -486,6 +514,23 @@ export class CalendarService {
       'update',
     );
 
+    // A terrace booking that transitions into CONFIRMED is a booking
+    // confirmation — emit once, only on the PENDING/CANCELLED → CONFIRMED edge.
+    if (
+      updated.eventType === EventType.TERRACE_BOOKING &&
+      updated.status === EventStatus.CONFIRMED &&
+      existing.status !== EventStatus.CONFIRMED
+    ) {
+      this.emitNotification(CALENDAR_BOOKING_CONFIRMED_EVENT, {
+        condominiumId,
+        eventId: updated.id,
+        terraceId: null,
+        residentId: updated.residentId,
+        startsAt: updated.startDate.toISOString(),
+        actorUserId: userId,
+      } satisfies CalendarBookingConfirmedEventPayload);
+    }
+
     return updated;
   }
 
@@ -512,6 +557,13 @@ export class CalendarService {
       shouldTriggerReclassifyOnDelete(condominiumId, toTerraceTriggerSnapshot(existing), id),
       'delete',
     );
+
+    this.emitNotification(CALENDAR_EVENT_CANCELLED_EVENT, {
+      condominiumId,
+      eventId: existing.id,
+      title: existing.title,
+      actorUserId: userId,
+    } satisfies CalendarEventCancelledEventPayload);
 
     return { id };
   }
