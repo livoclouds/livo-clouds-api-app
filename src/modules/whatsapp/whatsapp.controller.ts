@@ -27,6 +27,7 @@ import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
 import { WhatsAppUnregisteredService } from './whatsapp-unregistered.service';
 import { WhatsAppMediaService } from './whatsapp-media.service';
+import { WhatsAppAnalyticsService } from './whatsapp-analytics.service';
 import { UpsertCredentialDto } from './dto/upsert-credential.dto';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
 import { CreateFaqDto } from './dto/create-faq.dto';
@@ -42,6 +43,7 @@ import { TestNotificationDto } from './dto/test-notification.dto';
 import { PushSubscriptionDto } from './dto/push-subscription.dto';
 import { ValidateNumberDto } from './dto/validate-number.dto';
 import { NormalizeResidentPhonesDto } from './dto/normalize-resident-phones.dto';
+import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('WhatsApp')
 @Controller('condominiums/:condominiumSlug/communications/whatsapp')
@@ -52,6 +54,7 @@ export class WhatsAppController {
     private readonly notificationPreferenceService: WhatsAppNotificationPreferenceService,
     private readonly unregisteredService: WhatsAppUnregisteredService,
     private readonly mediaService: WhatsAppMediaService,
+    private readonly analyticsService: WhatsAppAnalyticsService,
   ) {}
 
   // ── Credentials ─────────────────────────────────────────────────────────────
@@ -435,11 +438,23 @@ export class WhatsAppController {
   @Post('notification-preference/push-unsubscribe')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @HttpCode(204)
-  @ApiOperation({ summary: 'Remove Web Push subscription (Phase 5 placeholder)' })
+  @ApiOperation({ summary: 'Remove Web Push subscription' })
   pushUnsubscribe(
     @Request() req: { condominiumId: string },
     @CurrentUser() user: JwtPayload,
   ) {
     return this.notificationPreferenceService.removePushSubscription(req.condominiumId, user.sub);
+  }
+
+  // ── Analytics ────────────────────────────────────────────────────────────────
+
+  @Get('analytics')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Lightweight communications analytics summary' })
+  getAnalytics(
+    @Request() req: { condominiumId: string },
+    @Query() query: AnalyticsQueryDto,
+  ) {
+    return this.analyticsService.getSummary(req.condominiumId, query);
   }
 }

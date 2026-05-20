@@ -11,11 +11,19 @@ function setup(secret: string | undefined = 'test-secret-32-chars-abcdefghijkl')
   const renotify = {
     scanAndReNotify: jest.fn().mockResolvedValue({ scanned: 3, dispatched: 2 }),
   };
+  const retention = {
+    sweep: jest.fn().mockResolvedValue({
+      condominiumsScanned: 2,
+      conversationsAffected: 3,
+      messagesDeleted: 12,
+    }),
+  };
   const controller = new WhatsAppInternalCronController(
     configService as never,
     renotify as never,
+    retention as never,
   );
-  return { controller, configService, renotify };
+  return { controller, configService, renotify, retention };
 }
 
 describe('WhatsAppInternalCronController.renotifyEndpoint', () => {
@@ -66,5 +74,37 @@ describe('WhatsAppInternalCronController.renotifyEndpoint', () => {
       UnauthorizedException,
     );
     expect(renotify.scanAndReNotify).not.toHaveBeenCalled();
+  });
+});
+
+describe('WhatsAppInternalCronController.retentionSweepEndpoint', () => {
+  it('rejects when authorization header is missing', async () => {
+    const { controller, retention } = setup();
+    await expect(controller.retentionSweepEndpoint(undefined)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(retention.sweep).not.toHaveBeenCalled();
+  });
+
+  it('rejects when bearer token does not match CRON_SECRET', async () => {
+    const { controller, retention } = setup();
+    await expect(
+      controller.retentionSweepEndpoint('Bearer wrong-secret-32-chars-abcdefghi'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(retention.sweep).not.toHaveBeenCalled();
+  });
+
+  it('runs the sweep and returns its result with a matching bearer token', async () => {
+    const { controller, retention } = setup();
+    const result = await controller.retentionSweepEndpoint(
+      'Bearer test-secret-32-chars-abcdefghijkl',
+    );
+    expect(result).toEqual({
+      ok: true,
+      condominiumsScanned: 2,
+      conversationsAffected: 3,
+      messagesDeleted: 12,
+    });
+    expect(retention.sweep).toHaveBeenCalledTimes(1);
   });
 });

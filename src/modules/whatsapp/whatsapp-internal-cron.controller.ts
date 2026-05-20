@@ -11,6 +11,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { timingSafeEqual } from 'crypto';
 import { Public } from '../../common/decorators/public.decorator';
 import { WhatsAppRenotifyScheduler } from './whatsapp-renotify.scheduler';
+import { WhatsAppRetentionService } from './whatsapp-retention.service';
 
 const BEARER_PREFIX = 'Bearer ';
 
@@ -22,6 +23,7 @@ export class WhatsAppInternalCronController {
   constructor(
     private readonly configService: ConfigService,
     private readonly renotify: WhatsAppRenotifyScheduler,
+    private readonly retention: WhatsAppRetentionService,
   ) {}
 
   @Post('renotify')
@@ -37,6 +39,31 @@ export class WhatsAppInternalCronController {
     const result = await this.renotify.scanAndReNotify();
     this.logger.log(
       `[renotify] scanned=${result.scanned} dispatched=${result.dispatched}`,
+    );
+    return { ok: true, ...result };
+  }
+
+  @Post('retention-sweep')
+  @Public()
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Trigger the resolved-conversation message retention sweep (Vercel Cron Jobs entry point)',
+  })
+  async retentionSweepEndpoint(
+    @Headers('authorization') authorization: string | undefined,
+  ): Promise<{
+    ok: true;
+    condominiumsScanned: number;
+    conversationsAffected: number;
+    messagesDeleted: number;
+  }> {
+    this.verifyCronSecret(authorization);
+    const result = await this.retention.sweep();
+    this.logger.log(
+      `[retention-sweep] condominiums=${result.condominiumsScanned} ` +
+        `conversations=${result.conversationsAffected} ` +
+        `messagesDeleted=${result.messagesDeleted}`,
     );
     return { ok: true, ...result };
   }

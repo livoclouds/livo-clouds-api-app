@@ -147,26 +147,100 @@ export class WhatsAppNotificationPreferenceService {
     }
   }
 
+  /**
+   * Store a Web Push subscription for the current admin (Phase 5).
+   *
+   * The payload is validated and reduced to the canonical Web Push shape before
+   * persistence — extra client-supplied fields are dropped. The subscription is
+   * scoped to (userId, condominiumId) by the unique preference row, so an admin
+   * can only ever manage their own subscription for the current condominium.
+   */
   async savePushSubscription(
     condominiumId: string,
     userId: string,
     subscription: Record<string, unknown> | undefined,
   ) {
+    const validated = this.validatePushSubscription(subscription);
     const preference = await this.getForCurrentUser(condominiumId, userId);
-    return this.prisma.whatsAppNotificationPreference.update({
+    const updated = await this.prisma.whatsAppNotificationPreference.update({
       where: { id: preference.id },
       data: {
-        pushSubscriptionJson: (subscription ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+        pushSubscriptionJson: validated as unknown as Prisma.InputJsonValue,
       },
     });
+
+    await this.auditService.log({
+      condominiumId,
+      userId,
+      action: 'WHATSAPP_PUSH_SUBSCRIPTION_UPDATED',
+      actionCategory: 'COMMUNICATIONS',
+      module: 'WHATSAPP',
+      entityType: 'WhatsAppNotificationPreference',
+      entityId: updated.id,
+      result: 'SUCCESS',
+      description: 'Web Push subscription registered',
+      afterState: { pushEnabled: true },
+    });
+
+    return updated;
   }
 
   async removePushSubscription(condominiumId: string, userId: string) {
     const preference = await this.getForCurrentUser(condominiumId, userId);
-    return this.prisma.whatsAppNotificationPreference.update({
+    const updated = await this.prisma.whatsAppNotificationPreference.update({
       where: { id: preference.id },
       data: { pushSubscriptionJson: Prisma.JsonNull },
     });
+
+    await this.auditService.log({
+      condominiumId,
+      userId,
+      action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED',
+      actionCategory: 'COMMUNICATIONS',
+      module: 'WHATSAPP',
+      entityType: 'WhatsAppNotificationPreference',
+      entityId: updated.id,
+      result: 'SUCCESS',
+      description: 'Web Push subscription removed',
+      afterState: { pushEnabled: false },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Validate a raw Web Push subscription and return the canonical shape.
+   * Throws BadRequestException on a malformed payload so an invalid
+   * subscription is never persisted.
+   */
+  private validatePushSubscription(subscription: Record<string, unknown> | undefined): {
+    endpoint: string;
+    expirationTime: number | null;
+    keys: { p256dh: string; auth: string };
+  } {
+    if (!subscription || typeof subscription !== 'object') {
+      throw new BadRequestException('Push subscription payload is required');
+    }
+    const endpoint = subscription.endpoint;
+    if (typeof endpoint !== 'string' || !endpoint.startsWith('https://')) {
+      throw new BadRequestException('Push subscription endpoint is invalid');
+    }
+    const keys = subscription.keys as Record<string, unknown> | undefined;
+    if (
+      !keys ||
+      typeof keys.p256dh !== 'string' ||
+      typeof keys.auth !== 'string' ||
+      !keys.p256dh ||
+      !keys.auth
+    ) {
+      throw new BadRequestException('Push subscription keys are missing or invalid');
+    }
+    const expiration = subscription.expirationTime;
+    return {
+      endpoint,
+      expirationTime: typeof expiration === 'number' ? expiration : null,
+      keys: { p256dh: keys.p256dh, auth: keys.auth },
+    };
   }
 
   private async ensurePhoneNotInUse(

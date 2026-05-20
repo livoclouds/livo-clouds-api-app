@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  Prisma,
   UserRole,
   WhatsAppConversationStatus,
   WhatsAppMessageDirection,
@@ -11,6 +12,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { decrypt } from '../../common/utils/encryption.util';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
+import { WhatsAppPushService } from './whatsapp-push.service';
 
 const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -21,6 +23,7 @@ interface PreferenceForDispatch {
   notifyOnEscalation: boolean;
   personalPhoneNumber: string | null;
   personalPhoneVerifiedAt: Date | null;
+  pushSubscriptionJson: Prisma.JsonValue;
 }
 
 @Injectable()
@@ -31,6 +34,7 @@ export class WhatsAppNotificationDispatcherService {
     private prisma: PrismaService,
     private configService: ConfigService,
     private metaClient: WhatsAppMetaClientService,
+    private pushService: WhatsAppPushService,
   ) {}
 
   async dispatchEscalation(conversationId: string): Promise<void> {
@@ -75,6 +79,7 @@ export class WhatsAppNotificationDispatcherService {
           deepLink,
           messageText,
           context: 'escalation',
+          conversationId,
         }),
       ),
     );
@@ -124,6 +129,7 @@ export class WhatsAppNotificationDispatcherService {
           deepLink,
           messageText,
           context: 're-notification',
+          conversationId,
         }),
       ),
     );
@@ -210,6 +216,7 @@ export class WhatsAppNotificationDispatcherService {
         notifyOnEscalation: true,
         personalPhoneNumber: true,
         personalPhoneVerifiedAt: true,
+        pushSubscriptionJson: true,
       },
     });
     return rows.filter((r) => r.notifyChannel !== WhatsAppNotifyChannel.NONE);
@@ -227,8 +234,10 @@ export class WhatsAppNotificationDispatcherService {
     deepLink: string;
     messageText: string;
     context: string;
+    conversationId: string;
   }): Promise<void> {
-    const { preference, credential, subject, deepLink, messageText, context } = args;
+    const { preference, credential, subject, deepLink, messageText, context, conversationId } =
+      args;
 
     const wantsWhatsApp =
       preference.notifyChannel === WhatsAppNotifyChannel.WHATSAPP ||
@@ -237,9 +246,21 @@ export class WhatsAppNotificationDispatcherService {
       preference.notifyChannel === WhatsAppNotifyChannel.PUSH ||
       preference.notifyChannel === WhatsAppNotifyChannel.BOTH;
 
+    // Web Push (Phase 5) — supplementary channel. A stable per-conversation tag
+    // makes a re-notification replace the original alert instead of stacking.
     if (wantsPush) {
-      this.logger.log(
-        `[notifyAdmin] prefId=${preference.id} push skipped — Phase 5 placeholder`,
+      const isReNotify = context === 're-notification';
+      await this.pushService.sendToPreference(
+        preference.id,
+        preference.pushSubscriptionJson,
+        {
+          title: isReNotify ? 'Recordatorio de conversación' : 'Conversación escalada',
+          body: isReNotify
+            ? `${subject} sigue esperando atención`
+            : `${subject} necesita atención`,
+          tag: `whatsapp-conversation-${conversationId}`,
+          url: `/communications/${conversationId}`,
+        },
       );
     }
 
