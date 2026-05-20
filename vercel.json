@@ -21,6 +21,10 @@
     {
       "path": "/internal/cron/renotify",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/internal/cron/retention-sweep",
+      "schedule": "0 3 * * *"
     }
   ]
 }

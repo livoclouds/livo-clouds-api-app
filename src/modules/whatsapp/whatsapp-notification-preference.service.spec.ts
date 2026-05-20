@@ -193,3 +193,78 @@ describe('WhatsAppNotificationPreferenceService.sendTestWhatsApp', () => {
     );
   });
 });
+
+describe('WhatsAppNotificationPreferenceService.savePushSubscription', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  const validSub = {
+    endpoint: 'https://push.test/endpoint',
+    expirationTime: null,
+    keys: { p256dh: 'p256', auth: 'authkey' },
+  };
+
+  it('stores a valid subscription and audits without leaking the payload', async () => {
+    const { service, prisma, auditService } = makeService();
+    await service.savePushSubscription('condo-1', 'user-1', validSub);
+    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
+    expect(data.pushSubscriptionJson).toEqual({
+      endpoint: 'https://push.test/endpoint',
+      expirationTime: null,
+      keys: { p256dh: 'p256', auth: 'authkey' },
+    });
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'WHATSAPP_PUSH_SUBSCRIPTION_UPDATED' }),
+    );
+    const serialized = JSON.stringify(auditService.log.mock.calls[0][0]);
+    expect(serialized).not.toContain('push.test');
+  });
+
+  it('rejects a payload missing the endpoint', async () => {
+    const { service } = makeService();
+    await expect(
+      service.savePushSubscription('condo-1', 'user-1', {
+        keys: { p256dh: 'p', auth: 'a' },
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects a payload missing the encryption keys', async () => {
+    const { service } = makeService();
+    await expect(
+      service.savePushSubscription('condo-1', 'user-1', {
+        endpoint: 'https://push.test/x',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects an undefined subscription', async () => {
+    const { service } = makeService();
+    await expect(
+      service.savePushSubscription('condo-1', 'user-1', undefined),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('drops extra client-supplied fields, persisting only the canonical shape', async () => {
+    const { service, prisma } = makeService();
+    await service.savePushSubscription('condo-1', 'user-1', {
+      ...validSub,
+      evilField: 'x',
+    } as never);
+    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
+    expect(data.pushSubscriptionJson).not.toHaveProperty('evilField');
+  });
+});
+
+describe('WhatsAppNotificationPreferenceService.removePushSubscription', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('clears the stored subscription and audits the removal', async () => {
+    const { service, prisma, auditService } = makeService();
+    await service.removePushSubscription('condo-1', 'user-1');
+    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
+    expect(data).toHaveProperty('pushSubscriptionJson');
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED' }),
+    );
+  });
+});

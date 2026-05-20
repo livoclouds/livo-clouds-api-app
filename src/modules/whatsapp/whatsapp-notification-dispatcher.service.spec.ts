@@ -97,6 +97,11 @@ function makeDispatcher(overrides: {
 
   const metaClient = { sendTextMessage, sendTemplateMessage };
 
+  const pushService = {
+    sendToPreference: jest.fn().mockResolvedValue(true),
+    isConfigured: jest.fn().mockReturnValue(true),
+  };
+
   // Replace decrypt via spying: bypass crypto by stubbing token shape - the service decrypts only on dispatch path
   jest.spyOn(encryptionUtil, 'decrypt').mockReturnValue('access-token');
 
@@ -104,8 +109,9 @@ function makeDispatcher(overrides: {
     prisma as never,
     configService as never,
     metaClient as never,
+    pushService as never,
   );
-  return { service, prisma, metaClient, sendTextMessage, sendTemplateMessage };
+  return { service, prisma, metaClient, pushService, sendTextMessage, sendTemplateMessage };
 }
 
 describe('WhatsAppNotificationDispatcherService.dispatchEscalation', () => {
@@ -216,6 +222,52 @@ describe('WhatsAppNotificationDispatcherService.dispatchEscalation', () => {
     });
     await service.dispatchEscalation('conv-1');
     expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a Web Push notification for PUSH channel with a stable per-conversation tag', async () => {
+    const { service, pushService, sendTextMessage } = makeDispatcher({
+      preferences: [
+        {
+          id: 'pref-push',
+          userId: 'u',
+          notifyChannel: WhatsAppNotifyChannel.PUSH,
+          notifyOnEscalation: true,
+          personalPhoneNumber: null,
+          personalPhoneVerifiedAt: null,
+          pushSubscriptionJson: { endpoint: 'https://push.test/x', keys: { p256dh: 'a', auth: 'b' } },
+        },
+      ],
+    });
+    await service.dispatchEscalation('conv-1');
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    expect(pushService.sendToPreference).toHaveBeenCalledWith(
+      'pref-push',
+      expect.objectContaining({ endpoint: 'https://push.test/x' }),
+      expect.objectContaining({
+        tag: 'whatsapp-conversation-conv-1',
+        url: '/communications/conv-1',
+      }),
+    );
+  });
+
+  it('dispatches both Web Push and WhatsApp for BOTH channel', async () => {
+    const { service, pushService, sendTextMessage } = makeDispatcher({
+      recentInbound: true,
+      preferences: [
+        {
+          id: 'pref-both',
+          userId: 'u',
+          notifyChannel: WhatsAppNotifyChannel.BOTH,
+          notifyOnEscalation: true,
+          personalPhoneNumber: '+528122222222',
+          personalPhoneVerifiedAt: new Date(),
+          pushSubscriptionJson: { endpoint: 'https://push.test/y', keys: { p256dh: 'a', auth: 'b' } },
+        },
+      ],
+    });
+    await service.dispatchEscalation('conv-1');
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(pushService.sendToPreference).toHaveBeenCalledTimes(1);
   });
 });
 
