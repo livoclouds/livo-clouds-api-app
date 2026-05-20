@@ -162,6 +162,26 @@ enum NotificationType {
   IMPORT_ERROR
   NEW_USER
   NEW_INCIDENT
+
+  // Notifications module r1 (2026-05-18)
+  IMPORT_COMPLETED
+  IMPORT_FAILED
+  IMPORT_WITH_WARNINGS
+  IMPORT_DUPLICATE
+  CLASSIFICATION_REVIEW
+  RECONCILIATION_RULE_MODIFIED
+  CALENDAR_EVENT_CREATED
+  CALENDAR_EVENT_CANCELLED
+  CALENDAR_BOOKING_CONFIRMED
+  USER_ADDED
+  PERMISSIONS_CHANGED
+  SESSION_EXPIRING
+}
+
+enum RootScope {
+  ACTIVE_TENANT
+  ALL
+  SPECIFIC
 }
 
 enum RequiresReviewReason {
@@ -385,6 +405,8 @@ model User {
   whatsAppConvsTakenOver    WhatsAppConversation[]           @relation("ConversationTakenOverBy")
   whatsAppConvsResolved     WhatsAppConversation[]           @relation("ConversationResolvedBy")
   whatsAppNotificationPrefs WhatsAppNotificationPreference[]
+  notificationPreferences   UserNotificationPreference[]
+  rootNotificationScope     RootNotificationScope?
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -778,25 +800,58 @@ model AuditLog {
 }
 
 model Notification {
-  id            String           @id @default(uuid())
-  condominiumId String
-  userId        String?
-  type          NotificationType
-  title         String
-  message       String
-  isRead        Boolean          @default(false)
-  metadata      Json?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  id             String           @id @default(uuid())
+  condominiumId  String?
+  userId         String?
+  type           NotificationType
+  title          String
+  message        String
+  isRead         Boolean          @default(false)
+  metadata       Json?
+  data           Json?
+  linkUrl        String?
+  readAt         DateTime?
+  dismissedAt    DateTime?
+  aggregateCount Int              @default(1)
+  aggregateUntil DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  condominium Condominium @relation(fields: [condominiumId], references: [id])
-  user        User?       @relation(fields: [userId], references: [id])
+  condominium Condominium? @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([condominiumId])
   @@index([userId])
   @@index([isRead])
   @@index([createdAt])
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([userId, type, aggregateUntil])
   @@map("notifications")
+}
+
+model UserNotificationPreference {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  enabled   Boolean          @default(true)
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("user_notification_preferences")
+}
+
+model RootNotificationScope {
+  userId         String    @id
+  scope          RootScope @default(ACTIVE_TENANT)
+  condominiumIds String[]
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("root_notification_scopes")
 }
 
 model FinancialMonthlySummary {
