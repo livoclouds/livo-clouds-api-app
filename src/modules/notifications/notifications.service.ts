@@ -52,6 +52,24 @@ export interface ResolveRecipientsOptions {
   actorUserId?: string;
 }
 
+/**
+ * Input for the Phase 3 fan-out path. A domain listener supplies the
+ * translated notification once; `dispatchEvent` resolves the recipient set and
+ * writes one notification per recipient.
+ */
+export interface DispatchEventInput {
+  type: NotificationType;
+  condominiumId: string;
+  /** i18n key (e.g. `notifications.types.IMPORT_COMPLETED.title`). */
+  title: string;
+  /** i18n key (e.g. `notifications.types.IMPORT_COMPLETED.body`). */
+  message: string;
+  data?: Prisma.InputJsonValue;
+  linkUrl?: string | null;
+  /** Actor of the domain action; excluded from the recipient set. */
+  actorUserId?: string;
+}
+
 /** Reads a non-empty string field from an untyped event payload. */
 function readStringField(
   data: Record<string, unknown> | undefined,
@@ -415,11 +433,65 @@ export class NotificationsService {
   }
 
   /**
-   * Entry point for domain event listeners (Phase 3). Delegates to the
-   * aggregation path so repeated events of the same kind coalesce.
+   * Per-user primitive for domain event listeners. Delegates to the
+   * aggregation path so repeated events of the same kind coalesce. Used
+   * directly only when the recipient is a single, already-known user
+   * (e.g. SESSION_EXPIRING); otherwise listeners go through `dispatchEvent`.
    */
   async createForEvent(input: NotificationEventInput): Promise<Notification> {
     return this.tryAggregate(input);
+  }
+
+  /**
+   * Fan-out entry point for Phase 3 domain listeners. Resolves the recipient
+   * set for `type` from the role matrix (preferences, ROOT scope, NEIGHBOR
+   * owner filter and actor exclusion all applied), then writes one — possibly
+   * aggregated — notification per recipient. This wrapper is what the
+   * architecture's "centralized recipient resolution" decision refers to:
+   * `createForEvent` is the per-user primitive it loops over.
+   */
+  async dispatchEvent(
+    input: DispatchEventInput,
+  ): Promise<{ recipientCount: number }> {
+    const eventData =
+      input.data !== undefined &&
+      input.data !== null &&
+      typeof input.data === 'object' &&
+      !Array.isArray(input.data)
+        ? (input.data as Record<string, unknown>)
+        : undefined;
+
+    const recipientIds = await this.resolveRecipientsForType(
+      input.type,
+      input.condominiumId,
+      { eventData, actorUserId: input.actorUserId },
+    );
+
+    for (const userId of recipientIds) {
+      await this.createForEvent({
+        userId,
+        condominiumId: input.condominiumId,
+        type: input.type,
+        title: input.title,
+        message: input.message,
+        data: input.data,
+        linkUrl: input.linkUrl,
+      });
+    }
+
+    return { recipientCount: recipientIds.length };
+  }
+
+  /**
+   * Resolves a condominium slug from its id. Listeners use it to build the
+   * `linkUrl` deep link, which is keyed on the slug-based web route segment.
+   */
+  async resolveCondominiumSlug(condominiumId: string): Promise<string | null> {
+    const row = await this.prisma.condominium.findUnique({
+      where: { id: condominiumId },
+      select: { slug: true },
+    });
+    return row?.slug ?? null;
   }
 
   /**

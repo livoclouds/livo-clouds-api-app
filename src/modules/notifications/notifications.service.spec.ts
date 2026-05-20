@@ -30,6 +30,9 @@ interface PrismaMock {
     findMany: jest.Mock;
     upsert: jest.Mock;
   };
+  condominium: {
+    findUnique: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -61,6 +64,9 @@ function makePrismaMock(): PrismaMock {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue(null),
+    },
+    condominium: {
+      findUnique: jest.fn().mockResolvedValue(null),
     },
     $transaction: jest.fn(),
   };
@@ -545,5 +551,102 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     );
 
     expect(result).toEqual(['admin-1']);
+  });
+});
+
+describe('NotificationsService.dispatchEvent', () => {
+  it('resolves recipients and writes one notification per recipient', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+    jest
+      .spyOn(service, 'resolveRecipientsForType')
+      .mockResolvedValue(['u1', 'u2', 'u3']);
+    const createSpy = jest
+      .spyOn(service, 'createForEvent')
+      .mockResolvedValue({} as never);
+
+    const result = await service.dispatchEvent({
+      type: NotificationType.IMPORT_COMPLETED,
+      condominiumId: CONDOMINIUM_ID,
+      title: 'notifications.types.IMPORT_COMPLETED.title',
+      message: 'notifications.types.IMPORT_COMPLETED.body',
+      data: { batchId: 'b1' },
+      linkUrl: '/link',
+      actorUserId: 'actor-1',
+    });
+
+    expect(result).toEqual({ recipientCount: 3 });
+    expect(createSpy).toHaveBeenCalledTimes(3);
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'u1',
+        condominiumId: CONDOMINIUM_ID,
+        type: NotificationType.IMPORT_COMPLETED,
+        linkUrl: '/link',
+      }),
+    );
+  });
+
+  it('forwards actorUserId and event data to recipient resolution (actor exclusion)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+    const resolveSpy = jest
+      .spyOn(service, 'resolveRecipientsForType')
+      .mockResolvedValue([]);
+    jest.spyOn(service, 'createForEvent').mockResolvedValue({} as never);
+
+    await service.dispatchEvent({
+      type: NotificationType.CALENDAR_BOOKING_CONFIRMED,
+      condominiumId: CONDOMINIUM_ID,
+      title: 't',
+      message: 'm',
+      data: { residentId: 'res-1' },
+      actorUserId: 'actor-1',
+    });
+
+    expect(resolveSpy).toHaveBeenCalledWith(
+      NotificationType.CALENDAR_BOOKING_CONFIRMED,
+      CONDOMINIUM_ID,
+      { eventData: { residentId: 'res-1' }, actorUserId: 'actor-1' },
+    );
+  });
+
+  it('writes nothing when the recipient set is empty', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+    jest.spyOn(service, 'resolveRecipientsForType').mockResolvedValue([]);
+    const createSpy = jest
+      .spyOn(service, 'createForEvent')
+      .mockResolvedValue({} as never);
+
+    const result = await service.dispatchEvent({
+      type: NotificationType.IMPORT_FAILED,
+      condominiumId: CONDOMINIUM_ID,
+      title: 't',
+      message: 'm',
+    });
+
+    expect(result).toEqual({ recipientCount: 0 });
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('NotificationsService.resolveCondominiumSlug', () => {
+  it('returns the slug of a known condominium', async () => {
+    const prisma = makePrismaMock();
+    prisma.condominium.findUnique.mockResolvedValue({ slug: 'torres-del-sur' });
+    const service = makeService(prisma);
+
+    expect(await service.resolveCondominiumSlug(CONDOMINIUM_ID)).toBe(
+      'torres-del-sur',
+    );
+  });
+
+  it('returns null when the condominium does not exist', async () => {
+    const prisma = makePrismaMock();
+    prisma.condominium.findUnique.mockResolvedValue(null);
+    const service = makeService(prisma);
+
+    expect(await service.resolveCondominiumSlug('missing')).toBeNull();
   });
 });

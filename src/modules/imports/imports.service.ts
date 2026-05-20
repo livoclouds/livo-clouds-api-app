@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
@@ -20,6 +21,16 @@ import { ListImportBatchesDto } from './dto/list-import-batches.dto';
 import { ImportsParserService, buildPeriods, ImportProfileMismatchError } from './parser';
 import type { ParsedRow as ServerParsedRow, PreviewFileResult, PreviewApiResponse } from './parser';
 import { BankProfilesService } from '../bank-profiles/bank-profiles.service';
+import {
+  IMPORT_COMPLETED_EVENT,
+  IMPORT_DUPLICATE_EVENT,
+  IMPORT_FAILED_EVENT,
+  IMPORT_WARNING_EVENT,
+  type ImportCompletedEventPayload,
+  type ImportDuplicateEventPayload,
+  type ImportFailedEventPayload,
+  type ImportWarningEventPayload,
+} from './events/import-notification-events';
 
 const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -275,6 +286,7 @@ export class ImportsService {
     private readonly parser: ImportsParserService,
     private readonly config: ConfigService,
     private readonly bankProfiles: BankProfilesService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
@@ -857,6 +869,12 @@ export class ImportsService {
           imported: 0,
           duplicateFile: true,
         });
+        this.events.emit(IMPORT_DUPLICATE_EVENT, {
+          condominiumId,
+          originalBatchId: existing.id,
+          attemptedFileName: file.fileName,
+          actorUserId: user.sub,
+        } satisfies ImportDuplicateEventPayload);
         continue;
       }
       // If COMPLETED with 0 transactions, fall through and treat it like a PENDING batch
@@ -925,6 +943,13 @@ export class ImportsService {
         const breakdown = Object.entries(fieldCounts)
           .map(([field, count]) => `${field}(${count})`)
           .join(', ');
+        this.events.emit(IMPORT_FAILED_EVENT, {
+          condominiumId,
+          batchId: existing.id,
+          stage: 'VALIDATE',
+          errorCode: 'INVALID_ROWS_EXCEEDED',
+          actorUserId: user.sub,
+        } satisfies ImportFailedEventPayload);
         throw new BadRequestException({
           code: 'INVALID_ROWS_EXCEEDED',
           reason: `File ${file.fileName} has ${validationReport.invalidRows} of ${validationReport.totalRows} rows invalid (${(validationReport.invalidRatio * 100).toFixed(1)}% > ${(INVALID_ROWS_THRESHOLD * 100).toFixed(0)}%): ${breakdown}`,
@@ -1115,6 +1140,10 @@ export class ImportsService {
           {
             transactionCount: validTransactions.length,
             invalidRowsSkipped: validationReport.invalidRows,
+            // Skipped rows plus parser warnings together describe an import
+            // that succeeded but is not fully clean — it drives the
+            // IMPORT_COMPLETED vs IMPORT_WITH_WARNINGS branch below.
+            warningCount: validationReport.invalidRows + mergedWarnings.length,
             totalIncome,
             totalExpenses,
             finalBalance,
@@ -1204,6 +1233,7 @@ export class ImportsService {
     persistence: {
       transactionCount: number;
       invalidRowsSkipped: number;
+      warningCount: number;
       totalIncome: number;
       totalExpenses: number;
       finalBalance: number;
@@ -1218,6 +1248,7 @@ export class ImportsService {
       const classificationSummary = await this.classification.classifyBatch(
         condominiumId,
         batchId,
+        userId,
       );
       this.logger.log(
         `classify-async: done batchId=${batchId} ${JSON.stringify(classificationSummary)}`,
@@ -1256,6 +1287,41 @@ export class ImportsService {
           reconciliation: persistence.reconciliationSummary,
         },
       });
+
+      // Notification fan-out is best-effort: a failure here must never roll
+      // the COMPLETED batch back to FAILED, so it is isolated from the outer
+      // catch. A clean import emits IMPORT_COMPLETED; an import that skipped
+      // rows or raised parser warnings emits IMPORT_WITH_WARNINGS instead —
+      // the two outcomes are mutually exclusive (no double-notify).
+      try {
+        if (persistence.warningCount > 0) {
+          this.events.emit(IMPORT_WARNING_EVENT, {
+            condominiumId,
+            batchId,
+            warningCount: persistence.warningCount,
+            actorUserId: userId,
+          } satisfies ImportWarningEventPayload);
+        } else {
+          const cs = await this.prisma.condominiumSettings.findUnique({
+            where: { condominiumId },
+            select: { currency: true },
+          });
+          // `confirm` already passed `validateFeesConfigured`, so a settings
+          // row exists; `currency` is non-null (`@default("MXN")`). The `??`
+          // only satisfies the type for the unreachable no-row branch.
+          this.events.emit(IMPORT_COMPLETED_EVENT, {
+            condominiumId,
+            batchId,
+            rowCount: persistence.transactionCount,
+            currency: cs?.currency ?? 'MXN',
+            actorUserId: userId,
+          } satisfies ImportCompletedEventPayload);
+        }
+      } catch (emitErr) {
+        this.logger.warn(
+          `classify-async: notification emit failed batchId=${batchId}: ${String(emitErr)}`,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(
@@ -1301,6 +1367,19 @@ export class ImportsService {
         this.logger.error(
           'classify-async: failed to write IMPORT_FAILED audit',
           auditErr instanceof Error ? auditErr.stack : String(auditErr),
+        );
+      }
+      try {
+        this.events.emit(IMPORT_FAILED_EVENT, {
+          condominiumId,
+          batchId,
+          stage: 'CLASSIFY',
+          errorCode: 'CLASSIFICATION_FAILED',
+          actorUserId: userId,
+        } satisfies ImportFailedEventPayload);
+      } catch (emitErr) {
+        this.logger.warn(
+          `classify-async: notification emit failed batchId=${batchId}: ${String(emitErr)}`,
         );
       }
     }

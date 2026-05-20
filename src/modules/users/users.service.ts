@@ -2,19 +2,41 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import {
+  USER_ADDED_EVENT,
+  USER_PERMISSIONS_CHANGED_EVENT,
+  type UserAddedEventPayload,
+  type UserPermissionsChangedEventPayload,
+} from './events/user-notification-events';
 
 const SALT_ROUNDS = 12;
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(UsersService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
+
+  /** Best-effort notification emit — never breaks the user write. */
+  private emitNotification(event: string, payload: object): void {
+    try {
+      this.events.emit(event, payload);
+    } catch (err) {
+      this.logger.warn(`emitNotification(${event}) failed: ${String(err)}`);
+    }
+  }
 
   async findAll(condominiumId: string) {
     return this.prisma.user.findMany({
@@ -55,7 +77,7 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-    return this.prisma.user.create({
+    const user = await this.prisma.user.create({
       data: {
         condominiumId,
         email: dto.email,
@@ -69,6 +91,16 @@ export class UsersService {
       },
       select: this.safeSelect(),
     });
+
+    this.emitNotification(USER_ADDED_EVENT, {
+      condominiumId,
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      actorUserId: requester.sub,
+    } satisfies UserAddedEventPayload);
+
+    return user;
   }
 
   async update(
@@ -77,7 +109,7 @@ export class UsersService {
     dto: UpdateUserDto,
     requester: JwtPayload,
   ) {
-    await this.findOne(condominiumId, id);
+    const before = await this.findOne(condominiumId, id);
 
     if (requester.role === UserRole.TENANT_ADMIN && dto.role === UserRole.ROOT) {
       throw new ForbiddenException('Cannot assign ROOT role');
@@ -95,10 +127,24 @@ export class UsersService {
       data: updateData,
     });
     if (result.count === 0) throw new NotFoundException('User not found');
-    return this.prisma.user.findFirst({
+    const after = await this.prisma.user.findFirst({
       where: { id, condominiumId, deletedAt: null },
       select: this.safeSelect(),
     });
+
+    // Notify only when the role genuinely changed — a name/phone edit is not
+    // a permissions change.
+    if (after && before.role !== after.role) {
+      this.emitNotification(USER_PERMISSIONS_CHANGED_EVENT, {
+        condominiumId,
+        userId: id,
+        beforeRole: before.role,
+        afterRole: after.role,
+        actorUserId: requester.sub,
+      } satisfies UserPermissionsChangedEventPayload);
+    }
+
+    return after;
   }
 
   async remove(condominiumId: string, id: string) {

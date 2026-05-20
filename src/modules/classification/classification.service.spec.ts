@@ -72,7 +72,12 @@ function makePrismaMock(): PrismaMock {
 
 function makeService(prisma: PrismaMock): ClassificationService {
   const rulesService = { findActive: jest.fn().mockResolvedValue([]) };
-  return new ClassificationService(prisma as never, rulesService as never);
+  const events = { emit: jest.fn() };
+  return new ClassificationService(
+    prisma as never,
+    rulesService as never,
+    events as never,
+  );
 }
 
 function findClassifierUpdate(

@@ -1,7 +1,12 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
+import {
+  CLASSIFICATION_REVIEW_NEEDED_EVENT,
+  type ClassificationReviewNeededEventPayload,
+} from './events/classification-notification-events';
 import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-matcher';
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 
@@ -323,6 +328,7 @@ export class ClassificationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly rulesService: ReconciliationRulesService,
+    private readonly events: EventEmitter2,
   ) {}
 
   classifyTransaction(
@@ -405,6 +411,7 @@ export class ClassificationService {
   async classifyBatch(
     condominiumId: string,
     batchId: string,
+    actorUserId?: string,
   ): Promise<ClassificationSummary> {
     const [residents, transactions, activeRules, rawTerraceEvents, settings] = await Promise.all([
       this.prisma.resident.findMany({
@@ -521,6 +528,23 @@ export class ClassificationService {
     }
 
     await this.upsertMonthlySummaries(condominiumId, batchId);
+
+    // Notify only when the batch genuinely left transactions for manual
+    // review. Best-effort: a listener failure must not fail classification.
+    if (needsReview > 0) {
+      try {
+        this.events.emit(CLASSIFICATION_REVIEW_NEEDED_EVENT, {
+          condominiumId,
+          batchId,
+          transactionCount: needsReview,
+          actorUserId,
+        } satisfies ClassificationReviewNeededEventPayload);
+      } catch (emitErr) {
+        this.logger.warn(
+          `classifyBatch: notification emit failed batchId=${batchId}: ${String(emitErr)}`,
+        );
+      }
+    }
 
     return { total: transactions.length, classified, needsReview, unmatched };
   }

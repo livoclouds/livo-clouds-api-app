@@ -11,10 +11,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
+import { JwtPayload, UserRole } from '../../common/types';
 import { ReconciliationRulesService } from './reconciliation-rules.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -41,8 +42,9 @@ export class ReconciliationRulesController {
   async create(
     @Request() req: { condominiumId: string },
     @Body() dto: CreateReconciliationRuleDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.create(req.condominiumId, dto);
+    return this.service.create(req.condominiumId, dto, user.sub);
   }
 
   @Patch(':id')
@@ -52,8 +54,9 @@ export class ReconciliationRulesController {
     @Request() req: { condominiumId: string },
     @Param('id') id: string,
     @Body() dto: UpdateReconciliationRuleDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.update(req.condominiumId, id, dto);
+    return this.service.update(req.condominiumId, id, dto, user.sub);
   }
 
   @Patch(':id/toggle-active')
@@ -62,8 +65,9 @@ export class ReconciliationRulesController {
   async toggleActive(
     @Request() req: { condominiumId: string },
     @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.toggleActive(req.condominiumId, id);
+    return this.service.toggleActive(req.condominiumId, id, user.sub);
   }
 
   @Delete(':id')
