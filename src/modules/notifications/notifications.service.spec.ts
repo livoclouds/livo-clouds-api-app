@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { NotificationType, RootScope } from '@prisma/client';
+import { NotificationType, RootScope, UserRole } from '@prisma/client';
 import { NotificationsService, NotificationEventInput } from './notifications.service';
 import { NOTIFICATION_R1_TYPES } from './notifications.constants';
 
@@ -15,15 +15,26 @@ interface PrismaMock {
     updateMany: jest.Mock;
     create: jest.Mock;
   };
+  user: {
+    findMany: jest.Mock;
+  };
+  resident: {
+    findFirst: jest.Mock;
+  };
   userNotificationPreference: {
     findMany: jest.Mock;
     upsert: jest.Mock;
   };
   rootNotificationScope: {
     findUnique: jest.Mock;
+    findMany: jest.Mock;
     upsert: jest.Mock;
   };
   $transaction: jest.Mock;
+}
+
+interface GatewayMock {
+  emitAfterWrite: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
@@ -36,12 +47,19 @@ function makePrismaMock(): PrismaMock {
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       create: jest.fn().mockResolvedValue(null),
     },
+    user: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    resident: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     userNotificationPreference: {
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue(null),
     },
     rootNotificationScope: {
       findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue(null),
     },
     $transaction: jest.fn(),
@@ -58,8 +76,15 @@ function makePrismaMock(): PrismaMock {
   return mock;
 }
 
-function makeService(prisma: PrismaMock): NotificationsService {
-  return new NotificationsService(prisma as never);
+function makeGatewayMock(): GatewayMock {
+  return { emitAfterWrite: jest.fn() };
+}
+
+function makeService(
+  prisma: PrismaMock,
+  gateway: GatewayMock = makeGatewayMock(),
+): NotificationsService {
+  return new NotificationsService(prisma as never, gateway as never);
 }
 
 function eventInput(
@@ -317,5 +342,208 @@ describe('NotificationsService.getRootScope', () => {
       scope: RootScope.ACTIVE_TENANT,
       condominiumIds: [],
     });
+  });
+});
+
+describe('NotificationsService.tryAggregate gateway fan-out', () => {
+  it('emits an SSE event with isAggregateUpdate=false after creating a row', async () => {
+    const prisma = makePrismaMock();
+    const gateway = makeGatewayMock();
+    const created = { id: 'notif-new', userId: USER_ID, aggregateCount: 1 };
+    prisma.notification.findFirst.mockResolvedValueOnce(null);
+    prisma.notification.create.mockResolvedValueOnce(created);
+    const service = makeService(prisma, gateway);
+
+    await service.tryAggregate(eventInput());
+
+    expect(gateway.emitAfterWrite).toHaveBeenCalledTimes(1);
+    expect(gateway.emitAfterWrite).toHaveBeenCalledWith(created, false);
+  });
+
+  it('emits an SSE event with isAggregateUpdate=true after updating an open row', async () => {
+    const prisma = makePrismaMock();
+    const gateway = makeGatewayMock();
+    const updated = { id: 'notif-open', userId: USER_ID, aggregateCount: 2 };
+    prisma.notification.findFirst.mockResolvedValueOnce({
+      id: 'notif-open',
+      readAt: null,
+      dismissedAt: null,
+    });
+    prisma.notification.update.mockResolvedValueOnce(updated);
+    const service = makeService(prisma, gateway);
+
+    await service.createForEvent(eventInput());
+
+    expect(gateway.emitAfterWrite).toHaveBeenCalledWith(updated, true);
+  });
+});
+
+describe('NotificationsService.getStreamSync', () => {
+  it('returns the unread count and the most recent non-dismissed notifications', async () => {
+    const prisma = makePrismaMock();
+    const recent = [{ id: 'n1' }, { id: 'n2' }];
+    prisma.notification.findMany.mockResolvedValueOnce(recent);
+    prisma.notification.count.mockResolvedValueOnce(5);
+    const service = makeService(prisma);
+
+    const result = await service.getStreamSync(CONDOMINIUM_ID, USER_ID);
+
+    expect(result).toEqual({ unreadCount: 5, recent });
+    expect(prisma.notification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: USER_ID,
+          condominiumId: CONDOMINIUM_ID,
+          dismissedAt: null,
+        },
+        take: 20,
+      }),
+    );
+  });
+});
+
+describe('NotificationsService.resolveRecipientsForType', () => {
+  it('returns an empty list for legacy notification types', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.NEGATIVE_BALANCE,
+      CONDOMINIUM_ID,
+    );
+
+    expect(result).toEqual([]);
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it('queries users restricted to the roles allowed by the matrix', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([]);
+    const service = makeService(prisma);
+
+    await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+    );
+
+    expect(prisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          role: { in: [UserRole.ROOT, UserRole.TENANT_ADMIN] },
+        }),
+      }),
+    );
+  });
+
+  it('removes a user with a disabled preference and keeps users with no row', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'a@x.com' },
+      { id: 'admin-2', role: UserRole.TENANT_ADMIN, email: 'b@x.com' },
+    ]);
+    prisma.userNotificationPreference.findMany.mockResolvedValueOnce([
+      { userId: 'admin-2' },
+    ]);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+    );
+
+    expect(result).toEqual(['admin-1']);
+  });
+
+  it('applies ROOT scope: ALL keeps, SPECIFIC matches the condominium, ACTIVE_TENANT drops', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'root-all', role: UserRole.ROOT, email: 'all@x.com' },
+      { id: 'root-specific-hit', role: UserRole.ROOT, email: 'sh@x.com' },
+      { id: 'root-specific-miss', role: UserRole.ROOT, email: 'sm@x.com' },
+      { id: 'root-active', role: UserRole.ROOT, email: 'ac@x.com' },
+      { id: 'root-default', role: UserRole.ROOT, email: 'df@x.com' },
+    ]);
+    prisma.rootNotificationScope.findMany.mockResolvedValueOnce([
+      { userId: 'root-all', scope: RootScope.ALL, condominiumIds: [] },
+      {
+        userId: 'root-specific-hit',
+        scope: RootScope.SPECIFIC,
+        condominiumIds: [CONDOMINIUM_ID],
+      },
+      {
+        userId: 'root-specific-miss',
+        scope: RootScope.SPECIFIC,
+        condominiumIds: ['other-cond'],
+      },
+      {
+        userId: 'root-active',
+        scope: RootScope.ACTIVE_TENANT,
+        condominiumIds: [],
+      },
+      // root-default has no scope row → defaults to ACTIVE_TENANT (dropped).
+    ]);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+    );
+
+    expect(result.sort()).toEqual(['root-all', 'root-specific-hit'].sort());
+  });
+
+  it('excludes the actor from the recipient set', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'a@x.com' },
+      { id: 'actor', role: UserRole.TENANT_ADMIN, email: 'actor@x.com' },
+    ]);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+      { actorUserId: 'actor' },
+    );
+
+    expect(result).toEqual(['admin-1']);
+  });
+
+  it('delivers CALENDAR_BOOKING_CONFIRMED to a NEIGHBOR only when their email matches the booking resident', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'admin@x.com' },
+      { id: 'neighbor-owner', role: UserRole.NEIGHBOR, email: 'owner@x.com' },
+      { id: 'neighbor-other', role: UserRole.NEIGHBOR, email: 'other@x.com' },
+    ]);
+    // Resident email casing differs — the match must be case-insensitive.
+    prisma.resident.findFirst.mockResolvedValueOnce({ email: 'Owner@X.com' });
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.CALENDAR_BOOKING_CONFIRMED,
+      CONDOMINIUM_ID,
+      { eventData: { residentId: 'resident-1' } },
+    );
+
+    expect(result.sort()).toEqual(['admin-1', 'neighbor-owner'].sort());
+  });
+
+  it('drops every NEIGHBOR recipient when the booking resident email cannot be resolved', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'admin@x.com' },
+      { id: 'neighbor-1', role: UserRole.NEIGHBOR, email: 'n1@x.com' },
+    ]);
+    prisma.resident.findFirst.mockResolvedValueOnce(null);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.CALENDAR_BOOKING_CONFIRMED,
+      CONDOMINIUM_ID,
+      { eventData: { residentId: 'missing' } },
+    );
+
+    expect(result).toEqual(['admin-1']);
   });
 });

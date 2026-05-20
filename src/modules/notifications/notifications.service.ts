@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -8,12 +9,18 @@ import {
   NotificationType,
   Prisma,
   RootScope,
+  UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   AGGREGATION_WINDOW_MINUTES,
   NOTIFICATION_R1_TYPES,
 } from './notifications.constants';
+import { NotificationsSseGateway } from './notifications.gateway';
+import {
+  isR1NotificationType,
+  NOTIFICATION_ROLE_ACCESS,
+} from './notification-role-matrix';
 
 export interface ListNotificationsParams {
   userId: string;
@@ -38,9 +45,30 @@ export interface NotificationEventInput {
   linkUrl?: string | null;
 }
 
+export interface ResolveRecipientsOptions {
+  /** Domain payload for the triggering event; used by per-type owner filters. */
+  eventData?: Record<string, unknown>;
+  /** User who performed the action; excluded from the recipient set. */
+  actorUserId?: string;
+}
+
+/** Reads a non-empty string field from an untyped event payload. */
+function readStringField(
+  data: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = data?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 @Injectable()
 export class NotificationsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(NotificationsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private gateway: NotificationsSseGateway,
+  ) {}
 
   async list(params: ListNotificationsParams) {
     const { userId, condominiumId, page, limit } = params;
@@ -205,6 +233,188 @@ export class NotificationsService {
   }
 
   /**
+   * Initial payload for an SSE connection: the unread count plus the most
+   * recent (non-dismissed) notifications, fetched in a single round trip.
+   */
+  async getStreamSync(condominiumId: string, userId: string) {
+    const [recent, unreadCount] = await Promise.all([
+      this.prisma.notification.findMany({
+        where: { userId, condominiumId, dismissedAt: null },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      }),
+      this.prisma.notification.count({
+        where: { userId, condominiumId, readAt: null, dismissedAt: null },
+      }),
+    ]);
+    return { unreadCount, recent };
+  }
+
+  /**
+   * Resolves the set of user ids that should receive a notification of `type`
+   * for `condominiumId`. Centralizes every recipient rule — the role matrix,
+   * ROOT scoping, per-type owner filters, preference opt-outs and actor
+   * exclusion — so controllers and (Phase 3) listeners never re-derive them.
+   */
+  async resolveRecipientsForType(
+    type: NotificationType,
+    condominiumId: string,
+    options: ResolveRecipientsOptions = {},
+  ): Promise<string[]> {
+    // Legacy types have no role matrix entry and therefore no recipients.
+    if (!isR1NotificationType(type)) {
+      return [];
+    }
+    const eligibleRoles = NOTIFICATION_ROLE_ACCESS[type];
+
+    let candidates = await this.prisma.user.findMany({
+      where: {
+        role: { in: eligibleRoles },
+        isActive: true,
+        deletedAt: null,
+        // ROOT users have no condominiumId; they are picked up by role alone.
+        OR: [{ condominiumId }, { role: UserRole.ROOT }],
+      },
+      select: { id: true, role: true, email: true },
+    });
+
+    candidates = await this.applyRootScope(candidates, condominiumId);
+    candidates = await this.applyNeighborOwnerFilter(
+      candidates,
+      type,
+      condominiumId,
+      options.eventData,
+    );
+    candidates = await this.applyPreferenceOptOut(candidates, type);
+
+    // Never notify the actor about their own action.
+    const recipientIds = candidates
+      .map((u) => u.id)
+      .filter((id) => id !== options.actorUserId);
+    return Array.from(new Set(recipientIds));
+  }
+
+  /**
+   * A ROOT user receives a tenant's notification only when their
+   * RootNotificationScope opts in. ACTIVE_TENANT cannot be resolved
+   * server-side (there is no active-condominium field) and is therefore
+   * treated as opt-out — see OQ-NT-14.
+   */
+  private async applyRootScope<T extends { id: string; role: UserRole }>(
+    candidates: T[],
+    condominiumId: string,
+  ): Promise<T[]> {
+    const rootIds = candidates
+      .filter((u) => u.role === UserRole.ROOT)
+      .map((u) => u.id);
+    if (rootIds.length === 0) {
+      return candidates;
+    }
+    const scopes = await this.prisma.rootNotificationScope.findMany({
+      where: { userId: { in: rootIds } },
+    });
+    const scopeByUser = new Map(scopes.map((s) => [s.userId, s]));
+    return candidates.filter((u) => {
+      if (u.role !== UserRole.ROOT) {
+        return true;
+      }
+      const scope = scopeByUser.get(u.id);
+      const mode = scope?.scope ?? RootScope.ACTIVE_TENANT;
+      if (mode === RootScope.ALL) {
+        return true;
+      }
+      if (mode === RootScope.SPECIFIC) {
+        return (scope?.condominiumIds ?? []).includes(condominiumId);
+      }
+      return false; // ACTIVE_TENANT — see OQ-NT-14
+    });
+  }
+
+  /**
+   * A booking confirmation reaches a NEIGHBOR only when the booking's resident
+   * unit belongs to that user. The sole User-to-unit bridge available today is
+   * a shared email address with the Resident row — see OQ-NT-13. Other roles
+   * are unaffected.
+   */
+  private async applyNeighborOwnerFilter<
+    T extends { role: UserRole; email: string },
+  >(
+    candidates: T[],
+    type: NotificationType,
+    condominiumId: string,
+    eventData: Record<string, unknown> | undefined,
+  ): Promise<T[]> {
+    if (
+      type !== NotificationType.CALENDAR_BOOKING_CONFIRMED ||
+      !candidates.some((u) => u.role === UserRole.NEIGHBOR)
+    ) {
+      return candidates;
+    }
+    const ownerEmail = await this.resolveBookingOwnerEmail(
+      condominiumId,
+      eventData,
+    );
+    const ownerEmailLower = ownerEmail?.toLowerCase() ?? null;
+    return candidates.filter((u) => {
+      if (u.role !== UserRole.NEIGHBOR) {
+        return true;
+      }
+      return (
+        ownerEmailLower !== null && u.email.toLowerCase() === ownerEmailLower
+      );
+    });
+  }
+
+  /**
+   * A disabled UserNotificationPreference row removes the user; a missing row
+   * keeps them (default-on opt-out model).
+   */
+  private async applyPreferenceOptOut<T extends { id: string }>(
+    candidates: T[],
+    type: NotificationType,
+  ): Promise<T[]> {
+    const candidateIds = candidates.map((u) => u.id);
+    if (candidateIds.length === 0) {
+      return candidates;
+    }
+    const disabled = await this.prisma.userNotificationPreference.findMany({
+      where: { type, enabled: false, userId: { in: candidateIds } },
+      select: { userId: true },
+    });
+    const disabledIds = new Set(disabled.map((p) => p.userId));
+    return candidates.filter((u) => !disabledIds.has(u.id));
+  }
+
+  /**
+   * Looks up the email of the resident who owns a booking, resolving from
+   * `residentId` when present and falling back to a unit-number field.
+   * Returns null when the resident or their email cannot be determined.
+   */
+  private async resolveBookingOwnerEmail(
+    condominiumId: string,
+    eventData: Record<string, unknown> | undefined,
+  ): Promise<string | null> {
+    const residentId = readStringField(eventData, 'residentId');
+    const unitNumber =
+      readStringField(eventData, 'residentUnitId') ??
+      readStringField(eventData, 'unitNumber');
+
+    let resident: { email: string | null } | null = null;
+    if (residentId) {
+      resident = await this.prisma.resident.findFirst({
+        where: { id: residentId, condominiumId, deletedAt: null },
+        select: { email: true },
+      });
+    } else if (unitNumber) {
+      resident = await this.prisma.resident.findFirst({
+        where: { condominiumId, unitNumber, deletedAt: null },
+        select: { email: true },
+      });
+    }
+    return resident?.email ?? null;
+  }
+
+  /**
    * Entry point for domain event listeners (Phase 3). Delegates to the
    * aggregation path so repeated events of the same kind coalesce.
    */
@@ -225,45 +435,61 @@ export class NotificationsService {
       now.getTime() + AGGREGATION_WINDOW_MINUTES * 60_000,
     );
 
-    return this.prisma.$transaction(async (tx) => {
-      const open = await tx.notification.findFirst({
-        where: {
-          userId: input.userId,
-          type: input.type,
-          condominiumId: input.condominiumId,
-          aggregateUntil: { gt: now },
-          readAt: null,
-          dismissedAt: null,
-        },
-        orderBy: { aggregateUntil: 'desc' },
-      });
+    const { row, isAggregateUpdate } = await this.prisma.$transaction(
+      async (tx) => {
+        const open = await tx.notification.findFirst({
+          where: {
+            userId: input.userId,
+            type: input.type,
+            condominiumId: input.condominiumId,
+            aggregateUntil: { gt: now },
+            readAt: null,
+            dismissedAt: null,
+          },
+          orderBy: { aggregateUntil: 'desc' },
+        });
 
-      if (open) {
-        return tx.notification.update({
-          where: { id: open.id },
+        if (open) {
+          const updated = await tx.notification.update({
+            where: { id: open.id },
+            data: {
+              aggregateCount: { increment: 1 },
+              aggregateUntil,
+              linkUrl: input.linkUrl ?? null,
+              ...(input.data !== undefined ? { data: input.data } : {}),
+            },
+          });
+          return { row: updated, isAggregateUpdate: true };
+        }
+
+        const created = await tx.notification.create({
           data: {
-            aggregateCount: { increment: 1 },
-            aggregateUntil,
+            userId: input.userId,
+            condominiumId: input.condominiumId,
+            type: input.type,
+            title: input.title,
+            message: input.message,
             linkUrl: input.linkUrl ?? null,
+            aggregateCount: 1,
+            aggregateUntil,
             ...(input.data !== undefined ? { data: input.data } : {}),
           },
         });
-      }
+        return { row: created, isAggregateUpdate: false };
+      },
+    );
 
-      return tx.notification.create({
-        data: {
-          userId: input.userId,
-          condominiumId: input.condominiumId,
-          type: input.type,
-          title: input.title,
-          message: input.message,
-          linkUrl: input.linkUrl ?? null,
-          aggregateCount: 1,
-          aggregateUntil,
-          ...(input.data !== undefined ? { data: input.data } : {}),
-        },
-      });
-    });
+    // SSE fan-out runs after the DB commit and is best-effort: a push failure
+    // must never roll back the persisted notification.
+    try {
+      this.gateway.emitAfterWrite(row, isAggregateUpdate);
+    } catch (err) {
+      this.logger.warn(
+        `SSE fan-out failed for notification ${row.id}: ${String(err)}`,
+      );
+    }
+
+    return row;
   }
 
   private async findOwnedOrThrow(
