@@ -9,6 +9,10 @@ import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
 import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
 import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
 import { WhatsAppRenotifyScheduler } from './whatsapp-renotify.scheduler';
+import { WhatsAppIdentityCaptureService } from './whatsapp-identity-capture.service';
+import { WhatsAppUnregisteredService } from './whatsapp-unregistered.service';
+import { WhatsAppMediaService } from './whatsapp-media.service';
+import { WhatsAppMediaRateLimitService } from './whatsapp-media-rate-limit.service';
 
 @Module({
   imports: [AuditModule],
@@ -24,6 +28,10 @@ import { WhatsAppRenotifyScheduler } from './whatsapp-renotify.scheduler';
     WhatsAppNotificationPreferenceService,
     WhatsAppNotificationDispatcherService,
     WhatsAppRenotifyScheduler,
+    WhatsAppIdentityCaptureService,
+    WhatsAppUnregisteredService,
+    WhatsAppMediaService,
+    WhatsAppMediaRateLimitService,
   ],
 })
 export class WhatsAppModule {}

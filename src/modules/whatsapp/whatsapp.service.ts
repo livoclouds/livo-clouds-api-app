@@ -30,6 +30,50 @@ import { ReorderFaqsDto } from './dto/reorder-faqs.dto';
 
 const RESIDENT_PHONE_FIELDS = ['phone', 'secondaryPhone'] as const;
 
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+
+interface MediaMetaFields {
+  mediaMetaId: string | null;
+  mediaMimeType: string | null;
+  mediaFilename: string | null;
+  mediaCaption: string | null;
+  mediaSizeBytes: number | null;
+}
+
+const EMPTY_MEDIA_META: MediaMetaFields = {
+  mediaMetaId: null,
+  mediaMimeType: null,
+  mediaFilename: null,
+  mediaCaption: null,
+  mediaSizeBytes: null,
+};
+
+/**
+ * Extracts media references from a Meta inbound webhook message. Only the
+ * reference ID and lightweight metadata are kept — bytes are never downloaded
+ * here (they are fetched lazily through the media proxy when an admin views).
+ */
+export function extractMediaMeta(
+  msg: Record<string, unknown>,
+  msgType: string,
+): MediaMetaFields {
+  const node = msg[msgType] as Record<string, unknown> | undefined;
+  if (!node || typeof node !== 'object') return { ...EMPTY_MEDIA_META };
+
+  const mediaMetaId = typeof node.id === 'string' ? node.id : null;
+  if (!mediaMetaId) return { ...EMPTY_MEDIA_META };
+
+  return {
+    mediaMetaId,
+    mediaMimeType: typeof node.mime_type === 'string' ? node.mime_type : null,
+    mediaFilename: typeof node.filename === 'string' ? node.filename : null,
+    mediaCaption: typeof node.caption === 'string' ? node.caption : null,
+    mediaSizeBytes:
+      typeof node.file_size === 'number' ? node.file_size : null,
+  };
+}
+
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
@@ -401,19 +445,99 @@ export class WhatsAppService {
       encryptionKey,
     );
 
-    const { messageId } = await this.metaClient.sendTextMessage(
-      credential.phoneNumberId,
-      accessToken,
-      conv.phoneNumber,
-      dto.textContent,
-    );
+    let messageId: string;
+    let messageType: WhatsAppMessageType = WhatsAppMessageType.TEXT;
+    let mediaMetaId: string | null = null;
+    let mediaMimeType: string | null = null;
+    let mediaFilename: string | null = null;
+    let mediaCaption: string | null = null;
+    let mediaSizeBytes: number | null = null;
+
+    if (dto.type === 'TEXT') {
+      if (!dto.textContent) {
+        throw new BadRequestException('textContent is required for text messages');
+      }
+      const result = await this.metaClient.sendTextMessage(
+        credential.phoneNumberId,
+        accessToken,
+        conv.phoneNumber,
+        dto.textContent,
+      );
+      messageId = result.messageId;
+    } else {
+      if (!dto.mediaBase64 || !dto.mediaMimeType) {
+        throw new BadRequestException('Media payload is required for media messages');
+      }
+      if (dto.mediaMimeType === 'image/svg+xml') {
+        throw new BadRequestException({
+          code: 'WHATSAPP_MEDIA_UNSUPPORTED',
+          message: 'SVG media is not supported',
+        });
+      }
+
+      const buffer = Buffer.from(dto.mediaBase64, 'base64');
+      if (buffer.length === 0) {
+        throw new BadRequestException('Media payload is empty');
+      }
+      const maxBytes =
+        dto.type === 'IMAGE' ? MAX_IMAGE_BYTES : MAX_DOCUMENT_BYTES;
+      if (buffer.length > maxBytes) {
+        throw new BadRequestException({
+          code: 'WHATSAPP_MEDIA_TOO_LARGE',
+          message: `Media exceeds the ${Math.round(maxBytes / (1024 * 1024))}MB limit`,
+        });
+      }
+
+      const filename = dto.mediaFilename ?? `attachment-${Date.now()}`;
+      const { mediaId } = await this.metaClient.uploadMedia(
+        credential.phoneNumberId,
+        accessToken,
+        buffer,
+        dto.mediaMimeType,
+        filename,
+      );
+
+      const sendResult =
+        dto.type === 'IMAGE'
+          ? await this.metaClient.sendImageMessage(
+              credential.phoneNumberId,
+              accessToken,
+              conv.phoneNumber,
+              mediaId,
+              dto.mediaCaption,
+            )
+          : await this.metaClient.sendDocumentMessage(
+              credential.phoneNumberId,
+              accessToken,
+              conv.phoneNumber,
+              mediaId,
+              filename,
+              dto.mediaCaption,
+            );
+
+      messageId = sendResult.messageId;
+      messageType =
+        dto.type === 'IMAGE'
+          ? WhatsAppMessageType.IMAGE
+          : WhatsAppMessageType.DOCUMENT;
+      mediaMetaId = mediaId;
+      mediaMimeType = dto.mediaMimeType;
+      mediaFilename = dto.type === 'DOCUMENT' ? filename : null;
+      mediaCaption = dto.mediaCaption ?? null;
+      mediaSizeBytes = buffer.length;
+    }
 
     const message = await this.prisma.whatsAppMessage.create({
       data: {
         conversationId,
         direction: WhatsAppMessageDirection.OUTBOUND,
-        messageType: WhatsAppMessageType.TEXT,
+        messageType,
         textContent: null,
+        mediaMetaId,
+        mediaMimeType,
+        mediaFilename,
+        mediaCaption,
+        mediaSizeBytes,
         sentByBot: false,
         sentByUserId: user.sub,
         metaMessageId: messageId || `admin-${Date.now()}`,
@@ -435,7 +559,7 @@ export class WhatsAppService {
       entityType: 'WhatsAppMessage',
       entityId: message.id,
       result: 'SUCCESS',
-      description: 'Admin sent WhatsApp text message',
+      description: `Admin sent WhatsApp ${dto.type.toLowerCase()} message`,
     });
 
     return message;
@@ -670,6 +794,8 @@ export class WhatsAppService {
       template: 'TEMPLATE',
     };
 
+    const mediaMeta = extractMediaMeta(msg, msgType);
+
     const message = await this.prisma.whatsAppMessage.create({
       data: {
         conversationId: conversation.id,
@@ -678,6 +804,7 @@ export class WhatsAppService {
         textContent,
         metaMessageId,
         status: WhatsAppMessageStatus.RECEIVED,
+        ...mediaMeta,
       },
     });
 
@@ -688,6 +815,13 @@ export class WhatsAppService {
         unreadCountForAdmin: { increment: 1 },
       },
     });
+
+    if (conversation.unregisteredContactId) {
+      await this.prisma.whatsAppUnregisteredContact.update({
+        where: { id: conversation.unregisteredContactId },
+        data: { messageCount: { increment: 1 }, lastSeenAt: new Date() },
+      });
+    }
 
     if (conversation.status === WhatsAppConversationStatus.BOT_ACTIVE) {
       const botConfig = await this.getOrCreateBotConfig(condominiumId);

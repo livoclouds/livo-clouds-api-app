@@ -1082,6 +1082,7 @@ model WhatsAppUnregisteredContact {
   status               WhatsAppUnregisteredContactStatus @default(NEW)
   registeredResidentId String?
   notes                String?
+  identityPromptSentAt DateTime?
   createdAt            DateTime                          @default(now())
   updatedAt            DateTime                          @updatedAt
 

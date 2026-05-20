@@ -7,4 +7,5 @@ export default registerAs('whatsapp', () => ({
   webAppUrl: process.env.WEB_APP_URL ?? 'http://localhost:3000',
   escalationTemplateName: process.env.WHATSAPP_ESCALATION_TEMPLATE_NAME ?? 'escalation_notification',
   escalationTemplateLanguage: process.env.WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE ?? 'es_MX',
+  mediaProxyRateLimit: Number(process.env.WHATSAPP_MEDIA_PROXY_RATE_LIMIT ?? 200),
 }));

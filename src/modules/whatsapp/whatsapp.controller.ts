@@ -4,21 +4,28 @@ import {
   Delete,
   Get,
   HttpCode,
+  HttpException,
   Param,
   Patch,
   Post,
   Query,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
+import { Readable } from 'node:stream';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
+import { CreateResidentDto } from '../residents/dto/create-resident.dto';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
+import { WhatsAppUnregisteredService } from './whatsapp-unregistered.service';
+import { WhatsAppMediaService } from './whatsapp-media.service';
 import { UpsertCredentialDto } from './dto/upsert-credential.dto';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
 import { CreateFaqDto } from './dto/create-faq.dto';
@@ -27,6 +34,8 @@ import { ListFaqsDto } from './dto/list-faqs.dto';
 import { ListConversationsDto } from './dto/list-conversations.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ReorderFaqsDto } from './dto/reorder-faqs.dto';
+import { ListUnregisteredDto } from './dto/list-unregistered.dto';
+import { UpdateUnregisteredContactDto } from './dto/update-unregistered.dto';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
 import { TestNotificationDto } from './dto/test-notification.dto';
 import { PushSubscriptionDto } from './dto/push-subscription.dto';
@@ -38,6 +47,8 @@ export class WhatsAppController {
   constructor(
     private readonly whatsAppService: WhatsAppService,
     private readonly notificationPreferenceService: WhatsAppNotificationPreferenceService,
+    private readonly unregisteredService: WhatsAppUnregisteredService,
+    private readonly mediaService: WhatsAppMediaService,
   ) {}
 
   // ── Credentials ─────────────────────────────────────────────────────────────
@@ -256,6 +267,88 @@ export class WhatsAppController {
     @Param('conversationId') conversationId: string,
   ) {
     return this.whatsAppService.markRead(req.condominiumId, conversationId);
+  }
+
+  @Get('conversations/:conversationId/media/:messageId')
+  @ApiOperation({ summary: 'Stream media for a message via the lazy Meta proxy' })
+  async getMedia(
+    @Request() req: { condominiumId: string },
+    @Param('conversationId') conversationId: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: JwtPayload,
+    @Res() res: FastifyReply,
+  ): Promise<void> {
+    try {
+      const { stream, contentType, contentLength } =
+        await this.mediaService.fetchMediaStream(
+          req.condominiumId,
+          conversationId,
+          messageId,
+          user,
+        );
+      res.header('Content-Type', contentType);
+      if (contentLength) res.header('Content-Length', contentLength);
+      res.header('Cache-Control', 'private, max-age=300');
+      res.header('X-Content-Type-Options', 'nosniff');
+      await res.send(Readable.fromWeb(stream as Parameters<typeof Readable.fromWeb>[0]));
+    } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === 429) {
+        const response = err.getResponse();
+        const retryAfterSec =
+          typeof response === 'object' && response
+            ? (response as { retryAfterSec?: number }).retryAfterSec
+            : undefined;
+        if (retryAfterSec) res.header('Retry-After', String(retryAfterSec));
+      }
+      throw err;
+    }
+  }
+
+  // ── Unregistered Contacts ────────────────────────────────────────────────────
+
+  @Get('unregistered')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'List unregistered contacts' })
+  listUnregistered(
+    @Request() req: { condominiumId: string },
+    @Query() query: ListUnregisteredDto,
+  ) {
+    return this.unregisteredService.list(req.condominiumId, query);
+  }
+
+  @Patch('unregistered/:id')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Update captured data, notes, or status of an unregistered contact' })
+  updateUnregistered(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @Body() dto: UpdateUnregisteredContactDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.unregisteredService.update(req.condominiumId, id, dto, user);
+  }
+
+  @Post('unregistered/:id/register-as-resident')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Promote an unregistered contact to a registered resident' })
+  registerUnregisteredAsResident(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @Body() dto: CreateResidentDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.unregisteredService.registerAsResident(req.condominiumId, id, dto, user);
+  }
+
+  @Post('unregistered/:id/ignore')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Mark an unregistered contact as ignored' })
+  ignoreUnregistered(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.unregisteredService.ignore(req.condominiumId, id, user);
   }
 
   // ── Notification Preferences ─────────────────────────────────────────────────

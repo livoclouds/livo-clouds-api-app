@@ -7,6 +7,7 @@ import {
 } from '@prisma/client';
 import { encrypt, decrypt, verifyHmacSha256 } from '../../common/utils/encryption.util';
 import { WhatsAppBotService } from './whatsapp-bot.service';
+import { WhatsAppService, extractMediaMeta } from './whatsapp.service';
 
 // ─── Encryption ───────────────────────────────────────────────────────────────
 
@@ -96,9 +97,14 @@ function makePrismaMock(faqs: ReturnType<typeof makeFaq>[]) {
     },
     whatsAppConversation: {
       update: jest.fn().mockResolvedValue({}),
+      findUnique: jest.fn().mockResolvedValue(null),
     },
     whatsAppMessage: {
       create: jest.fn().mockResolvedValue({ id: 'msg-1' }),
+    },
+    whatsAppUnregisteredContact: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue({}),
     },
   };
 }
@@ -109,7 +115,17 @@ function makeMetaMock() {
   };
 }
 
-function makeBotService(prisma: ReturnType<typeof makePrismaMock>, meta = makeMetaMock()) {
+function makeIdentityCaptureMock() {
+  return {
+    tryCaptureIdentity: jest.fn().mockResolvedValue({ matchedResidentId: null }),
+  };
+}
+
+function makeBotService(
+  prisma: ReturnType<typeof makePrismaMock>,
+  meta = makeMetaMock(),
+  identityCapture = makeIdentityCaptureMock(),
+) {
   const configService = { get: jest.fn().mockReturnValue('a'.repeat(64)) };
   const dispatcher = { dispatchEscalation: jest.fn().mockResolvedValue(undefined) };
   return new WhatsAppBotService(
@@ -117,6 +133,7 @@ function makeBotService(prisma: ReturnType<typeof makePrismaMock>, meta = makeMe
     meta as never,
     configService as never,
     dispatcher as never,
+    identityCapture as never,
   );
 }
 
@@ -174,7 +191,14 @@ describe('WhatsAppBotService.matchFaq', () => {
 
 // ─── Bot Pipeline — Miss Counter ──────────────────────────────────────────────
 
-function makeConversation(overrides: Partial<{ consecutiveFaqMisses: number; status: WhatsAppConversationStatus }> = {}) {
+function makeConversation(
+  overrides: Partial<{
+    consecutiveFaqMisses: number;
+    status: WhatsAppConversationStatus;
+    unregisteredContactId: string | null;
+    residentId: string | null;
+  }> = {},
+) {
   return {
     id: 'conv-1',
     condominiumId: 'condo-1',
@@ -252,7 +276,12 @@ function makeBotConfig(overrides: Record<string, unknown> = {}) {
 }
 
 function makeCtx(
-  conversationOverrides: Partial<{ consecutiveFaqMisses: number }> = {},
+  conversationOverrides: Partial<{
+    consecutiveFaqMisses: number;
+    status: WhatsAppConversationStatus;
+    unregisteredContactId: string | null;
+    residentId: string | null;
+  }> = {},
   botConfigOverrides: Record<string, unknown> = {},
   messageText = 'mensaje sin coincidencia',
 ) {
@@ -374,5 +403,339 @@ describe('WhatsAppBotService.processBotPipeline — FAQ match resets miss counte
         data: expect.objectContaining({ consecutiveFaqMisses: 0 }),
       }),
     );
+  });
+});
+
+// ─── Bot Pipeline — Identity Capture (Phase 3) ────────────────────────────────
+
+describe('WhatsAppBotService.processBotPipeline — identity capture', () => {
+  it('sends the identity-capture prompt once after a FAQ answer', async () => {
+    const faq = makeFaq(['cuota']);
+    const prisma = makePrismaMock([faq]);
+    prisma.whatsAppUnregisteredContact.findUnique.mockResolvedValue({
+      id: 'contact-1',
+      capturedUnitNumber: null,
+      identityPromptSentAt: null,
+    });
+    const meta = makeMetaMock();
+    const svc = makeBotService(prisma, meta);
+    const ctx = makeCtx(
+      { unregisteredContactId: 'contact-1' },
+      { identityCaptureEnabled: true, identityCapturePrompt: 'Comparte tu casa y nombre' },
+      'pregunta sobre la cuota',
+    );
+
+    await svc.processBotPipeline(ctx);
+
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      'Comparte tu casa y nombre',
+    );
+    expect(prisma.whatsAppUnregisteredContact.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { identityPromptSentAt: expect.any(Date) } }),
+    );
+  });
+
+  it('does not re-send the prompt when it was already sent', async () => {
+    const faq = makeFaq(['cuota']);
+    const prisma = makePrismaMock([faq]);
+    prisma.whatsAppUnregisteredContact.findUnique.mockResolvedValue({
+      id: 'contact-1',
+      capturedUnitNumber: null,
+      identityPromptSentAt: new Date(),
+    });
+    const meta = makeMetaMock();
+    const svc = makeBotService(prisma, meta);
+    const ctx = makeCtx(
+      { unregisteredContactId: 'contact-1' },
+      { identityCaptureEnabled: true, identityCapturePrompt: 'Comparte tu casa' },
+      'pregunta sobre la cuota',
+    );
+
+    await svc.processBotPipeline(ctx);
+
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      faq.answer,
+    );
+  });
+
+  it('auto-links and sends a confirmation when identity capture matches', async () => {
+    const faq = makeFaq(['cuota']);
+    const prisma = makePrismaMock([faq]);
+    prisma.whatsAppConversation.findUnique.mockResolvedValue(
+      makeConversation({ residentId: 'resident-1', unregisteredContactId: null }),
+    );
+    const meta = makeMetaMock();
+    const identityCapture = makeIdentityCaptureMock();
+    identityCapture.tryCaptureIdentity.mockResolvedValue({ matchedResidentId: 'resident-1' });
+    const svc = makeBotService(prisma, meta, identityCapture);
+    const ctx = makeCtx(
+      { unregisteredContactId: 'contact-1' },
+      { identityCaptureEnabled: true },
+      'casa 47, Juan Pérez',
+    );
+
+    await svc.processBotPipeline(ctx);
+
+    expect(identityCapture.tryCaptureIdentity).toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.stringContaining('identifiqué'),
+    );
+  });
+});
+
+// ─── Webhook Media Extraction (Phase 3) ───────────────────────────────────────
+
+describe('extractMediaMeta', () => {
+  it('extracts image metadata including caption', () => {
+    const msg = {
+      image: { id: 'media-1', mime_type: 'image/jpeg', sha256: 'abc', caption: 'el bote roto' },
+    };
+    expect(extractMediaMeta(msg, 'image')).toEqual({
+      mediaMetaId: 'media-1',
+      mediaMimeType: 'image/jpeg',
+      mediaFilename: null,
+      mediaCaption: 'el bote roto',
+      mediaSizeBytes: null,
+    });
+  });
+
+  it('extracts a document filename', () => {
+    const msg = {
+      document: { id: 'doc-1', mime_type: 'application/pdf', filename: 'recibo.pdf' },
+    };
+    expect(extractMediaMeta(msg, 'document')).toEqual(
+      expect.objectContaining({ mediaMetaId: 'doc-1', mediaFilename: 'recibo.pdf' }),
+    );
+  });
+
+  it('returns all-null fields for a text message', () => {
+    expect(extractMediaMeta({ text: { body: 'hola' } }, 'text')).toEqual({
+      mediaMetaId: null,
+      mediaMimeType: null,
+      mediaFilename: null,
+      mediaCaption: null,
+      mediaSizeBytes: null,
+    });
+  });
+});
+
+// ─── WhatsAppService — Webhook & Outbound Media (Phase 3) ─────────────────────
+
+function makeWhatsAppService(prisma: Record<string, unknown>) {
+  const configService = { get: jest.fn().mockReturnValue('a'.repeat(64)) };
+  const auditService = { log: jest.fn().mockResolvedValue({}) };
+  const metaClient = {
+    sendTextMessage: jest.fn().mockResolvedValue({ messageId: 'wamid.out' }),
+    uploadMedia: jest.fn().mockResolvedValue({ mediaId: 'meta-media-1' }),
+    sendImageMessage: jest.fn().mockResolvedValue({ messageId: 'wamid.img' }),
+    sendDocumentMessage: jest.fn().mockResolvedValue({ messageId: 'wamid.doc' }),
+  };
+  const botService = { processBotPipeline: jest.fn().mockResolvedValue(undefined) };
+  const service = new WhatsAppService(
+    prisma as never,
+    configService as never,
+    auditService as never,
+    metaClient as never,
+    botService as never,
+  );
+  return { service, prisma, auditService, metaClient, botService };
+}
+
+describe('WhatsAppService.processWebhookPayload — unknown phone & media', () => {
+  function makeWebhookPrisma(
+    conversationOverrides: Record<string, unknown> = {},
+  ) {
+    return {
+      condominium: { findUnique: jest.fn().mockResolvedValue({ id: 'condo-1' }) },
+      whatsAppCredential: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'cred-1',
+          status: 'ACTIVE',
+          phoneNumberId: 'pn',
+          accessTokenCiphertext: 'c',
+          accessTokenIv: 'i',
+          accessTokenAuthTag: 't',
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      whatsAppMessage: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'msg-1' }),
+      },
+      whatsAppNotificationPreference: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      whatsAppConversation: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({
+          id: 'conv-1',
+          status: 'BOT_ACTIVE',
+          condominiumId: 'condo-1',
+          phoneNumber: '+528111111111',
+          unregisteredContactId: 'contact-1',
+          ...conversationOverrides,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      resident: { findFirst: jest.fn().mockResolvedValue(null) },
+      whatsAppUnregisteredContact: {
+        upsert: jest.fn().mockResolvedValue({ id: 'contact-1' }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      whatsAppBotConfig: {
+        upsert: jest.fn().mockResolvedValue({ id: 'bc-1', isEnabled: true }),
+      },
+    };
+  }
+
+  it('upserts an unregistered contact and bumps message counters', async () => {
+    const prisma = makeWebhookPrisma();
+    const { service } = makeWhatsAppService(prisma);
+
+    await service.processWebhookPayload('condo-slug', {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  { id: 'wamid.1', from: '528111111111', type: 'text', text: { body: 'hola' } },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(prisma.whatsAppUnregisteredContact.upsert).toHaveBeenCalled();
+    expect(prisma.whatsAppUnregisteredContact.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ messageCount: { increment: 1 } }),
+      }),
+    );
+  });
+
+  it('stores only media metadata for an inbound image', async () => {
+    const prisma = makeWebhookPrisma();
+    const { service } = makeWhatsAppService(prisma);
+
+    await service.processWebhookPayload('condo-slug', {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    id: 'wamid.2',
+                    from: '528111111111',
+                    type: 'image',
+                    image: { id: 'media-xyz', mime_type: 'image/jpeg', caption: 'el bote roto' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(prisma.whatsAppMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          messageType: 'IMAGE',
+          mediaMetaId: 'media-xyz',
+          mediaMimeType: 'image/jpeg',
+          mediaCaption: 'el bote roto',
+        }),
+      }),
+    );
+  });
+});
+
+describe('WhatsAppService.sendMessage — outbound media', () => {
+  function makeOutboundPrisma(convStatus = 'ADMIN_HANDLING') {
+    const enc = encrypt('token', 'a'.repeat(64));
+    return {
+      whatsAppConversation: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'conv-1',
+          condominiumId: 'condo-1',
+          phoneNumber: '+528113333333',
+          status: convStatus,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      whatsAppCredential: {
+        findUnique: jest.fn().mockResolvedValue({
+          phoneNumberId: 'pn',
+          accessTokenCiphertext: enc.ciphertext,
+          accessTokenIv: enc.iv,
+          accessTokenAuthTag: enc.authTag,
+        }),
+      },
+      whatsAppMessage: { create: jest.fn().mockResolvedValue({ id: 'msg-out-1' }) },
+    };
+  }
+
+  it('uploads to Meta then sends an outbound image with caption', async () => {
+    const prisma = makeOutboundPrisma();
+    const { service, metaClient } = makeWhatsAppService(prisma);
+
+    await service.sendMessage(
+      'condo-1',
+      'conv-1',
+      {
+        type: 'IMAGE',
+        mediaBase64: Buffer.from('fake-image-bytes').toString('base64'),
+        mediaMimeType: 'image/jpeg',
+        mediaCaption: 'hola',
+      } as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(metaClient.uploadMedia).toHaveBeenCalled();
+    expect(metaClient.sendImageMessage).toHaveBeenCalledWith(
+      'pn',
+      expect.any(String),
+      '+528113333333',
+      'meta-media-1',
+      'hola',
+    );
+    expect(prisma.whatsAppMessage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          messageType: 'IMAGE',
+          mediaMetaId: 'meta-media-1',
+          mediaCaption: 'hola',
+        }),
+      }),
+    );
+  });
+
+  it('rejects an image larger than the 5MB limit', async () => {
+    const prisma = makeOutboundPrisma();
+    const { service } = makeWhatsAppService(prisma);
+    const oversized = Buffer.alloc(6 * 1024 * 1024).toString('base64');
+
+    await expect(
+      service.sendMessage(
+        'condo-1',
+        'conv-1',
+        { type: 'IMAGE', mediaBase64: oversized, mediaMimeType: 'image/jpeg' } as never,
+        { sub: 'user-1' } as never,
+      ),
+    ).rejects.toThrow();
   });
 });
