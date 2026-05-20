@@ -13,7 +13,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { decrypt } from '../../common/utils/encryption.util';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
 import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
+import { WhatsAppIdentityCaptureService } from './whatsapp-identity-capture.service';
 import { ConfigService } from '@nestjs/config';
+
+// Hardcoded for Phase 3; moves to WhatsAppBotConfig as a configurable field in Phase 4.
+const IDENTITY_CONFIRMATION_MESSAGE =
+  'Listo, te identifiqué como residente registrado. ¡Gracias!';
 
 interface BotContext {
   conversation: WhatsAppConversation;
@@ -45,11 +50,32 @@ export class WhatsAppBotService {
     private metaClient: WhatsAppMetaClientService,
     private configService: ConfigService,
     private notificationDispatcher: WhatsAppNotificationDispatcherService,
+    private identityCapture: WhatsAppIdentityCaptureService,
   ) {}
 
   async processBotPipeline(ctx: BotContext): Promise<void> {
-    const { conversation, botConfig } = ctx;
+    let { conversation } = ctx;
+    const { botConfig } = ctx;
     const messageText = ctx.inboundMessage.textContent ?? '';
+
+    // Stage 0: Identity capture (Pass 3). Runs before bot answering so a
+    // successful auto-link routes the rest of the pipeline as a known resident.
+    if (conversation.unregisteredContactId && !conversation.residentId) {
+      const { matchedResidentId } = await this.identityCapture.tryCaptureIdentity({
+        conversation,
+        inboundText: ctx.inboundMessage.textContent,
+      });
+      if (matchedResidentId) {
+        const refreshed = await this.prisma.whatsAppConversation.findUnique({
+          where: { id: conversation.id },
+        });
+        if (refreshed) {
+          conversation = refreshed;
+          ctx.conversation = refreshed;
+        }
+        await this.sendBotMessage(ctx, IDENTITY_CONFIRMATION_MESSAGE);
+      }
+    }
 
     // Stage 1: Bot enabled check
     if (!botConfig.isEnabled) {
@@ -91,6 +117,7 @@ export class WhatsAppBotService {
         where: { id: conversation.id },
         data: { consecutiveFaqMisses: 0, lastOutboundAt: new Date() },
       });
+      await this.maybeAppendIdentityPrompt(ctx);
       return;
     }
 
@@ -101,9 +128,38 @@ export class WhatsAppBotService {
         where: { id: conversation.id },
         data: { consecutiveFaqMisses: 1, lastOutboundAt: new Date() },
       });
+      await this.maybeAppendIdentityPrompt(ctx);
     } else {
       await this.escalate(ctx, botConfig.escalationMessage);
     }
+  }
+
+  /**
+   * Sends the one-time identity-capture prompt to an unregistered contact after
+   * the bot has answered. Idempotent: skips if a unit was already captured or
+   * the prompt was already sent (tracked by identityPromptSentAt).
+   */
+  private async maybeAppendIdentityPrompt(ctx: BotContext): Promise<void> {
+    const { conversation, botConfig } = ctx;
+    if (!conversation.unregisteredContactId || !botConfig.identityCaptureEnabled) {
+      return;
+    }
+
+    const prompt = botConfig.identityCapturePrompt?.trim();
+    if (!prompt) return;
+
+    const contact = await this.prisma.whatsAppUnregisteredContact.findUnique({
+      where: { id: conversation.unregisteredContactId },
+    });
+    if (!contact || contact.capturedUnitNumber || contact.identityPromptSentAt) {
+      return;
+    }
+
+    await this.sendBotMessage(ctx, prompt);
+    await this.prisma.whatsAppUnregisteredContact.update({
+      where: { id: contact.id },
+      data: { identityPromptSentAt: new Date() },
+    });
   }
 
   async matchFaq(condominiumId: string, messageText: string): Promise<WhatsAppFaq | null> {

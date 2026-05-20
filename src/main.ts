@@ -13,7 +13,9 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ logger: true }),
+    // bodyLimit raised to 40MB so base64-encoded WhatsApp media (documents up
+    // to 25MB ≈ 34MB once encoded) fits in the JSON send-message request body.
+    new FastifyAdapter({ logger: true, bodyLimit: 40 * 1024 * 1024 }),
     { rawBody: true },
   );
 
