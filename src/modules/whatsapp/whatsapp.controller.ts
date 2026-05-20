@@ -14,6 +14,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import type { FastifyReply } from 'fastify';
 import { Readable } from 'node:stream';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -39,6 +40,8 @@ import { UpdateUnregisteredContactDto } from './dto/update-unregistered.dto';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
 import { TestNotificationDto } from './dto/test-notification.dto';
 import { PushSubscriptionDto } from './dto/push-subscription.dto';
+import { ValidateNumberDto } from './dto/validate-number.dto';
+import { NormalizeResidentPhonesDto } from './dto/normalize-resident-phones.dto';
 
 @ApiTags('WhatsApp')
 @Controller('condominiums/:condominiumSlug/communications/whatsapp')
@@ -84,9 +87,25 @@ export class WhatsAppController {
 
   @Post('credentials/validate-number')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
-  @ApiOperation({ summary: 'Validate the configured WhatsApp Business phone number' })
-  validateNumber(@Request() req: { condominiumId: string }) {
-    return this.whatsAppService.validateNumber(req.condominiumId);
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 15, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Validate whether a phone number is ready for WhatsApp Business' })
+  validateNumber(
+    @Request() req: { condominiumId: string },
+    @Body() dto: ValidateNumberDto,
+  ) {
+    return this.whatsAppService.validateNumber(req.condominiumId, dto);
+  }
+
+  @Post('residents/normalize-phones')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Dry-run or apply resident phone-number normalization' })
+  normalizeResidentPhones(
+    @Request() req: { condominiumId: string },
+    @Body() dto: NormalizeResidentPhonesDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.whatsAppService.normalizeResidentPhones(req.condominiumId, dto, user);
   }
 
   @Post('credentials/test-connection')
@@ -124,6 +143,13 @@ export class WhatsAppController {
     return this.whatsAppService.getFaqCategories(req.condominiumId);
   }
 
+  // Declared before `faqs/:faqId` so the static segment is not captured as a param.
+  @Get('faqs/usage-stats')
+  @ApiOperation({ summary: 'Lightweight FAQ usage statistics' })
+  getFaqUsageStats(@Request() req: { condominiumId: string }) {
+    return this.whatsAppService.getFaqUsageStats(req.condominiumId);
+  }
+
   @Get('faqs')
   @ApiOperation({ summary: 'List FAQs' })
   listFaqs(@Request() req: { condominiumId: string }, @Query() query: ListFaqsDto) {
@@ -138,6 +164,7 @@ export class WhatsAppController {
 
   @Post('faqs')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 40, ttl: 60_000 } })
   @ApiOperation({ summary: 'Create FAQ' })
   createFaq(
     @Request() req: { condominiumId: string },
@@ -157,6 +184,7 @@ export class WhatsAppController {
 
   @Patch('faqs/:faqId')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 40, ttl: 60_000 } })
   @ApiOperation({ summary: 'Update FAQ' })
   updateFaq(
     @Request() req: { condominiumId: string },
