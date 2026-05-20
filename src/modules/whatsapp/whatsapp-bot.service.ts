@@ -15,6 +15,11 @@ import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
 import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-dispatcher.service';
 import { WhatsAppIdentityCaptureService } from './whatsapp-identity-capture.service';
 import { ConfigService } from '@nestjs/config';
+import {
+  getNextBusinessWindow,
+  isWithinBusinessHours,
+  renderOffHoursMessage,
+} from './business-hours.util';
 
 // Hardcoded for Phase 3; moves to WhatsAppBotConfig as a configurable field in Phase 4.
 const IDENTITY_CONFIRMATION_MESSAGE =
@@ -108,7 +113,12 @@ export class WhatsAppBotService {
     const matchedFaq = await this.matchFaq(conversation.condominiumId, messageText);
 
     if (matchedFaq) {
-      await this.sendBotMessage(ctx, matchedFaq.answer);
+      const answer = await this.composeFaqAnswer(
+        conversation.condominiumId,
+        matchedFaq.answer,
+        botConfig,
+      );
+      await this.sendBotMessage(ctx, answer);
       await this.prisma.whatsAppFaq.update({
         where: { id: matchedFaq.id },
         data: { usageCount: { increment: 1 }, lastUsedAt: new Date() },
@@ -189,6 +199,42 @@ export class WhatsAppBotService {
     }
 
     return null;
+  }
+
+  /**
+   * Appends the configured off-hours notice to a FAQ answer when the inbound
+   * message is handled outside the condominium's business hours. The bot still
+   * answers the resident — the notice is only a postfix, never a replacement.
+   * Within business hours (or when business hours are not configured) the
+   * answer is returned untouched.
+   */
+  private async composeFaqAnswer(
+    condominiumId: string,
+    answer: string,
+    botConfig: WhatsAppBotConfig,
+  ): Promise<string> {
+    const settings = await this.prisma.condominiumSettings.findUnique({
+      where: { condominiumId },
+      select: { businessHours: true, timezone: true },
+    });
+    if (!settings) return answer;
+
+    const tz = settings.timezone ?? 'America/Monterrey';
+    const now = new Date();
+    if (isWithinBusinessHours(now, settings.businessHours, tz)) {
+      return answer;
+    }
+
+    const template = botConfig.offHoursMessage?.trim();
+    if (!template) return answer;
+
+    const window = getNextBusinessWindow(now, settings.businessHours, tz);
+    const postfix = window
+      ? renderOffHoursMessage(template, window)
+      : template.replace(/\{\{\s*next(Day|Time)\s*\}\}/gi, '').trim();
+    if (!postfix) return answer;
+
+    return `${answer}\n\n${postfix}`;
   }
 
   private async escalate(ctx: BotContext, escalationMessage: string): Promise<void> {

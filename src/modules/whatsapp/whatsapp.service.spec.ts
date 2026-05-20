@@ -106,6 +106,9 @@ function makePrismaMock(faqs: ReturnType<typeof makeFaq>[]) {
       findUnique: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue({}),
     },
+    condominiumSettings: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
   };
 }
 

@@ -16,6 +16,12 @@ export interface PhoneValidationResult {
   isWhatsAppBusiness: boolean;
   hasMessagesPermission: boolean;
   currentStatus: string;
+  displayPhoneNumber: string | null;
+  codeVerificationStatus: string | null;
+  /** True when the Meta lookup itself could not be completed. */
+  failed: boolean;
+  /** `http` = Meta returned a non-OK status; `network` = request threw. */
+  failureKind: 'network' | 'http' | null;
 }
 
 export interface MetaMediaMetadata {
@@ -109,25 +115,47 @@ export class WhatsAppMetaClientService {
     phoneNumberId: string,
     accessToken: string,
   ): Promise<PhoneValidationResult> {
-    const url = `https://graph.facebook.com/${this.graphApiVersion}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status`;
+    const url = `https://graph.facebook.com/${this.graphApiVersion}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,code_verification_status,name_status`;
+
+    const failure = (
+      failureKind: 'network' | 'http',
+    ): PhoneValidationResult => ({
+      isWhatsAppBusiness: false,
+      hasMessagesPermission: false,
+      currentStatus: 'ERROR',
+      displayPhoneNumber: null,
+      codeVerificationStatus: null,
+      failed: true,
+      failureKind,
+    });
 
     try {
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
+      // A non-OK response means the phone_number_id / token pair cannot be
+      // resolved as a WhatsApp Business (Cloud API) number.
       if (!response.ok) {
-        return { isWhatsAppBusiness: false, hasMessagesPermission: false, currentStatus: 'ERROR' };
+        return failure('http');
       }
 
-      const data = (await response.json()) as { status?: string };
+      const data = (await response.json()) as {
+        status?: string;
+        code_verification_status?: string;
+        display_phone_number?: string;
+      };
       return {
         isWhatsAppBusiness: true,
         hasMessagesPermission: true,
         currentStatus: data.status ?? 'UNKNOWN',
+        displayPhoneNumber: data.display_phone_number ?? null,
+        codeVerificationStatus: data.code_verification_status ?? null,
+        failed: false,
+        failureKind: null,
       };
     } catch {
-      return { isWhatsAppBusiness: false, hasMessagesPermission: false, currentStatus: 'ERROR' };
+      return failure('network');
     }
   }
 

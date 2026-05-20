@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  PreconditionFailedException,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -27,6 +28,13 @@ import { ListFaqsDto } from './dto/list-faqs.dto';
 import { ListConversationsDto } from './dto/list-conversations.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ReorderFaqsDto } from './dto/reorder-faqs.dto';
+import { ValidateNumberDto } from './dto/validate-number.dto';
+import { NormalizeResidentPhonesDto } from './dto/normalize-resident-phones.dto';
+import {
+  maskPhone,
+  normalizeMexicanPhone,
+  type PhoneNormalizationOutcome,
+} from '../../common/utils/phone-normalization.util';
 
 const RESIDENT_PHONE_FIELDS = ['phone', 'secondaryPhone'] as const;
 
@@ -171,8 +179,24 @@ export class WhatsAppService {
     });
   }
 
-  async validateNumber(condominiumId: string) {
-    const credential = await this.requireCredential(condominiumId);
+  /**
+   * Validates whether a phone number is ready for WhatsApp Business / Cloud API
+   * use. Meta can only inspect numbers registered in the condominium's own WABA,
+   * so the lookup runs against the stored credential's `phoneNumberId`; the
+   * submitted number is normalized for display and matching. The response is a
+   * structured, UI-friendly result that never exposes tokens or raw Meta errors.
+   */
+  async validateNumber(condominiumId: string, dto: ValidateNumberDto) {
+    const normalized = normalizeMexicanPhone(dto.phoneNumber);
+    const normalizedPhoneNumber = normalized.value ?? dto.phoneNumber;
+
+    const credential = await this.prisma.whatsAppCredential.findUnique({
+      where: { condominiumId },
+    });
+    if (!credential) {
+      throw new PreconditionFailedException('credentialNotConfigured');
+    }
+
     const encryptionKey = this.configService.get<string>('whatsapp.encryptionKey', '');
     const accessToken = decrypt(
       credential.accessTokenCiphertext,
@@ -180,7 +204,193 @@ export class WhatsAppService {
       credential.accessTokenAuthTag,
       encryptionKey,
     );
-    return this.metaClient.validatePhoneNumber(credential.phoneNumberId, accessToken);
+
+    const meta = await this.metaClient.validatePhoneNumber(
+      credential.phoneNumberId,
+      accessToken,
+    );
+
+    if (meta.failed) {
+      await this.prisma.whatsAppCredential.update({
+        where: { condominiumId },
+        data: {
+          lastApiErrorAt: new Date(),
+          lastApiErrorMessage:
+            meta.failureKind === 'network'
+              ? 'validate-number: Meta API unreachable'
+              : 'validate-number: Meta rejected the phone_number_id / token pair',
+        },
+      });
+
+      if (meta.failureKind === 'network') {
+        return {
+          isWhatsAppBusiness: false,
+          normalizedPhoneNumber,
+          status: 'ERROR' as const,
+          reason: 'metaUnavailable',
+          recommendedNextStep: 'retryLater',
+        };
+      }
+      return {
+        isWhatsAppBusiness: false,
+        normalizedPhoneNumber,
+        status: 'NOT_BUSINESS' as const,
+        reason: 'numberNotOnBusiness',
+        recommendedNextStep: 'migrateToBusiness',
+      };
+    }
+
+    const verified =
+      !meta.codeVerificationStatus || meta.codeVerificationStatus === 'VERIFIED';
+    if (!verified) {
+      return {
+        isWhatsAppBusiness: true,
+        normalizedPhoneNumber,
+        status: 'NOT_READY' as const,
+        reason: 'numberNotVerified',
+        recommendedNextStep: 'completeVerification',
+      };
+    }
+
+    return {
+      isWhatsAppBusiness: true,
+      normalizedPhoneNumber,
+      status: 'CONFIRMED' as const,
+      reason: 'verified',
+      recommendedNextStep: 'none',
+    };
+  }
+
+  /**
+   * Normalizes condominium resident phone numbers to E.164 (Mexican +52 rule).
+   * Dry-run by default — `apply: true` persists only the safe `normalized`
+   * outcomes inside a single transaction and writes one summary audit entry.
+   * Admin notification phone numbers are intentionally untouched.
+   */
+  async normalizeResidentPhones(
+    condominiumId: string,
+    dto: NormalizeResidentPhonesDto,
+    user: JwtPayload,
+  ) {
+    const apply = dto.apply ?? false;
+    const residents = await this.prisma.resident.findMany({
+      where: { condominiumId, deletedAt: null },
+      select: { id: true, unitNumber: true, phone: true, secondaryPhone: true },
+    });
+
+    const counts: Record<PhoneNormalizationOutcome, number> = {
+      normalized: 0,
+      alreadyValid: 0,
+      skipped: 0,
+      invalid: 0,
+    };
+    const examples: {
+      unitNumber: string;
+      field: 'phone' | 'secondaryPhone';
+      outcome: PhoneNormalizationOutcome;
+      before: string;
+      after: string | null;
+    }[] = [];
+    const pendingUpdates = new Map<string, Record<string, string>>();
+
+    for (const resident of residents) {
+      for (const field of RESIDENT_PHONE_FIELDS) {
+        const current = resident[field];
+        if (current == null || current.trim() === '') continue;
+
+        const result = normalizeMexicanPhone(current);
+        counts[result.outcome] += 1;
+
+        if (result.outcome === 'normalized' && result.value) {
+          const fields = pendingUpdates.get(resident.id) ?? {};
+          fields[field] = result.value;
+          pendingUpdates.set(resident.id, fields);
+        }
+
+        if (result.outcome !== 'alreadyValid' && examples.length < 25) {
+          examples.push({
+            unitNumber: resident.unitNumber,
+            field,
+            outcome: result.outcome,
+            before: maskPhone(current),
+            after: result.value ? maskPhone(result.value) : null,
+          });
+        }
+      }
+    }
+
+    if (apply && pendingUpdates.size > 0) {
+      await this.prisma.$transaction(
+        [...pendingUpdates.entries()].map(([id, data]) =>
+          this.prisma.resident.updateMany({
+            where: { id, condominiumId },
+            data,
+          }),
+        ),
+      );
+
+      await this.auditService.log({
+        condominiumId,
+        userId: user.sub,
+        action: 'WHATSAPP_RESIDENT_PHONES_NORMALIZED',
+        actionCategory: 'COMMUNICATIONS',
+        module: 'WHATSAPP',
+        entityType: 'Resident',
+        result: 'SUCCESS',
+        afterState: {
+          normalizedCount: counts.normalized,
+          affectedResidentIds: [...pendingUpdates.keys()],
+        },
+        description: `Normalized ${counts.normalized} resident phone number(s)`,
+      });
+    }
+
+    return {
+      applied: apply,
+      totalResidentsChecked: residents.length,
+      normalizedCount: counts.normalized,
+      alreadyValidCount: counts.alreadyValid,
+      skippedCount: counts.skipped,
+      invalidCount: counts.invalid,
+      examples,
+    };
+  }
+
+  async getFaqUsageStats(condominiumId: string) {
+    const faqs = await this.prisma.whatsAppFaq.findMany({
+      where: { condominiumId },
+      select: {
+        id: true,
+        triggers: true,
+        category: true,
+        usageCount: true,
+        lastUsedAt: true,
+        isActive: true,
+      },
+      orderBy: [{ usageCount: 'desc' }, { sortOrder: 'asc' }],
+    });
+
+    const totalMatches = faqs.reduce((sum, faq) => sum + faq.usageCount, 0);
+    const lastUsedAt = faqs
+      .map((faq) => faq.lastUsedAt)
+      .filter((value): value is Date => value != null)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+    return {
+      totalFaqs: faqs.length,
+      activeFaqs: faqs.filter((faq) => faq.isActive).length,
+      totalMatches,
+      lastUsedAt,
+      topFaqs: faqs.filter((faq) => faq.usageCount > 0).slice(0, 5),
+      unusedFaqs: faqs
+        .filter((faq) => faq.usageCount === 0)
+        .map(({ id, triggers, category, isActive }) => ({
+          id,
+          triggers,
+          category,
+          isActive,
+        })),
+    };
   }
 
   async testConnection(condominiumId: string) {
