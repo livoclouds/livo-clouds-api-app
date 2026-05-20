@@ -9,6 +9,12 @@ import { NotificationType } from '@prisma/client';
 export const AGGREGATION_WINDOW_MINUTES = 10;
 
 /**
+ * Retention window for notification rows. The daily retention cron hard-deletes
+ * rows older than this. Hard-coded per the Notifications r1 spec.
+ */
+export const NOTIFICATION_RETENTION_DAYS = 90;
+
+/**
  * The 12 notification types introduced in Notifications r1. The legacy enum
  * values predating the module are intentionally excluded — they have no
  * listeners and are not surfaced through the r1 preferences contract.
