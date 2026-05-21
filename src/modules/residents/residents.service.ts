@@ -6,14 +6,41 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
+import { AuditService } from '../audit/audit.service';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { ListResidentsDto } from './dto/list-residents.dto';
+import { UpdatePetDto } from './dto/update-pet.dto';
+import { UpdateResidentDto } from './dto/update-resident.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+
+const RESIDENTS_MODULE = 'residents';
+
+const AUDIT_ACTION = {
+  RESIDENT_CREATED: 'RESIDENT_CREATED',
+  RESIDENT_UPDATED: 'RESIDENT_UPDATED',
+  RESIDENT_DELETED: 'RESIDENT_DELETED',
+  VEHICLE_ADDED: 'RESIDENT_VEHICLE_ADDED',
+  VEHICLE_UPDATED: 'RESIDENT_VEHICLE_UPDATED',
+  VEHICLE_REMOVED: 'RESIDENT_VEHICLE_REMOVED',
+  PET_ADDED: 'RESIDENT_PET_ADDED',
+  PET_UPDATED: 'RESIDENT_PET_UPDATED',
+  PET_REMOVED: 'RESIDENT_PET_REMOVED',
+} as const;
+
+const RESIDENT_INCLUDE = {
+  vehicles: true,
+  pets: true,
+  additionalResidents: true,
+} satisfies Prisma.ResidentInclude;
 
 @Injectable()
 export class ResidentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
 
   async findAll(
     condominiumId: string,
@@ -82,105 +109,452 @@ export class ResidentsService {
     return resident;
   }
 
-  async create(condominiumId: string, dto: CreateResidentDto) {
-    const existing = await this.prisma.resident.findFirst({
-      where: { condominiumId, unitNumber: dto.unitNumber, deletedAt: null },
-    });
+  async create(condominiumId: string, userId: string, dto: CreateResidentDto) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.resident.findFirst({
+        where: { condominiumId, unitNumber: dto.unitNumber, deletedAt: null },
+      });
 
-    if (existing) {
-      throw new ConflictException(
-        `Unit ${dto.unitNumber} already has an active resident`,
+      if (existing) {
+        throw new ConflictException(
+          `Unit ${dto.unitNumber} already has an active resident`,
+        );
+      }
+
+      const resident = await tx.resident.create({
+        data: this.toResidentCreateData(condominiumId, dto),
+        include: RESIDENT_INCLUDE,
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.RESIDENT_CREATED,
+          actionCategory: 'CREATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Resident',
+          entityId: resident.id,
+          afterState: resident,
+          result: 'SUCCESS',
+        },
+        tx,
       );
-    }
 
-    return this.prisma.resident.create({
-      data: {
-        condominiumId,
-        unitNumber: dto.unitNumber,
-        residentType: dto.residentType,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        phone: dto.phone,
-        secondaryPhone: dto.secondaryPhone,
-        email: dto.email,
-        monthlyFee: dto.monthlyFee ?? 0,
-        parkingSpots: dto.parkingSpots ?? 0,
-        notes: dto.notes,
-      },
-      include: { vehicles: true, pets: true, additionalResidents: true },
+      return resident;
     });
   }
 
-  async update(condominiumId: string, id: string, dto: Partial<CreateResidentDto>) {
-    const result = await this.prisma.resident.updateMany({
-      where: { id, condominiumId, deletedAt: null },
-      data: dto,
-    });
-    if (result.count === 0) throw new NotFoundException('Resident not found');
+  async update(
+    condominiumId: string,
+    userId: string,
+    id: string,
+    dto: UpdateResidentDto,
+  ) {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const before = await tx.resident.findFirst({
+          where: { id, condominiumId, deletedAt: null },
+          include: RESIDENT_INCLUDE,
+        });
+        if (!before) throw new NotFoundException('Resident not found');
+
+        if (dto.unitNumber && dto.unitNumber !== before.unitNumber) {
+          const collision = await tx.resident.findFirst({
+            where: {
+              condominiumId,
+              unitNumber: dto.unitNumber,
+              deletedAt: null,
+              id: { not: id },
+            },
+          });
+          if (collision) {
+            throw new ConflictException(
+              `Unit ${dto.unitNumber} already has an active resident`,
+            );
+          }
+        }
+
+        const updated = await tx.resident.update({
+          where: { id },
+          data: this.toResidentUpdateData(dto),
+          include: RESIDENT_INCLUDE,
+        });
+
+        await this.audit.log(
+          {
+            condominiumId,
+            userId,
+            action: AUDIT_ACTION.RESIDENT_UPDATED,
+            actionCategory: 'UPDATE',
+            module: RESIDENTS_MODULE,
+            entityType: 'Resident',
+            entityId: id,
+            beforeState: before,
+            afterState: updated,
+            result: 'SUCCESS',
+          },
+          tx,
+        );
+      });
+    } catch (err) {
+      // The active-resident pre-check above misses collisions against a
+      // soft-deleted unit, which the @@unique([condominiumId, unitNumber])
+      // constraint still rejects. Resident has a single unique constraint, so
+      // any P2002 here is a unit-number collision — and it can only fire when
+      // dto.unitNumber was being written, so it is defined.
+      if (isUniqueConstraintError(err)) {
+        throw new ConflictException(
+          `Unit ${dto.unitNumber} already has an active resident`,
+        );
+      }
+      throw err;
+    }
+
     return this.findOne(condominiumId, id);
   }
 
-  async remove(condominiumId: string, id: string) {
-    const result = await this.prisma.resident.updateMany({
-      where: { id, condominiumId, deletedAt: null },
-      data: { deletedAt: new Date() },
+  async remove(condominiumId: string, userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.resident.findFirst({
+        where: { id, condominiumId, deletedAt: null },
+        include: RESIDENT_INCLUDE,
+      });
+      if (!before) throw new NotFoundException('Resident not found');
+
+      const deleted = await tx.resident.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.RESIDENT_DELETED,
+          actionCategory: 'DELETE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Resident',
+          entityId: id,
+          beforeState: before,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return deleted;
     });
-    if (result.count === 0) throw new NotFoundException('Resident not found');
-    return this.prisma.resident.findFirst({ where: { id } });
   }
 
-  async addVehicle(condominiumId: string, residentId: string, dto: CreateVehicleDto) {
-    await this.findOne(condominiumId, residentId);
+  async addVehicle(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    dto: CreateVehicleDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
 
-    return this.prisma.vehicle.create({
-      data: { ...dto, residentId, condominiumId },
+      const vehicle = await tx.vehicle.create({
+        data: this.toVehicleCreateData(condominiumId, residentId, dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.VEHICLE_ADDED,
+          actionCategory: 'CREATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Vehicle',
+          entityId: vehicle.id,
+          afterState: vehicle,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return vehicle;
     });
   }
 
   async updateVehicle(
     condominiumId: string,
+    userId: string,
     residentId: string,
     vehicleId: string,
-    dto: Partial<CreateVehicleDto>,
+    dto: UpdateVehicleDto,
   ) {
-    await this.findOne(condominiumId, residentId);
-    const vehicle = await this.prisma.vehicle.findFirst({
-      where: { id: vehicleId, residentId, condominiumId },
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.vehicle.findFirst({
+        where: { id: vehicleId, residentId, condominiumId },
+      });
+      if (!before) throw new NotFoundException('Vehicle not found');
+
+      const updated = await tx.vehicle.update({
+        where: { id: vehicleId },
+        data: this.toVehicleUpdateData(dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.VEHICLE_UPDATED,
+          actionCategory: 'UPDATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Vehicle',
+          entityId: vehicleId,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
     });
-    if (!vehicle) throw new NotFoundException('Vehicle not found');
-    return this.prisma.vehicle.update({ where: { id: vehicleId }, data: dto });
   }
 
-  async removeVehicle(condominiumId: string, residentId: string, vehicleId: string) {
-    await this.findOne(condominiumId, residentId);
-    const vehicle = await this.prisma.vehicle.findFirst({
-      where: { id: vehicleId, residentId, condominiumId },
+  async removeVehicle(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    vehicleId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.vehicle.findFirst({
+        where: { id: vehicleId, residentId, condominiumId },
+      });
+      if (!before) throw new NotFoundException('Vehicle not found');
+
+      const deleted = await tx.vehicle.delete({ where: { id: vehicleId } });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.VEHICLE_REMOVED,
+          actionCategory: 'DELETE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Vehicle',
+          entityId: vehicleId,
+          beforeState: before,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return deleted;
     });
-    if (!vehicle) throw new NotFoundException('Vehicle not found');
-    return this.prisma.vehicle.delete({ where: { id: vehicleId } });
   }
 
-  async addPet(condominiumId: string, residentId: string, dto: CreatePetDto) {
-    await this.findOne(condominiumId, residentId);
-    return this.prisma.pet.create({ data: { ...dto, residentId } });
+  async addPet(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    dto: CreatePetDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const pet = await tx.pet.create({
+        data: this.toPetCreateData(residentId, dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.PET_ADDED,
+          actionCategory: 'CREATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Pet',
+          entityId: pet.id,
+          afterState: pet,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return pet;
+    });
   }
 
   async updatePet(
     condominiumId: string,
+    userId: string,
     residentId: string,
     petId: string,
-    dto: Partial<CreatePetDto>,
+    dto: UpdatePetDto,
   ) {
-    await this.findOne(condominiumId, residentId);
-    const pet = await this.prisma.pet.findFirst({ where: { id: petId, residentId } });
-    if (!pet) throw new NotFoundException('Pet not found');
-    return this.prisma.pet.update({ where: { id: petId }, data: dto });
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.pet.findFirst({ where: { id: petId, residentId } });
+      if (!before) throw new NotFoundException('Pet not found');
+
+      const updated = await tx.pet.update({
+        where: { id: petId },
+        data: this.toPetUpdateData(dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.PET_UPDATED,
+          actionCategory: 'UPDATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Pet',
+          entityId: petId,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
+    });
   }
 
-  async removePet(condominiumId: string, residentId: string, petId: string) {
-    await this.findOne(condominiumId, residentId);
-    const pet = await this.prisma.pet.findFirst({ where: { id: petId, residentId } });
-    if (!pet) throw new NotFoundException('Pet not found');
-    return this.prisma.pet.delete({ where: { id: petId } });
+  async removePet(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    petId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.pet.findFirst({ where: { id: petId, residentId } });
+      if (!before) throw new NotFoundException('Pet not found');
+
+      const deleted = await tx.pet.delete({ where: { id: petId } });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.PET_REMOVED,
+          actionCategory: 'DELETE',
+          module: RESIDENTS_MODULE,
+          entityType: 'Pet',
+          entityId: petId,
+          beforeState: before,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return deleted;
+    });
   }
+
+  // Tenant-isolation gate for vehicle/pet writes: the child entity is only
+  // reachable when its resident exists in the caller's condominium.
+  private async assertResidentInCondominium(
+    tx: Prisma.TransactionClient,
+    condominiumId: string,
+    residentId: string,
+  ) {
+    const resident = await tx.resident.findFirst({
+      where: { id: residentId, condominiumId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!resident) throw new NotFoundException('Resident not found');
+  }
+
+  private toResidentCreateData(
+    condominiumId: string,
+    dto: CreateResidentDto,
+  ): Prisma.ResidentUncheckedCreateInput {
+    return {
+      condominiumId,
+      unitNumber: dto.unitNumber,
+      residentType: dto.residentType,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
+      secondaryPhone: dto.secondaryPhone,
+      email: dto.email,
+      monthlyFee: dto.monthlyFee ?? 0,
+      parkingSpots: dto.parkingSpots ?? 0,
+      notes: dto.notes,
+    };
+  }
+
+  private toResidentUpdateData(dto: UpdateResidentDto): Prisma.ResidentUpdateInput {
+    return {
+      unitNumber: dto.unitNumber,
+      residentType: dto.residentType,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
+      secondaryPhone: dto.secondaryPhone,
+      email: dto.email,
+      monthlyFee: dto.monthlyFee,
+      parkingSpots: dto.parkingSpots,
+      notes: dto.notes,
+    };
+  }
+
+  private toVehicleCreateData(
+    condominiumId: string,
+    residentId: string,
+    dto: CreateVehicleDto,
+  ): Prisma.VehicleUncheckedCreateInput {
+    return {
+      condominiumId,
+      residentId,
+      make: dto.make,
+      model: dto.model,
+      color: dto.color,
+      plates: dto.plates,
+      hasTag: dto.hasTag,
+      tagId: dto.tagId,
+    };
+  }
+
+  private toVehicleUpdateData(dto: UpdateVehicleDto): Prisma.VehicleUpdateInput {
+    return {
+      make: dto.make,
+      model: dto.model,
+      color: dto.color,
+      plates: dto.plates,
+      hasTag: dto.hasTag,
+      tagId: dto.tagId,
+    };
+  }
+
+  private toPetCreateData(
+    residentId: string,
+    dto: CreatePetDto,
+  ): Prisma.PetUncheckedCreateInput {
+    return {
+      residentId,
+      name: dto.name,
+      petType: dto.petType,
+      description: dto.description,
+    };
+  }
+
+  private toPetUpdateData(dto: UpdatePetDto): Prisma.PetUpdateInput {
+    return {
+      name: dto.name,
+      petType: dto.petType,
+      description: dto.description,
+    };
+  }
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+  );
 }

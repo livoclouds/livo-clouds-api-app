@@ -14,12 +14,20 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
+import { JwtPayload, UserRole } from '../../common/types';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { ListResidentsDto } from './dto/list-residents.dto';
+import { UpdatePetDto } from './dto/update-pet.dto';
+import { UpdateResidentDto } from './dto/update-resident.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { ResidentsService } from './residents.service';
+
+// `condominiumId` is set by CondominiumAccessGuard from the session-bound slug;
+// `user` is the authenticated JWT payload. Mutations forward `user.sub` so every
+// audit row records the acting user.
+type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Residents')
 @Controller('condominiums/:condominiumSlug/residents')
@@ -29,75 +37,69 @@ export class ResidentsController {
 
   @Get()
   @ApiOperation({ summary: 'List residents' })
-  findAll(
-    @Request() req: { condominiumId: string },
-    @Query() dto: ListResidentsDto,
-  ) {
+  findAll(@Request() req: AuthedRequest, @Query() dto: ListResidentsDto) {
     return this.residentsService.findAll(req.condominiumId, dto);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get resident with full profile' })
-  findOne(
-    @Request() req: { condominiumId: string },
-    @Param('id') id: string,
-  ) {
+  findOne(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.residentsService.findOne(req.condominiumId, id);
   }
 
   @Post()
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Create resident' })
-  create(
-    @Request() req: { condominiumId: string },
-    @Body() dto: CreateResidentDto,
-  ) {
-    return this.residentsService.create(req.condominiumId, dto);
+  create(@Request() req: AuthedRequest, @Body() dto: CreateResidentDto) {
+    return this.residentsService.create(req.condominiumId, req.user.sub, dto);
   }
 
   @Patch(':id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update resident' })
   update(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') id: string,
-    @Body() dto: Partial<CreateResidentDto>,
+    @Body() dto: UpdateResidentDto,
   ) {
-    return this.residentsService.update(req.condominiumId, id, dto);
+    return this.residentsService.update(req.condominiumId, req.user.sub, id, dto);
   }
 
   @Delete(':id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Soft delete resident' })
-  remove(
-    @Request() req: { condominiumId: string },
-    @Param('id') id: string,
-  ) {
-    return this.residentsService.remove(req.condominiumId, id);
+  remove(@Request() req: AuthedRequest, @Param('id') id: string) {
+    return this.residentsService.remove(req.condominiumId, req.user.sub, id);
   }
 
   @Post(':id/vehicles')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Add vehicle to resident' })
   addVehicle(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Body() dto: CreateVehicleDto,
   ) {
-    return this.residentsService.addVehicle(req.condominiumId, residentId, dto);
+    return this.residentsService.addVehicle(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      dto,
+    );
   }
 
   @Patch(':id/vehicles/:vehicleId')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update vehicle' })
   updateVehicle(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Param('vehicleId') vehicleId: string,
-    @Body() dto: Partial<CreateVehicleDto>,
+    @Body() dto: UpdateVehicleDto,
   ) {
     return this.residentsService.updateVehicle(
       req.condominiumId,
+      req.user.sub,
       residentId,
       vehicleId,
       dto,
@@ -108,12 +110,13 @@ export class ResidentsController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Remove vehicle' })
   removeVehicle(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Param('vehicleId') vehicleId: string,
   ) {
     return this.residentsService.removeVehicle(
       req.condominiumId,
+      req.user.sub,
       residentId,
       vehicleId,
     );
@@ -123,24 +126,30 @@ export class ResidentsController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Add pet to resident' })
   addPet(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Body() dto: CreatePetDto,
   ) {
-    return this.residentsService.addPet(req.condominiumId, residentId, dto);
+    return this.residentsService.addPet(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      dto,
+    );
   }
 
   @Patch(':id/pets/:petId')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update pet' })
   updatePet(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Param('petId') petId: string,
-    @Body() dto: Partial<CreatePetDto>,
+    @Body() dto: UpdatePetDto,
   ) {
     return this.residentsService.updatePet(
       req.condominiumId,
+      req.user.sub,
       residentId,
       petId,
       dto,
@@ -151,10 +160,15 @@ export class ResidentsController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Remove pet' })
   removePet(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') residentId: string,
     @Param('petId') petId: string,
   ) {
-    return this.residentsService.removePet(req.condominiumId, residentId, petId);
+    return this.residentsService.removePet(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      petId,
+    );
   }
 }

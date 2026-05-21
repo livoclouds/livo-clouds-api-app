@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { JwtPayload, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -85,21 +86,27 @@ export class AuditService {
     };
   }
 
-  async log(data: {
-    condominiumId?: string;
-    userId: string;
-    action: string;
-    actionCategory: string;
-    module: string;
-    entityType?: string;
-    entityId?: string;
-    beforeState?: unknown;
-    afterState?: unknown;
-    ipAddress?: string;
-    userAgent?: string;
-    result?: 'SUCCESS' | 'WARNING' | 'ERROR';
-    description?: string;
-  }) {
-    return this.prisma.auditLog.create({ data: data as Parameters<typeof this.prisma.auditLog.create>[0]['data'] });
+  async log(
+    data: {
+      condominiumId?: string;
+      userId: string;
+      action: string;
+      actionCategory: string;
+      module: string;
+      entityType?: string;
+      entityId?: string;
+      beforeState?: unknown;
+      afterState?: unknown;
+      ipAddress?: string;
+      userAgent?: string;
+      result?: 'SUCCESS' | 'WARNING' | 'ERROR';
+      description?: string;
+    },
+    // When a transaction client is supplied the audit row is written on that
+    // client, so it commits or rolls back atomically with the caller's mutation.
+    tx?: Prisma.TransactionClient,
+  ) {
+    const client = tx ?? this.prisma;
+    return client.auditLog.create({ data: data as Parameters<typeof this.prisma.auditLog.create>[0]['data'] });
   }
 }
