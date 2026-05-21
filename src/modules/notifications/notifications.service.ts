@@ -197,23 +197,47 @@ export class NotificationsService {
     });
   }
 
-  async getPreferences(userId: string) {
+  async getPreferences(userId: string, role: string) {
+    const userRole = role as UserRole;
     const rows = await this.prisma.userNotificationPreference.findMany({
       where: { userId },
     });
     const overrides = new Map(rows.map((row) => [row.type, row.enabled]));
 
-    // Missing rows default to enabled (opt-out model). Only the r1 types are
-    // surfaced; role-based filtering arrives with the Phase 2 role matrix.
+    // Missing rows default to enabled (opt-out model). Only the r1 types the
+    // caller's role may receive are surfaced, so the response mirrors the
+    // hide-don't-disable rule the preferences UI applies (OQ-NT-12).
     const preferences: Record<string, boolean> = {};
     for (const type of NOTIFICATION_R1_TYPES) {
-      preferences[type] = overrides.get(type) ?? true;
+      if (
+        isR1NotificationType(type) &&
+        (NOTIFICATION_ROLE_ACCESS[type] as readonly UserRole[]).includes(
+          userRole,
+        )
+      ) {
+        preferences[type] = overrides.get(type) ?? true;
+      }
     }
     return { preferences };
   }
 
-  async updatePreferences(userId: string, input: Record<string, boolean>) {
-    const allowed = new Set<string>(NOTIFICATION_R1_TYPES);
+  async updatePreferences(
+    userId: string,
+    role: string,
+    input: Record<string, boolean>,
+  ) {
+    const userRole = role as UserRole;
+    // A user may only change preferences for types their role can receive;
+    // keys outside that set are silently ignored rather than rejected.
+    const allowed = new Set<string>(
+      NOTIFICATION_R1_TYPES.filter(
+        (type) =>
+          isR1NotificationType(type) &&
+          (NOTIFICATION_ROLE_ACCESS[type] as readonly UserRole[]).includes(
+            userRole,
+          ),
+      ),
+    );
     const entries = Object.entries(input ?? {}).filter(
       ([type, enabled]) => allowed.has(type) && typeof enabled === 'boolean',
     );
@@ -232,7 +256,7 @@ export class NotificationsService {
       );
     }
 
-    return this.getPreferences(userId);
+    return this.getPreferences(userId, role);
   }
 
   async getRootScope(userId: string) {
