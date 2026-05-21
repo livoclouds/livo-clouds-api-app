@@ -1,16 +1,18 @@
-import { ConflictException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { PaymentStatus, Prisma } from '@prisma/client';
 import { ResidentsService } from './residents.service';
 import { UpdateResidentDto } from './dto/update-resident.dto';
 import { CreateResidentDto, ResidentTypeDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { CreatePetDto, PetTypeDto } from './dto/create-pet.dto';
+import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 
 const CONDOMINIUM_ID = 'cond-1';
 const USER_ID = 'user-42';
 const RESIDENT_ID = 'res-1';
 const VEHICLE_ID = 'veh-1';
 const PET_ID = 'pet-1';
+const ADDITIONAL_RESIDENT_ID = 'addl-1';
 
 interface PrismaMock {
   resident: {
@@ -27,6 +29,12 @@ interface PrismaMock {
     delete: jest.Mock;
   };
   pet: {
+    findFirst: jest.Mock;
+    create: jest.Mock;
+    update: jest.Mock;
+    delete: jest.Mock;
+  };
+  additionalResident: {
     findFirst: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
@@ -55,6 +63,12 @@ function makePrismaMock(): PrismaMock {
       delete: jest.fn(),
     },
     pet: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
+    additionalResident: {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
@@ -131,6 +145,24 @@ function makePet(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
+function makeAdditionalResident(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: ADDITIONAL_RESIDENT_ID,
+    residentId: RESIDENT_ID,
+    name: 'María González',
+    residentType: 'RESIDENT',
+    phone: null,
+    secondaryPhone: null,
+    email: null,
+    relationship: 'Spouse',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+    ...overrides,
+  };
+}
+
 const createResidentDto: CreateResidentDto = {
   unitNumber: 'A01',
   residentType: ResidentTypeDto.OWNER,
@@ -149,6 +181,12 @@ const createPetDto: CreatePetDto = {
   petType: PetTypeDto.DOG,
 };
 
+const createAdditionalResidentDto: CreateAdditionalResidentDto = {
+  name: 'María González',
+  residentType: ResidentTypeDto.RESIDENT,
+  relationship: 'Spouse',
+};
+
 describe('ResidentsService — Phase 1 API safety net', () => {
   let prisma: PrismaMock;
   let audit: AuditMock;
@@ -161,6 +199,9 @@ describe('ResidentsService — Phase 1 API safety net', () => {
   });
 
   describe('RES-002 — mass assignment is blocked', () => {
+    // `paymentStatus` is intentionally absent from this list: Phase 2 (RES-004)
+    // promoted it to a validated field of the update contract. `debt` stays
+    // unsafe — it is excluded by the RES-004 product decision (derived figure).
     it('never forwards condominiumId / deletedAt / debt to Prisma on update', async () => {
       prisma.resident.findFirst.mockResolvedValue(makeResident());
       prisma.resident.update.mockResolvedValue(makeResident({ firstName: 'New Name' }));
@@ -171,7 +212,6 @@ describe('ResidentsService — Phase 1 API safety net', () => {
         deletedAt: new Date(),
         debt: 999,
         id: 'spoofed-id',
-        paymentStatus: 'OVERDUE',
       } as unknown as UpdateResidentDto;
 
       await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, maliciousDto);
@@ -181,7 +221,6 @@ describe('ResidentsService — Phase 1 API safety net', () => {
       expect(updateArg.data).not.toHaveProperty('deletedAt');
       expect(updateArg.data).not.toHaveProperty('debt');
       expect(updateArg.data).not.toHaveProperty('id');
-      expect(updateArg.data).not.toHaveProperty('paymentStatus');
       expect(updateArg.data).toHaveProperty('firstName', 'New Name');
     });
   });
@@ -369,6 +408,198 @@ describe('ResidentsService — Phase 1 API safety net', () => {
       await expect(
         service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, { unitNumber: 'B02' }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+});
+
+describe('ResidentsService — Phase 2 API contract completion', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: ResidentsService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('RES-004 — resident update contract', () => {
+    it('persists paymentStatus through the validated mapper', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(
+        makeResident({ paymentStatus: 'OVERDUE' }),
+      );
+
+      await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, {
+        paymentStatus: PaymentStatus.OVERDUE,
+      });
+
+      const updateArg = prisma.resident.update.mock.calls[0][0];
+      expect(updateArg.data).toHaveProperty('paymentStatus', PaymentStatus.OVERDUE);
+    });
+
+    it('persists documentation as a complete five-key object', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(makeResident());
+      const documentation = {
+        propertyTax: true,
+        titleDeed: false,
+        ownerDocumentation: true,
+        nationalId: false,
+        proofOfAddress: true,
+      };
+
+      await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, { documentation });
+
+      const updateArg = prisma.resident.update.mock.calls[0][0];
+      expect(updateArg.data.documentation).toEqual(documentation);
+    });
+
+    it('leaves documentation untouched when the field is omitted', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(makeResident());
+
+      await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, {
+        firstName: 'New',
+      });
+
+      const updateArg = prisma.resident.update.mock.calls[0][0];
+      expect(updateArg.data.documentation).toBeUndefined();
+    });
+
+    it('keeps debt out of the update contract (product decision: derived)', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(makeResident());
+
+      await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, {
+        debt: 5000,
+      } as unknown as UpdateResidentDto);
+
+      const updateArg = prisma.resident.update.mock.calls[0][0];
+      expect(updateArg.data).not.toHaveProperty('debt');
+    });
+  });
+
+  describe('RES-005 — additional resident CRUD', () => {
+    it('creates an additional resident, returns it, and audits once', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.additionalResident.create.mockResolvedValue(makeAdditionalResident());
+
+      const result = await service.addAdditionalResident(
+        CONDOMINIUM_ID,
+        USER_ID,
+        RESIDENT_ID,
+        createAdditionalResidentDto,
+      );
+
+      expect(result).toEqual(makeAdditionalResident());
+      expect(prisma.additionalResident.create).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RESIDENT_ADDITIONAL_RESIDENT_ADDED',
+          actionCategory: 'CREATE',
+          module: 'residents',
+          entityType: 'AdditionalResident',
+          userId: USER_ID,
+        }),
+        prisma,
+      );
+    });
+
+    it('updates an additional resident, returns it, and audits once', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.additionalResident.findFirst.mockResolvedValue(makeAdditionalResident());
+      prisma.additionalResident.update.mockResolvedValue(
+        makeAdditionalResident({ name: 'Updated Name' }),
+      );
+
+      const result = await service.updateAdditionalResident(
+        CONDOMINIUM_ID,
+        USER_ID,
+        RESIDENT_ID,
+        ADDITIONAL_RESIDENT_ID,
+        { name: 'Updated Name' },
+      );
+
+      expect(result).toEqual(makeAdditionalResident({ name: 'Updated Name' }));
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RESIDENT_ADDITIONAL_RESIDENT_UPDATED',
+          entityType: 'AdditionalResident',
+        }),
+        prisma,
+      );
+    });
+
+    it('deletes an additional resident, returns it, and audits once', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.additionalResident.findFirst.mockResolvedValue(makeAdditionalResident());
+      prisma.additionalResident.delete.mockResolvedValue(makeAdditionalResident());
+
+      const result = await service.removeAdditionalResident(
+        CONDOMINIUM_ID,
+        USER_ID,
+        RESIDENT_ID,
+        ADDITIONAL_RESIDENT_ID,
+      );
+
+      expect(result).toEqual(makeAdditionalResident());
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RESIDENT_ADDITIONAL_RESIDENT_REMOVED',
+          entityType: 'AdditionalResident',
+        }),
+        prisma,
+      );
+    });
+
+    it('rejects the mutation when the parent resident is outside the active condominium', async () => {
+      prisma.resident.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.addAdditionalResident(
+          CONDOMINIUM_ID,
+          USER_ID,
+          RESIDENT_ID,
+          createAdditionalResidentDto,
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.additionalResident.create).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it('rejects an update for an additional resident not under the parent', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.additionalResident.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.updateAdditionalResident(
+          CONDOMINIUM_ID,
+          USER_ID,
+          RESIDENT_ID,
+          ADDITIONAL_RESIDENT_ID,
+          { name: 'X' },
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.additionalResident.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects the whole mutation when the audit write fails (transactional)', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.additionalResident.create.mockResolvedValue(makeAdditionalResident());
+      audit.log.mockRejectedValueOnce(new Error('audit write failed'));
+
+      await expect(
+        service.addAdditionalResident(
+          CONDOMINIUM_ID,
+          USER_ID,
+          RESIDENT_ID,
+          createAdditionalResidentDto,
+        ),
+      ).rejects.toThrow('audit write failed');
     });
   });
 });

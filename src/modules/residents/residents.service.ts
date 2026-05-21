@@ -7,10 +7,12 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
 import { AuditService } from '../audit/audit.service';
+import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { ListResidentsDto } from './dto/list-residents.dto';
+import { UpdateAdditionalResidentDto } from './dto/update-additional-resident.dto';
 import { UpdatePetDto } from './dto/update-pet.dto';
 import { UpdateResidentDto } from './dto/update-resident.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
@@ -27,6 +29,9 @@ const AUDIT_ACTION = {
   PET_ADDED: 'RESIDENT_PET_ADDED',
   PET_UPDATED: 'RESIDENT_PET_UPDATED',
   PET_REMOVED: 'RESIDENT_PET_REMOVED',
+  ADDITIONAL_RESIDENT_ADDED: 'RESIDENT_ADDITIONAL_RESIDENT_ADDED',
+  ADDITIONAL_RESIDENT_UPDATED: 'RESIDENT_ADDITIONAL_RESIDENT_UPDATED',
+  ADDITIONAL_RESIDENT_REMOVED: 'RESIDENT_ADDITIONAL_RESIDENT_REMOVED',
 } as const;
 
 const RESIDENT_INCLUDE = {
@@ -456,8 +461,119 @@ export class ResidentsService {
     });
   }
 
-  // Tenant-isolation gate for vehicle/pet writes: the child entity is only
-  // reachable when its resident exists in the caller's condominium.
+  async addAdditionalResident(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    dto: CreateAdditionalResidentDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const additionalResident = await tx.additionalResident.create({
+        data: this.toAdditionalResidentCreateData(residentId, dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.ADDITIONAL_RESIDENT_ADDED,
+          actionCategory: 'CREATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'AdditionalResident',
+          entityId: additionalResident.id,
+          afterState: additionalResident,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return additionalResident;
+    });
+  }
+
+  async updateAdditionalResident(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    additionalResidentId: string,
+    dto: UpdateAdditionalResidentDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.additionalResident.findFirst({
+        where: { id: additionalResidentId, residentId },
+      });
+      if (!before) throw new NotFoundException('Additional resident not found');
+
+      const updated = await tx.additionalResident.update({
+        where: { id: additionalResidentId },
+        data: this.toAdditionalResidentUpdateData(dto),
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.ADDITIONAL_RESIDENT_UPDATED,
+          actionCategory: 'UPDATE',
+          module: RESIDENTS_MODULE,
+          entityType: 'AdditionalResident',
+          entityId: additionalResidentId,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
+    });
+  }
+
+  async removeAdditionalResident(
+    condominiumId: string,
+    userId: string,
+    residentId: string,
+    additionalResidentId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.assertResidentInCondominium(tx, condominiumId, residentId);
+
+      const before = await tx.additionalResident.findFirst({
+        where: { id: additionalResidentId, residentId },
+      });
+      if (!before) throw new NotFoundException('Additional resident not found');
+
+      const deleted = await tx.additionalResident.delete({
+        where: { id: additionalResidentId },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.ADDITIONAL_RESIDENT_REMOVED,
+          actionCategory: 'DELETE',
+          module: RESIDENTS_MODULE,
+          entityType: 'AdditionalResident',
+          entityId: additionalResidentId,
+          beforeState: before,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return deleted;
+    });
+  }
+
+  // Tenant-isolation gate for vehicle/pet/additional-resident writes: the child
+  // entity is only reachable when its resident exists in the caller's
+  // condominium. AdditionalResident has no condominiumId column, so this parent
+  // check is its only isolation boundary.
   private async assertResidentInCondominium(
     tx: Prisma.TransactionClient,
     condominiumId: string,
@@ -501,6 +617,20 @@ export class ResidentsService {
       monthlyFee: dto.monthlyFee,
       parkingSpots: dto.parkingSpots,
       notes: dto.notes,
+      paymentStatus: dto.paymentStatus,
+      // Map the documentation flags field-by-field into a plain object so the
+      // value is a clean Prisma.InputJsonValue (not a class instance) and no
+      // unexpected key can reach the Json column. `undefined` when absent so
+      // Prisma leaves the existing column untouched.
+      documentation: dto.documentation
+        ? {
+            propertyTax: dto.documentation.propertyTax,
+            titleDeed: dto.documentation.titleDeed,
+            ownerDocumentation: dto.documentation.ownerDocumentation,
+            nationalId: dto.documentation.nationalId,
+            proofOfAddress: dto.documentation.proofOfAddress,
+          }
+        : undefined,
     };
   }
 
@@ -549,6 +679,34 @@ export class ResidentsService {
       name: dto.name,
       petType: dto.petType,
       description: dto.description,
+    };
+  }
+
+  private toAdditionalResidentCreateData(
+    residentId: string,
+    dto: CreateAdditionalResidentDto,
+  ): Prisma.AdditionalResidentUncheckedCreateInput {
+    return {
+      residentId,
+      name: dto.name,
+      residentType: dto.residentType,
+      phone: dto.phone,
+      secondaryPhone: dto.secondaryPhone,
+      email: dto.email,
+      relationship: dto.relationship,
+    };
+  }
+
+  private toAdditionalResidentUpdateData(
+    dto: UpdateAdditionalResidentDto,
+  ): Prisma.AdditionalResidentUpdateInput {
+    return {
+      name: dto.name,
+      residentType: dto.residentType,
+      phone: dto.phone,
+      secondaryPhone: dto.secondaryPhone,
+      email: dto.email,
+      relationship: dto.relationship,
     };
   }
 }
