@@ -315,7 +315,7 @@ describe('NotificationsService.getPreferences', () => {
     prisma.userNotificationPreference.findMany.mockResolvedValueOnce([]);
     const service = makeService(prisma);
 
-    const { preferences } = await service.getPreferences(USER_ID);
+    const { preferences } = await service.getPreferences(USER_ID, UserRole.ROOT);
 
     for (const type of NOTIFICATION_R1_TYPES) {
       expect(preferences[type]).toBe(true);
@@ -329,10 +329,51 @@ describe('NotificationsService.getPreferences', () => {
     ]);
     const service = makeService(prisma);
 
-    const { preferences } = await service.getPreferences(USER_ID);
+    const { preferences } = await service.getPreferences(USER_ID, UserRole.ROOT);
 
     expect(preferences[NotificationType.IMPORT_WITH_WARNINGS]).toBe(false);
     expect(preferences[NotificationType.IMPORT_COMPLETED]).toBe(true);
+  });
+
+  it('surfaces only the types the caller role may receive (OQ-NT-12)', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationPreference.findMany.mockResolvedValueOnce([]);
+    const service = makeService(prisma);
+
+    const { preferences } = await service.getPreferences(
+      USER_ID,
+      UserRole.GUARD,
+    );
+
+    expect(Object.keys(preferences).sort()).toEqual([
+      'PERMISSIONS_CHANGED',
+      'SESSION_EXPIRING',
+    ]);
+  });
+});
+
+describe('NotificationsService.updatePreferences', () => {
+  it('ignores keys the caller role may not receive', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationPreference.findMany.mockResolvedValueOnce([]);
+    const service = makeService(prisma);
+
+    // GUARD may not receive IMPORT_COMPLETED — that key must be dropped.
+    await service.updatePreferences(USER_ID, UserRole.GUARD, {
+      IMPORT_COMPLETED: false,
+      PERMISSIONS_CHANGED: false,
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const upserts = prisma.$transaction.mock.calls[0][0] as unknown[];
+    expect(upserts).toHaveLength(1);
+    expect(prisma.userNotificationPreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          type: NotificationType.PERMISSIONS_CHANGED,
+        }),
+      }),
+    );
   });
 });
 

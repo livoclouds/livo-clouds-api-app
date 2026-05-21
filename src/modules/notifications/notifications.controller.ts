@@ -61,7 +61,7 @@ export class NotificationsController {
   @Get('preferences')
   @ApiOperation({ summary: 'Get notification preferences for the current user' })
   getPreferences(@CurrentUser() user: JwtPayload) {
-    return this.notificationsService.getPreferences(user.sub);
+    return this.notificationsService.getPreferences(user.sub, user.role);
   }
 
   @Patch('preferences')
@@ -74,6 +74,7 @@ export class NotificationsController {
   ) {
     return this.notificationsService.updatePreferences(
       user.sub,
+      user.role,
       dto.preferences,
     );
   }
