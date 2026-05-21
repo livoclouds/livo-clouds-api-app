@@ -5,11 +5,19 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   Max,
   Min,
 } from 'class-validator';
+
+export const NOTIFICATION_SORT_FIELDS = ['createdAt', 'type'] as const;
+export type NotificationSortField = (typeof NOTIFICATION_SORT_FIELDS)[number];
+
+export const NOTIFICATION_SORT_DIRECTIONS = ['asc', 'desc'] as const;
+export type NotificationSortDirection =
+  (typeof NOTIFICATION_SORT_DIRECTIONS)[number];
 
 export class ListNotificationsDto {
   @ApiPropertyOptional({ minimum: 1, default: 1 })
@@ -42,6 +50,32 @@ export class ListNotificationsDto {
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   includeDismissed?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Return only notifications that have already been read.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  readOnly?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Field to sort by.',
+    enum: NOTIFICATION_SORT_FIELDS,
+    default: 'createdAt',
+  })
+  @IsOptional()
+  @IsIn(NOTIFICATION_SORT_FIELDS)
+  sortBy?: NotificationSortField;
+
+  @ApiPropertyOptional({
+    description: 'Sort direction.',
+    enum: NOTIFICATION_SORT_DIRECTIONS,
+    default: 'desc',
+  })
+  @IsOptional()
+  @IsIn(NOTIFICATION_SORT_DIRECTIONS)
+  sortDir?: NotificationSortDirection;
 
   @ApiPropertyOptional({
     description: 'Comma-separated list of NotificationType values to filter by.',

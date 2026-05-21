@@ -21,6 +21,10 @@ import {
   isR1NotificationType,
   NOTIFICATION_ROLE_ACCESS,
 } from './notification-role-matrix';
+import type {
+  NotificationSortDirection,
+  NotificationSortField,
+} from './dto/list-notifications.dto';
 
 export interface ListNotificationsParams {
   userId: string;
@@ -29,10 +33,16 @@ export interface ListNotificationsParams {
   page: number;
   limit: number;
   unreadOnly?: boolean;
+  /** Return only notifications that have already been read. */
+  readOnly?: boolean;
   includeDismissed?: boolean;
   types?: NotificationType[];
   from?: string;
   to?: string;
+  /** Sort field; defaults to `createdAt`. */
+  sortBy?: NotificationSortField;
+  /** Sort direction; defaults to `desc`. */
+  sortDir?: NotificationSortDirection;
 }
 
 export interface NotificationEventInput {
@@ -97,6 +107,8 @@ export class NotificationsService {
     }
     if (params.unreadOnly) {
       where.readAt = null;
+    } else if (params.readOnly) {
+      where.readAt = { not: null };
     }
     if (!params.includeDismissed) {
       where.dismissedAt = null;
@@ -124,10 +136,14 @@ export class NotificationsService {
       unreadWhere.condominiumId = condominiumId;
     }
 
+    const orderBy: Prisma.NotificationOrderByWithRelationInput = {
+      [params.sortBy ?? 'createdAt']: params.sortDir ?? 'desc',
+    };
+
     const [items, total, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip: (page - 1) * limit,
         take: limit,
       }),

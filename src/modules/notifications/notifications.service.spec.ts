@@ -408,6 +408,83 @@ describe('NotificationsService.getStreamSync', () => {
   });
 });
 
+describe('NotificationsService.list', () => {
+  it('sorts by createdAt desc and applies no read filter by default', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      orderBy: unknown;
+      where: { readAt?: unknown };
+    };
+    expect(args.orderBy).toEqual({ createdAt: 'desc' });
+    expect(args.where.readAt).toBeUndefined();
+  });
+
+  it('honors sortBy and sortDir', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+      sortBy: 'type',
+      sortDir: 'asc',
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      orderBy: unknown;
+    };
+    expect(args.orderBy).toEqual({ type: 'asc' });
+  });
+
+  it('filters to read notifications when readOnly is set', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+      readOnly: true,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      where: { readAt?: unknown };
+    };
+    expect(args.where.readAt).toEqual({ not: null });
+  });
+
+  it('lets unreadOnly take precedence over readOnly', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+      unreadOnly: true,
+      readOnly: true,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      where: { readAt?: unknown };
+    };
+    expect(args.where.readAt).toBeNull();
+  });
+});
+
 describe('NotificationsService.resolveRecipientsForType', () => {
   it('returns an empty list for legacy notification types', async () => {
     const prisma = makePrismaMock();

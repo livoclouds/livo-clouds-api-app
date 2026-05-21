@@ -39,10 +39,13 @@ export class NotificationsController {
       page: dto.page ?? 1,
       limit: dto.limit ?? 20,
       unreadOnly: dto.unreadOnly,
+      readOnly: dto.readOnly,
       includeDismissed: dto.includeDismissed,
       types: dto.types,
       from: dto.from,
       to: dto.to,
+      sortBy: dto.sortBy,
+      sortDir: dto.sortDir,
     });
   }
 
