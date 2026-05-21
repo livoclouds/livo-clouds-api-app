@@ -15,10 +15,12 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
+import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { ListResidentsDto } from './dto/list-residents.dto';
+import { UpdateAdditionalResidentDto } from './dto/update-additional-resident.dto';
 import { UpdatePetDto } from './dto/update-pet.dto';
 import { UpdateResidentDto } from './dto/update-resident.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
@@ -169,6 +171,56 @@ export class ResidentsController {
       req.user.sub,
       residentId,
       petId,
+    );
+  }
+
+  @Post(':id/additional-residents')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Add additional resident' })
+  addAdditionalResident(
+    @Request() req: AuthedRequest,
+    @Param('id') residentId: string,
+    @Body() dto: CreateAdditionalResidentDto,
+  ) {
+    return this.residentsService.addAdditionalResident(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      dto,
+    );
+  }
+
+  @Patch(':id/additional-residents/:additionalResidentId')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Update additional resident' })
+  updateAdditionalResident(
+    @Request() req: AuthedRequest,
+    @Param('id') residentId: string,
+    @Param('additionalResidentId') additionalResidentId: string,
+    @Body() dto: UpdateAdditionalResidentDto,
+  ) {
+    return this.residentsService.updateAdditionalResident(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      additionalResidentId,
+      dto,
+    );
+  }
+
+  @Delete(':id/additional-residents/:additionalResidentId')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Remove additional resident' })
+  removeAdditionalResident(
+    @Request() req: AuthedRequest,
+    @Param('id') residentId: string,
+    @Param('additionalResidentId') additionalResidentId: string,
+  ) {
+    return this.residentsService.removeAdditionalResident(
+      req.condominiumId,
+      req.user.sub,
+      residentId,
+      additionalResidentId,
     );
   }
 }
