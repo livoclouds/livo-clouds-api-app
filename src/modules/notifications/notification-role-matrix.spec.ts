@@ -6,11 +6,11 @@ import {
 import { NOTIFICATION_R1_TYPES } from './notifications.constants';
 
 describe('NOTIFICATION_ROLE_ACCESS', () => {
-  it('covers exactly the 12 r1 notification types', () => {
+  it('covers exactly the 14 matrix notification types', () => {
     const matrixKeys = Object.keys(NOTIFICATION_ROLE_ACCESS).sort();
     const r1Keys = [...NOTIFICATION_R1_TYPES].sort();
     expect(matrixKeys).toEqual(r1Keys);
-    expect(matrixKeys).toHaveLength(12);
+    expect(matrixKeys).toHaveLength(14);
   });
 
   it('maps each notification type to its documented role list', () => {
@@ -41,6 +41,8 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
         UserRole.READ_ONLY,
         UserRole.NEIGHBOR,
       ],
+      NEGATIVE_BALANCE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+      NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       USER_ADDED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       PERMISSIONS_CHANGED: [
         UserRole.ROOT,
@@ -106,10 +108,13 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
     }
   });
 
-  it('narrows r1 types and rejects legacy types via isR1NotificationType', () => {
+  it('narrows matrix-covered types and rejects legacy types via isR1NotificationType', () => {
     expect(isR1NotificationType(NotificationType.IMPORT_COMPLETED)).toBe(true);
     expect(isR1NotificationType(NotificationType.SESSION_EXPIRING)).toBe(true);
-    expect(isR1NotificationType(NotificationType.NEGATIVE_BALANCE)).toBe(false);
+    // Promoted out of the legacy set into the role matrix.
+    expect(isR1NotificationType(NotificationType.NEGATIVE_BALANCE)).toBe(true);
+    expect(isR1NotificationType(NotificationType.NEW_INCIDENT)).toBe(true);
+    // Still legacy — has an r1 equivalent and no listener.
     expect(isR1NotificationType(NotificationType.FILE_IMPORTED)).toBe(false);
   });
 });

@@ -2,21 +2,18 @@ import { NotificationType, UserRole } from '@prisma/client';
 
 /**
  * Legacy NotificationType values that predate the Notifications module. They
- * have no listeners and are excluded from the r1 role matrix. Kept as an
- * explicit union so the exhaustiveness check below targets exactly the 12 r1
- * types.
+ * have no listeners and are excluded from the role matrix. Kept as an explicit
+ * union so the exhaustiveness check below targets exactly the matrix-covered
+ * types. `NEGATIVE_BALANCE` and `NEW_INCIDENT` were promoted out of this set
+ * into the matrix when the per-user preferences page absorbed the legacy
+ * Settings notifications tab.
  */
-type LegacyNotificationType =
-  | 'NEGATIVE_BALANCE'
-  | 'FILE_IMPORTED'
-  | 'IMPORT_ERROR'
-  | 'NEW_USER'
-  | 'NEW_INCIDENT';
+type LegacyNotificationType = 'FILE_IMPORTED' | 'IMPORT_ERROR' | 'NEW_USER';
 
 /**
- * The 12 notification types introduced in Notifications r1. Derived from the
- * Prisma enum by subtraction so it stays in sync automatically: adding a new
- * r1 value to NotificationType widens this union and breaks the `satisfies`
+ * Notification types covered by the role matrix. Derived from the Prisma enum
+ * by subtracting the legacy values so it stays in sync automatically: adding a
+ * new value to NotificationType widens this union and breaks the `satisfies`
  * check on NOTIFICATION_ROLE_ACCESS until the matrix gets an entry for it.
  */
 export type R1NotificationType = Exclude<
@@ -68,6 +65,12 @@ export const NOTIFICATION_ROLE_ACCESS = {
     UserRole.READ_ONLY,
     UserRole.NEIGHBOR,
   ],
+
+  // Finance
+  NEGATIVE_BALANCE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+
+  // Incidents
+  NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
 
   // System
   USER_ADDED: [UserRole.ROOT, UserRole.TENANT_ADMIN],

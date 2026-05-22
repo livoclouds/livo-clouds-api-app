@@ -80,21 +80,4 @@ export class SettingsService {
       update: dto,
     });
   }
-
-  async updateNotifications(
-    condominiumId: string,
-    dto: {
-      notifyNegativeBalance?: boolean;
-      notifyNewFileImported?: boolean;
-      notifyImportError?: boolean;
-      notifyNewUser?: boolean;
-      notifyNewIncident?: boolean;
-    },
-  ) {
-    return this.prisma.condominiumSettings.upsert({
-      where: { condominiumId },
-      create: { condominiumId, ...dto },
-      update: dto,
-    });
-  }
 }

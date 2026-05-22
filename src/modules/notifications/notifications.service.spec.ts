@@ -532,7 +532,7 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     const service = makeService(prisma);
 
     const result = await service.resolveRecipientsForType(
-      NotificationType.NEGATIVE_BALANCE,
+      NotificationType.FILE_IMPORTED,
       CONDOMINIUM_ID,
     );
 
