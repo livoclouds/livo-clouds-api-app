@@ -1,14 +1,31 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { ListCommonAreasDto } from './dto/list-common-areas.dto';
 import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
+import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
+
+const INVENTORY_MODULE = 'inventory';
+
+const AUDIT_ACTION = {
+  COMMON_AREA_CREATED: 'COMMON_AREA_CREATED',
+  COMMON_AREA_UPDATED: 'COMMON_AREA_UPDATED',
+  COMMON_AREA_DELETED: 'COMMON_AREA_DELETED',
+} as const;
 
 @Injectable()
 export class InventoryService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
 
   // ─── Common Areas ──────────────────────────────────────────────
 
@@ -43,24 +60,140 @@ export class InventoryService {
     };
   }
 
-  async createArea(condominiumId: string, dto: CreateCommonAreaDto) {
-    return this.prisma.commonArea.create({
-      data: { ...dto, condominiumId },
+  // Builds an explicit, allow-listed Prisma payload from a common-area DTO.
+  // The DTO (or request body) must never be spread into Prisma `data:` — an
+  // allow-list is the structural guarantee that `condominiumId`, or any other
+  // unknown key, can never be written (CMA-003 mass-assignment guard). Prisma
+  // treats `undefined` as "leave unchanged", so the same mapper is safe for
+  // both create and partial update.
+  private toCommonAreaData(dto: CreateCommonAreaDto | UpdateCommonAreaDto) {
+    return {
+      name: dto.name,
+      nameKey: dto.nameKey,
+      description: dto.description,
+      physicalLocation: dto.physicalLocation,
+      status: dto.status,
+      responsiblePerson: dto.responsiblePerson,
+    };
+  }
+
+  async createArea(
+    condominiumId: string,
+    userId: string,
+    dto: CreateCommonAreaDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.commonArea.create({
+        // `name` is re-read from the create DTO so its type stays required.
+        data: { ...this.toCommonAreaData(dto), name: dto.name, condominiumId },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.COMMON_AREA_CREATED,
+          actionCategory: 'CREATE',
+          module: INVENTORY_MODULE,
+          entityType: 'CommonArea',
+          entityId: created.id,
+          afterState: created,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return created;
     });
   }
 
-  async updateArea(condominiumId: string, id: string, dto: Partial<CreateCommonAreaDto>) {
-    const result = await this.prisma.commonArea.updateMany({
-      where: { id, condominiumId },
-      data: dto,
+  async updateArea(
+    condominiumId: string,
+    userId: string,
+    id: string,
+    dto: UpdateCommonAreaDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.commonArea.findFirst({
+        where: { id, condominiumId },
+        include: { inventoryItems: true },
+      });
+      if (!before) throw new NotFoundException('Common area not found');
+
+      // updateMany keeps the `{ id, condominiumId }` filter structural, so
+      // tenant scope does not rely on the read above alone.
+      await tx.commonArea.updateMany({
+        where: { id, condominiumId },
+        data: this.toCommonAreaData(dto),
+      });
+
+      const updated = await tx.commonArea.findFirst({
+        where: { id, condominiumId },
+        include: { inventoryItems: true },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.COMMON_AREA_UPDATED,
+          actionCategory: 'UPDATE',
+          module: INVENTORY_MODULE,
+          entityType: 'CommonArea',
+          entityId: id,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
     });
-    if (result.count === 0) throw new NotFoundException('Common area not found');
-    return this.prisma.commonArea.findFirst({ where: { id, condominiumId }, include: { inventoryItems: true } });
   }
 
-  async removeArea(condominiumId: string, id: string) {
-    await this.findAreaOrFail(condominiumId, id);
-    return this.prisma.commonArea.delete({ where: { id } });
+  async removeArea(condominiumId: string, userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.commonArea.findFirst({
+        where: { id, condominiumId },
+        include: { inventoryItems: true },
+      });
+      if (!before) throw new NotFoundException('Common area not found');
+
+      // The CommonArea → InventoryItem relation has no `onDelete` rule (Prisma
+      // default `Restrict`); a raw delete of a populated area would surface an
+      // unhandled foreign-key error as an HTTP 500. Pre-check the count and
+      // fail with a clean 409 instead — never cascade-delete costed items.
+      const itemCount = await tx.inventoryItem.count({
+        where: { commonAreaId: id, condominiumId },
+      });
+      if (itemCount > 0) {
+        throw new ConflictException(
+          `This common area has ${itemCount} inventory item(s). ` +
+            'Move or remove them before deleting the area.',
+        );
+      }
+
+      await tx.commonArea.deleteMany({ where: { id, condominiumId } });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.COMMON_AREA_DELETED,
+          actionCategory: 'DELETE',
+          module: INVENTORY_MODULE,
+          entityType: 'CommonArea',
+          entityId: id,
+          beforeState: before,
+          afterState: null,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return before;
+    });
   }
 
   private async findAreaOrFail(condominiumId: string, id: string) {
