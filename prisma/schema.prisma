@@ -365,6 +365,13 @@ model CondominiumSettings {
   @@map("condominium_settings")
 }
 
+enum OnboardingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+}
+
 model User {
   id              String    @id @default(uuid())
   condominiumId   String?
@@ -381,6 +388,14 @@ model User {
   deletedAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  // Dashboard onboarding tour — per-user progress so it survives cookie/storage
+  // clears and follows the user across devices. onboardingStep stores the last
+  // step reached while IN_PROGRESS so the tour can resume where it was left.
+  onboardingStatus      OnboardingStatus @default(NOT_STARTED)
+  onboardingStep        Int              @default(0)
+  onboardingCompletedAt DateTime?
+  onboardingSkippedAt   DateTime?
 
   condominium               Condominium?                     @relation(fields: [condominiumId], references: [id])
   refreshTokens             RefreshToken[]

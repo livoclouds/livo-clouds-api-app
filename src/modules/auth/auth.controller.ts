@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Ip,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -18,6 +19,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateOnboardingDto } from './dto/update-onboarding.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -95,5 +97,20 @@ export class AuthController {
   @ApiOperation({ summary: 'Get current authenticated user' })
   getMe(@CurrentUser() user: JwtPayload) {
     return this.authService.getMe(user.sub);
+  }
+
+  @Get('me/onboarding')
+  @ApiOperation({ summary: 'Get current user dashboard onboarding tour state' })
+  getOnboarding(@CurrentUser() user: JwtPayload) {
+    return this.authService.getOnboarding(user.sub);
+  }
+
+  @Patch('me/onboarding')
+  @ApiOperation({ summary: 'Update current user dashboard onboarding tour state' })
+  updateOnboarding(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateOnboardingDto,
+  ) {
+    return this.authService.updateOnboarding(user.sub, dto);
   }
 }
