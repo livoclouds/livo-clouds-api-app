@@ -361,3 +361,104 @@ describe('InventoryService — Common Areas (Phase 2 audit-trail contract)', () 
     });
   });
 });
+
+describe('InventoryService — Common Areas (Phase 5 — server-side filter / sort)', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: InventoryService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('findAllAreas — where', () => {
+    // CMA-013: tenant scope is always present and never derived from request
+    // input; filters are added on top of the condominiumId scope.
+    it('always scopes by condominiumId and applies name / status / responsible filters', async () => {
+      await service.findAllAreas(CONDOMINIUM_ID, {
+        name: 'pool',
+        status: CommonAreaStatusDto.MAINTENANCE,
+        responsible: 'ana',
+      });
+
+      const findArgs = prisma.commonArea.findMany.mock.calls[0][0];
+      expect(findArgs.where.condominiumId).toBe(CONDOMINIUM_ID);
+      expect(findArgs.where.AND).toEqual(
+        expect.arrayContaining([
+          { name: { contains: 'pool', mode: 'insensitive' } },
+          { responsiblePerson: { contains: 'ana', mode: 'insensitive' } },
+          { status: 'MAINTENANCE' },
+        ]),
+      );
+      // count() is scoped by exactly the same where, so meta.total is filtered.
+      const countArgs = prisma.commonArea.count.mock.calls[0][0];
+      expect(countArgs.where).toEqual(findArgs.where);
+    });
+
+    it('omits the AND clause when no filters are supplied', async () => {
+      await service.findAllAreas(CONDOMINIUM_ID, {});
+
+      const findArgs = prisma.commonArea.findMany.mock.calls[0][0];
+      expect(findArgs.where).toEqual({ condominiumId: CONDOMINIUM_ID });
+    });
+  });
+
+  describe('findAllAreas — orderBy', () => {
+    // CMA-013: stable sort — the selected column followed by an `id` tiebreaker.
+    it('applies the allow-listed sort column with a stable id tiebreaker', async () => {
+      await service.findAllAreas(CONDOMINIUM_ID, {
+        sortBy: 'status',
+        sortDirection: 'desc',
+      });
+
+      const findArgs = prisma.commonArea.findMany.mock.calls[0][0];
+      expect(findArgs.orderBy).toEqual([{ status: 'desc' }, { id: 'asc' }]);
+    });
+
+    it('defaults to name ascending with the id tiebreaker', async () => {
+      await service.findAllAreas(CONDOMINIUM_ID, {});
+
+      const findArgs = prisma.commonArea.findMany.mock.calls[0][0];
+      expect(findArgs.orderBy).toEqual([{ name: 'asc' }, { id: 'asc' }]);
+    });
+
+    it('maps responsiblePerson and the audit columns to their Prisma fields', async () => {
+      await service.findAllAreas(CONDOMINIUM_ID, { sortBy: 'responsiblePerson' });
+      expect(prisma.commonArea.findMany.mock.calls[0][0].orderBy).toEqual([
+        { responsiblePerson: 'asc' },
+        { id: 'asc' },
+      ]);
+
+      prisma.commonArea.findMany.mockClear();
+      await service.findAllAreas(CONDOMINIUM_ID, { sortBy: 'updatedAt' });
+      expect(prisma.commonArea.findMany.mock.calls[0][0].orderBy).toEqual([
+        { updatedAt: 'asc' },
+        { id: 'asc' },
+      ]);
+    });
+  });
+
+  describe('findAllAreas — pagination', () => {
+    it('derives skip / take from page and limit and returns a filtered meta', async () => {
+      prisma.commonArea.findMany.mockResolvedValueOnce([makeArea()]);
+      prisma.commonArea.count.mockResolvedValueOnce(51);
+
+      const result = await service.findAllAreas(CONDOMINIUM_ID, {
+        page: 3,
+        limit: 25,
+      });
+
+      const findArgs = prisma.commonArea.findMany.mock.calls[0][0];
+      expect(findArgs.skip).toBe(50);
+      expect(findArgs.take).toBe(25);
+      expect(result.meta).toEqual({
+        total: 51,
+        page: 3,
+        limit: 25,
+        totalPages: 3,
+      });
+    });
+  });
+});

@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -36,13 +37,18 @@ export class InventoryService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 200;
     const skip = (page - 1) * limit;
-    const where = { condominiumId };
+    // CMA-013: filtering and sorting run in the database. `where` is always
+    // scoped by the guard-derived condominiumId; `orderBy` only ever uses the
+    // allow-listed column mapping. `count` reuses the same `where` so `meta`
+    // reflects the filtered total.
+    const where = buildCommonAreaWhere(condominiumId, query);
+    const orderBy = buildCommonAreaOrderBy(query);
 
     const [data, total] = await Promise.all([
       this.prisma.commonArea.findMany({
         where,
         include: { inventoryItems: true },
-        orderBy: { name: 'asc' },
+        orderBy,
         skip,
         take: limit,
       }),
@@ -67,9 +73,10 @@ export class InventoryService {
   // treats `undefined` as "leave unchanged", so the same mapper is safe for
   // both create and partial update.
   private toCommonAreaData(dto: CreateCommonAreaDto | UpdateCommonAreaDto) {
+    // CMA-010 (Phase 5): `nameKey` is no longer part of the write contract —
+    // the free-text `name` is the single source of truth for area naming.
     return {
       name: dto.name,
-      nameKey: dto.nameKey,
       description: dto.description,
       physicalLocation: dto.physicalLocation,
       status: dto.status,
@@ -295,5 +302,66 @@ export class InventoryService {
     });
     if (!item) throw new NotFoundException('Inventory item not found');
     return item;
+  }
+}
+
+// ─── Common Areas — server-side query builders (CMA-013) ───────────────────────
+
+// Builds the Prisma `where` for the common-areas list. Tenant isolation
+// (condominiumId) is always applied and is never derived from request input —
+// it comes from the route guard. Text filters use a case-insensitive substring
+// match, mirroring the residents-module convention.
+function buildCommonAreaWhere(
+  condominiumId: string,
+  dto: ListCommonAreasDto,
+): Prisma.CommonAreaWhereInput {
+  const and: Prisma.CommonAreaWhereInput[] = [];
+
+  if (dto.name) {
+    and.push({ name: { contains: dto.name, mode: 'insensitive' } });
+  }
+
+  if (dto.responsible) {
+    and.push({
+      responsiblePerson: { contains: dto.responsible, mode: 'insensitive' },
+    });
+  }
+
+  // `status` is already validated against CommonAreaStatus by the DTO's
+  // @IsEnum, so it is safe to apply directly as an exact match.
+  if (dto.status) {
+    and.push({ status: dto.status });
+  }
+
+  return {
+    condominiumId,
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+}
+
+// Maps the validated `sortBy` to a deterministic Prisma `orderBy`. A
+// client-supplied value never reaches Prisma directly: the DTO allow-list
+// (@IsIn) plus this switch are the two safety layers. `id` is appended as a
+// stable tiebreaker so pagination never skips or repeats a row.
+function buildCommonAreaOrderBy(
+  dto: ListCommonAreasDto,
+): Prisma.CommonAreaOrderByWithRelationInput[] {
+  const dir: Prisma.SortOrder = dto.sortDirection === 'desc' ? 'desc' : 'asc';
+  const tiebreaker: Prisma.CommonAreaOrderByWithRelationInput = { id: 'asc' };
+
+  switch (dto.sortBy) {
+    case 'status':
+      return [{ status: dir }, tiebreaker];
+    case 'responsiblePerson':
+      return [{ responsiblePerson: dir }, tiebreaker];
+    case 'physicalLocation':
+      return [{ physicalLocation: dir }, tiebreaker];
+    case 'createdAt':
+      return [{ createdAt: dir }, tiebreaker];
+    case 'updatedAt':
+      return [{ updatedAt: dir }, tiebreaker];
+    case 'name':
+    default:
+      return [{ name: dir }, tiebreaker];
   }
 }
