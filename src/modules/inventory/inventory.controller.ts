@@ -14,12 +14,18 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
+import { JwtPayload, UserRole } from '../../common/types';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { ListCommonAreasDto } from './dto/list-common-areas.dto';
 import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
+import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
 import { InventoryService } from './inventory.service';
+
+// `condominiumId` is set by CondominiumAccessGuard from the session-bound slug;
+// `user` is the authenticated JWT payload. Common-area mutations forward
+// `user.sub` so every audit row records the acting user.
+type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Inventory')
 @UseGuards(CondominiumAccessGuard, RolesGuard)
@@ -42,31 +48,41 @@ export class InventoryController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Create common area' })
   createArea(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Body() dto: CreateCommonAreaDto,
   ) {
-    return this.inventoryService.createArea(req.condominiumId, dto);
+    return this.inventoryService.createArea(
+      req.condominiumId,
+      req.user.sub,
+      dto,
+    );
   }
 
   @Patch('condominiums/:condominiumSlug/common-areas/:id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update common area' })
   updateArea(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') id: string,
-    @Body() dto: Partial<CreateCommonAreaDto>,
+    @Body() dto: UpdateCommonAreaDto,
   ) {
-    return this.inventoryService.updateArea(req.condominiumId, id, dto);
+    return this.inventoryService.updateArea(
+      req.condominiumId,
+      req.user.sub,
+      id,
+      dto,
+    );
   }
 
   @Delete('condominiums/:condominiumSlug/common-areas/:id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Delete common area' })
-  removeArea(
-    @Request() req: { condominiumId: string },
-    @Param('id') id: string,
-  ) {
-    return this.inventoryService.removeArea(req.condominiumId, id);
+  removeArea(@Request() req: AuthedRequest, @Param('id') id: string) {
+    return this.inventoryService.removeArea(
+      req.condominiumId,
+      req.user.sub,
+      id,
+    );
   }
 
   // ─── Inventory Items ──────────────────────────────────────────
