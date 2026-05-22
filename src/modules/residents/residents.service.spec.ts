@@ -777,3 +777,128 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
     });
   });
 });
+
+describe('ResidentsService — Phase 6 tests & maintainability', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: ResidentsService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('RES-017 — soft delete', () => {
+    it('soft-deletes by stamping deletedAt instead of hard-deleting the row', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(
+        makeResident({ deletedAt: new Date() }),
+      );
+
+      await service.remove(CONDOMINIUM_ID, USER_ID, RESIDENT_ID);
+
+      const updateArg = prisma.resident.update.mock.calls[0][0];
+      expect(updateArg.where).toEqual({ id: RESIDENT_ID });
+      expect(updateArg.data.deletedAt).toBeInstanceOf(Date);
+    });
+
+    it('scopes findAll to non-deleted rows so soft-deleted residents never surface', async () => {
+      await service.findAll(CONDOMINIUM_ID);
+
+      expect(prisma.resident.findMany.mock.calls[0][0].where.deletedAt).toBeNull();
+      expect(prisma.resident.count.mock.calls[0][0].where.deletedAt).toBeNull();
+    });
+
+    it('throws NotFoundException when deleting an already soft-deleted resident', async () => {
+      // remove() looks the resident up with deletedAt: null, so a row that is
+      // already soft-deleted is not found — it cannot be deleted twice.
+      prisma.resident.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.remove(CONDOMINIUM_ID, USER_ID, RESIDENT_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.resident.update).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RES-017 — audit before/after state content', () => {
+    it('records only afterState on create', async () => {
+      prisma.resident.findFirst.mockResolvedValue(null);
+      prisma.resident.create.mockResolvedValue(makeResident());
+
+      await service.create(CONDOMINIUM_ID, USER_ID, createResidentDto);
+
+      const auditArg = audit.log.mock.calls[0][0];
+      expect(auditArg.actionCategory).toBe('CREATE');
+      expect(auditArg.afterState).toBeDefined();
+      expect(auditArg).not.toHaveProperty('beforeState');
+    });
+
+    it('records both beforeState and afterState on update', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(
+        makeResident({ firstName: 'New' }),
+      );
+
+      await service.update(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, {
+        firstName: 'New',
+      });
+
+      const auditArg = audit.log.mock.calls[0][0];
+      expect(auditArg.actionCategory).toBe('UPDATE');
+      expect(auditArg.beforeState).toBeDefined();
+      expect(auditArg.afterState).toBeDefined();
+      expect(auditArg.beforeState).not.toEqual(auditArg.afterState);
+    });
+
+    it('records only beforeState on delete', async () => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+      prisma.resident.update.mockResolvedValue(
+        makeResident({ deletedAt: new Date() }),
+      );
+
+      await service.remove(CONDOMINIUM_ID, USER_ID, RESIDENT_ID);
+
+      const auditArg = audit.log.mock.calls[0][0];
+      expect(auditArg.actionCategory).toBe('DELETE');
+      expect(auditArg.beforeState).toBeDefined();
+      expect(auditArg).not.toHaveProperty('afterState');
+    });
+  });
+
+  describe('RES-019 — vehicle overflow is advisory-only', () => {
+    it('adds a vehicle even when the resident has no parking spots (no server enforcement)', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.vehicle.create.mockResolvedValue(makeVehicle());
+
+      await expect(
+        service.addVehicle(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, createVehicleDto),
+      ).resolves.toBeDefined();
+      expect(prisma.vehicle.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('RES-009 — residents past the former 500-row cap stay reachable', () => {
+    it('pages deep into the dataset with database-level skip/take', async () => {
+      prisma.resident.count.mockResolvedValue(1200);
+      prisma.resident.findMany.mockResolvedValue([]);
+
+      const result = await service.findAll(CONDOMINIUM_ID, {
+        page: 2,
+        limit: 500,
+      });
+
+      const findArg = prisma.resident.findMany.mock.calls[0][0];
+      expect(findArg.skip).toBe(500);
+      expect(findArg.take).toBe(500);
+      expect(result.meta).toEqual({
+        total: 1200,
+        page: 2,
+        limit: 500,
+        totalPages: 3,
+      });
+    });
+  });
+});
