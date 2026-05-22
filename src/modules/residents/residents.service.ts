@@ -40,6 +40,16 @@ const RESIDENT_INCLUDE = {
   additionalResidents: true,
 } satisfies Prisma.ResidentInclude;
 
+// The five boolean flags stored in Resident.documentation. Used to build the
+// JSON-path where clause for the complete / incomplete documentation filter.
+const DOCUMENTATION_KEYS = [
+  'propertyTax',
+  'titleDeed',
+  'ownerDocumentation',
+  'nationalId',
+  'proofOfAddress',
+] as const;
+
 @Injectable()
 export class ResidentsService {
   constructor(
@@ -55,30 +65,14 @@ export class ResidentsService {
     const limit = dto.limit ?? 500;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.ResidentWhereInput = {
-      condominiumId,
-      deletedAt: null,
-      ...(dto.paymentStatus ? { paymentStatus: dto.paymentStatus } : {}),
-      ...(dto.q
-        ? {
-            OR: [
-              { unitNumber: { contains: dto.q, mode: 'insensitive' } },
-              { firstName: { contains: dto.q, mode: 'insensitive' } },
-              { lastName: { contains: dto.q, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const where = buildResidentWhere(condominiumId, dto);
+    const orderBy = buildResidentOrderBy(dto);
 
     const [data, total] = await Promise.all([
       this.prisma.resident.findMany({
         where,
-        include: {
-          vehicles: true,
-          pets: true,
-          additionalResidents: true,
-        },
-        orderBy: { unitNumber: 'asc' },
+        include: RESIDENT_INCLUDE,
+        orderBy,
         skip,
         take: limit,
       }),
@@ -368,7 +362,7 @@ export class ResidentsService {
       await this.assertResidentInCondominium(tx, condominiumId, residentId);
 
       const pet = await tx.pet.create({
-        data: this.toPetCreateData(residentId, dto),
+        data: this.toPetCreateData(condominiumId, residentId, dto),
       });
 
       await this.audit.log(
@@ -400,7 +394,9 @@ export class ResidentsService {
     return this.prisma.$transaction(async (tx) => {
       await this.assertResidentInCondominium(tx, condominiumId, residentId);
 
-      const before = await tx.pet.findFirst({ where: { id: petId, residentId } });
+      const before = await tx.pet.findFirst({
+        where: { id: petId, residentId, condominiumId },
+      });
       if (!before) throw new NotFoundException('Pet not found');
 
       const updated = await tx.pet.update({
@@ -437,7 +433,9 @@ export class ResidentsService {
     return this.prisma.$transaction(async (tx) => {
       await this.assertResidentInCondominium(tx, condominiumId, residentId);
 
-      const before = await tx.pet.findFirst({ where: { id: petId, residentId } });
+      const before = await tx.pet.findFirst({
+        where: { id: petId, residentId, condominiumId },
+      });
       if (!before) throw new NotFoundException('Pet not found');
 
       const deleted = await tx.pet.delete({ where: { id: petId } });
@@ -663,10 +661,12 @@ export class ResidentsService {
   }
 
   private toPetCreateData(
+    condominiumId: string,
     residentId: string,
     dto: CreatePetDto,
   ): Prisma.PetUncheckedCreateInput {
     return {
+      condominiumId,
       residentId,
       name: dto.name,
       petType: dto.petType,
@@ -715,4 +715,143 @@ function isUniqueConstraintError(err: unknown): boolean {
   return (
     err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
   );
+}
+
+// Builds the Prisma where clause for the residents list. Every filter dimension
+// surfaced by the web table is translated to an indexed/database-level
+// condition — no row is ever loaded into memory to be filtered out. Tenant
+// isolation (condominiumId + deletedAt) is always applied and never derived
+// from request input.
+function buildResidentWhere(
+  condominiumId: string,
+  dto: ListResidentsDto,
+): Prisma.ResidentWhereInput {
+  const and: Prisma.ResidentWhereInput[] = [];
+
+  if (dto.q) {
+    and.push({
+      OR: [
+        { unitNumber: { contains: dto.q, mode: 'insensitive' } },
+        { firstName: { contains: dto.q, mode: 'insensitive' } },
+        { lastName: { contains: dto.q, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (dto.unitNumber) {
+    and.push(
+      dto.unitExact
+        ? { unitNumber: { equals: dto.unitNumber, mode: 'insensitive' } }
+        : { unitNumber: { contains: dto.unitNumber, mode: 'insensitive' } },
+    );
+  }
+
+  if (dto.name) {
+    and.push({
+      OR: [
+        { firstName: { contains: dto.name, mode: 'insensitive' } },
+        { lastName: { contains: dto.name, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (dto.phone) {
+    and.push({
+      OR: [
+        { phone: { contains: dto.phone, mode: 'insensitive' } },
+        { secondaryPhone: { contains: dto.phone, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (dto.email) {
+    and.push({ email: { contains: dto.email, mode: 'insensitive' } });
+  }
+
+  if (dto.residentType) and.push({ residentType: dto.residentType });
+  if (dto.paymentStatus) and.push({ paymentStatus: dto.paymentStatus });
+  if (dto.minDebt !== undefined) and.push({ debt: { gte: dto.minDebt } });
+
+  if (dto.dateFrom || dto.dateTo) {
+    const updatedAt: Prisma.DateTimeFilter = {};
+    if (dto.dateFrom) updatedAt.gte = dayStartUtc(dto.dateFrom);
+    if (dto.dateTo) updatedAt.lte = dayEndUtc(dto.dateTo);
+    and.push({ updatedAt });
+  }
+
+  if (dto.hasVehicles !== undefined) {
+    and.push(
+      dto.hasVehicles ? { vehicles: { some: {} } } : { vehicles: { none: {} } },
+    );
+  }
+
+  // hasTag=false also matches residents with no vehicles at all — they own
+  // zero tagged vehicles, which is what the "no tag" table filter means.
+  if (dto.hasTag !== undefined) {
+    and.push(
+      dto.hasTag
+        ? { vehicles: { some: { hasTag: true } } }
+        : { vehicles: { none: { hasTag: true } } },
+    );
+  }
+
+  if (dto.hasPets !== undefined) {
+    and.push(dto.hasPets ? { pets: { some: {} } } : { pets: { none: {} } });
+  }
+
+  if (dto.documentation) {
+    const allComplete: Prisma.ResidentWhereInput = {
+      AND: DOCUMENTATION_KEYS.map((key) => ({
+        documentation: { path: [key], equals: true },
+      })),
+    };
+    and.push(
+      dto.documentation === 'complete' ? allComplete : { NOT: allComplete },
+    );
+  }
+
+  return {
+    condominiumId,
+    deletedAt: null,
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+}
+
+// Maps the table's sort column to a deterministic Prisma orderBy. `id` is
+// always appended as a stable tiebreaker so pagination never skips or repeats
+// rows. unitNumber sorts lexicographically (it is a String column); natural
+// numeric ordering is a documented Phase 6 follow-up.
+function buildResidentOrderBy(
+  dto: ListResidentsDto,
+): Prisma.ResidentOrderByWithRelationInput[] {
+  const dir: Prisma.SortOrder = dto.sortDirection === 'desc' ? 'desc' : 'asc';
+  const tiebreaker: Prisma.ResidentOrderByWithRelationInput = { id: 'asc' };
+
+  switch (dto.sortBy) {
+    case 'name':
+      return [{ lastName: dir }, { firstName: dir }, tiebreaker];
+    case 'email':
+      return [{ email: dir }, tiebreaker];
+    case 'paymentStatus':
+      return [{ paymentStatus: dir }, tiebreaker];
+    case 'debt':
+      return [{ debt: dir }, tiebreaker];
+    case 'parkingSpots':
+      return [{ parkingSpots: dir }, tiebreaker];
+    case 'lastModified':
+      return [{ updatedAt: dir }, tiebreaker];
+    case 'unitNumber':
+    default:
+      return [{ unitNumber: dir }, tiebreaker];
+  }
+}
+
+// ISO date strings from the client are date-only (YYYY-MM-DD). Convert to the
+// inclusive UTC day bounds so the updatedAt range covers the whole day.
+function dayStartUtc(isoDate: string): Date {
+  return new Date(`${isoDate.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function dayEndUtc(isoDate: string): Date {
+  return new Date(`${isoDate.slice(0, 10)}T23:59:59.999Z`);
 }

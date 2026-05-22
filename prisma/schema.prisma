@@ -295,6 +295,7 @@ model Condominium {
   users                            User[]
   residents                        Resident[]
   vehicles                         Vehicle[]
+  pets                              Pet[]
   pettyCashMovements               PettyCashMovement[]
   commonAreas                      CommonArea[]
   inventoryItems                   InventoryItem[]
@@ -526,17 +527,20 @@ model Vehicle {
 }
 
 model Pet {
-  id          String   @id @default(uuid())
-  residentId  String
-  name        String
-  petType     PetType  @default(OTHER)
-  description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(uuid())
+  residentId    String
+  condominiumId String
+  name          String
+  petType       PetType  @default(OTHER)
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  resident Resident @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  resident    Resident    @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
 
   @@index([residentId])
+  @@index([condominiumId])
   @@map("pets")
 }
 
