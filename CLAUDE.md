@@ -8,7 +8,7 @@ Multi-tenant condominium management SaaS REST API. Each condominium is an isolat
 - **Framework**: NestJS 10 + Fastify adapter (not Express)
 - **Language**: TypeScript 5.8 strict (`noImplicitAny`, `strictNullChecks`)
 - **ORM**: Prisma 6.8 → PostgreSQL (Neon)
-- **Auth**: passport-jwt + bcrypt 12 rounds + in-DB refresh tokens
+- **Auth**: passport-jwt + bcryptjs (12 rounds) + in-DB refresh tokens
 - **Validation**: class-validator + class-transformer (global ValidationPipe)
 - **Docs**: Swagger/OpenAPI at `GET /docs`
 - **Module alias**: `@/*` → `src/*`
@@ -16,7 +16,7 @@ Multi-tenant condominium management SaaS REST API. Each condominium is an isolat
 ## Folder Structure
 ```
 src/
-├── main.ts              bootstrap (Fastify, CORS, ValidationPipe, Swagger)
+├── main.ts              bootstrap (Fastify, Helmet, CORS, ValidationPipe, Swagger)
 ├── app.module.ts        global APP_FILTER + APP_GUARD + APP_INTERCEPTOR
 ├── config/              app | cors | database | jwt  (all use registerAs())
 ├── common/
@@ -31,11 +31,30 @@ src/
 ```
 
 ## Feature Modules (`src/modules/`)
-`auth` `users` `residents` `condominiums` `collection` `petty-cash`
-`inventory` `settings` `audit` `dashboard` `reports` `imports` `notifications`
-`classification` `storage` (Cloudflare R2 file uploads)
 
-Each module: `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`
+All 21 modules — each is `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`:
+
+- `auth` — login, JWT issue/refresh, password reset
+- `users` — platform and tenant user accounts
+- `condominiums` — tenant records and access
+- `residents` — residents and pets; server-side filtering/sorting
+- `settings` — per-condominium configuration (`CondominiumSettings`)
+- `transactions` — bank/financial transactions (core financial data)
+- `imports` — Excel bank-export ingestion pipeline
+- `classification` — rule-driven transaction classification engine
+- `reconciliation-rules` — DB-driven reconciliation rules feeding classification
+- `bank-profiles` — per-tenant bank-export column aliases / formats
+- `collection` — payment collection and status tracking
+- `petty-cash` — petty-cash movements with per-tenant folios
+- `dashboard` — aggregated financial KPIs and summaries
+- `reports` — financial reports
+- `inventory` — common-area inventory items
+- `calendar` — calendar events and terrace bookings
+- `notifications` — in-app notifications and SSE feed
+- `email` — transactional email via Resend
+- `whatsapp` — WhatsApp messaging, conversations, FAQ, media
+- `audit` — append-only audit logging
+- `storage` — Cloudflare R2 file uploads
 
 ## Request Pipeline (applied globally in app.module.ts)
 1. `GlobalExceptionFilter` — normalizes all thrown exceptions
@@ -44,11 +63,13 @@ Each module: `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`
 
 ## Auth & Authorization
 
-**Endpoints** (all `@Public()`):
-- `POST /auth/login` — returns `accessToken` (15m) + `refreshToken` (7d)
-- `POST /auth/refresh` — token rotation; old token revoked via `revokedAt`
-- `POST /auth/logout` — revokes refresh token in DB
-- `GET /auth/me` — protected
+**Endpoints**:
+- `POST /auth/login` — `@Public`; returns `accessToken` (15m) + `refreshToken` (7d)
+- `POST /auth/refresh` — `@Public`; token rotation, old token revoked via `revokedAt`
+- `POST /auth/logout` — `@Public`; revokes the refresh token in DB
+- `POST /auth/forgot-password` — `@Public`; issues a password-reset token
+- `POST /auth/reset-password` — `@Public`; consumes the token, sets a new password
+- `GET /auth/me` — protected; returns the current user
 
 **JwtPayload shape**:
 ```ts
@@ -93,7 +114,7 @@ NestJS exception classes map to HTTP codes: `NotFoundException` → 404, `Confli
 - **DTO validation** — every input DTO uses class-validator decorators + Swagger `@ApiProperty`; ValidationPipe is `whitelist: true`, `transform: true` (`forbidNonWhitelisted` intentionally removed — caused false 400s on valid requests)
 - **Config** — each config file uses `registerAs('key', () => ({...}))`; `ConfigModule` is global
 - **File uploads** — `@fastify/multipart`; 20 MB max per file, 5 files max
-- **Password hashing** — bcrypt with `SALT_ROUNDS = 12` (defined inline in auth + users services)
+- **Password hashing** — `bcryptjs` with `SALT_ROUNDS = 12` (inline in auth + users services; `bcryptjs`, not `bcrypt`, for Vercel serverless compatibility)
 - **Refresh token storage** — `RefreshToken` model; revocation via `revokedAt` field
 
 ## Endpoint & Data Access Standards
@@ -106,7 +127,7 @@ Invariants from the v1 API Performance & Risk Review (see `docs/api-review/v1/20
 - **Time-bounded endpoints** (`/calendar/events`, `/transactions`, `/audit/logs`) require validated `from`/`to` in the DTO; the service enforces the overlap predicate (`startDate < to AND endDate > from`).
 - **Batched DB access.** When N items each need a DB lookup (e.g. SHA-256 dedup during import), issue ONE `findMany({ where: { x: { in: [...] } } })` and resolve from an in-memory map. Never loop with sequential `await` lookups.
 - **Concurrency on unique constraints.** Tenant-scoped sequential identifiers (e.g. `PettyCashMovement.folio` with `@@unique([condominiumId, folio])`) wrap `count + create` in a bounded retry that catches `Prisma.PrismaClientKnownRequestError` with `code === 'P2002'` and throws `ConflictException` after the cap. Reference: `petty-cash.service.ts:82-117` (`MAX_FOLIO_RETRIES = 5`).
-- **Throttling.** `@Throttle({ burst, sustained })` on endpoints whose work scales with payload (bulk reconcile, bulk classify, import process). Reference: `classification.controller.ts:146-150`.
+- **Throttling.** `@Throttle({ burst, sustained })` on endpoints whose work scales with payload (bulk reconcile, bulk classify, import process). Reference: the bulk endpoints in `classification.controller.ts`. The global `ThrottlerUserGuard` (`app.module.ts`) also applies a per-user burst/sustained limit.
 - **Logging.** NestJS `Logger` only — never `console.*`. Instantiate per service: `private readonly logger = new Logger(ServiceName.name);`.
 - **Swagger.** Off in production (`if (process.env.NODE_ENV !== 'production')` in `main.ts`).
 
@@ -140,6 +161,23 @@ npm run prisma:deploy     prisma migrate deploy (CI/production)
 npm run prisma:seed       ts-node prisma/seed.ts
 ```
 
+## Seed Data / Dev Credentials
+
+`npm run prisma:seed` (`prisma/seed.ts`) populates 10 test condominiums with users,
+residents, common areas, inventory, and bank data. Login accounts follow a fixed pattern:
+
+| Account | Email | Password | Role |
+|---|---|---|---|
+| Platform root | `root@demo.com` | `Root1234!` | `ROOT` |
+| Tenant admin | `admin@<slug>.com` | `Admin1234!` | `TENANT_ADMIN` |
+| Read-only viewer | `view@<slug>.com` | `View1234!` | `READ_ONLY` |
+| Guard | `guard@<slug>.com` | `Guard1234!` | `GUARD` |
+
+Condominium slugs: `cotoalameda` · `cotolospatos` · `cotoencinos` · `bosquesdellago` ·
+`cotovalledorado` · `vistaroble` · `puertadelsol` · `jardinesdelvalley` ·
+`altosdelparque` · `senderosdelsbosque`. Not every condominium seeds all four account
+types and some accounts are seeded inactive — see `prisma/seed.ts` for the exact matrix.
+
 ## Git & Version Control Rules
 
 **Commits and pushes are NEVER performed automatically — no exceptions.**
@@ -166,15 +204,12 @@ addressed>
 - Do not use conventional commit type prefixes (e.g. `feat:`, `fix:`) unless the user explicitly requests them.
 
 ## Web App Companion
-The Next.js frontend lives at `~/Code/github/livoclouds/livo-clouds-web-app`.
+The Next.js frontend lives at `~/code/github/livoclouds/livo-clouds-web-app`.
 
 **Cross-repo rule**: When adding or changing an API endpoint that the web consumes, open the web repo and update the corresponding Next.js route handler and API client type. When the web adds a new proxy route, verify the API endpoint exists and the payload shape matches.
 
-**Web app read permission**: Claude has standing permission to read any file in `~/Code/github/livoclouds/livo-clouds-web-app` without asking.
+**Web app read permission**: Claude has standing permission to read any file in `~/code/github/livoclouds/livo-clouds-web-app` without asking.
 
 ## Known Gaps
-- No Helmet (no HTTP security headers)
-- No rate limiting
-- No dedicated logging library (NestJS built-in Logger + Fastify `logger: true`)
-- Zero test files exist (Jest configured but no specs written)
+- No dedicated logging library (NestJS built-in Logger + Fastify `logger: true`).
 - No APM / slow-query log / `pg_stat_statements` / Prisma `$on('query')` instrumentation. Phase 8 (deferred index hardening) re-opens only when one of these provides measurement signal.
