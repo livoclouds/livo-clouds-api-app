@@ -73,6 +73,8 @@ function makeArea(overrides: Record<string, unknown> = {}): Record<string, unkno
     responsiblePerson: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
+    createdBy: null,
+    updatedBy: null,
     inventoryItems: [],
     ...overrides,
   };
@@ -247,6 +249,115 @@ describe('InventoryService — Common Areas (Phase 1 safety net)', () => {
       ).rejects.toThrow(NotFoundException);
       expect(prisma.inventoryItem.count).not.toHaveBeenCalled();
       expect(prisma.commonArea.deleteMany).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('InventoryService — Common Areas (Phase 2 audit-trail contract)', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: InventoryService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('createArea', () => {
+    it('persists createdBy and updatedBy from the acting user', async () => {
+      prisma.commonArea.create.mockResolvedValue(
+        makeArea({ createdBy: USER_ID, updatedBy: USER_ID }),
+      );
+
+      await service.createArea(CONDOMINIUM_ID, USER_ID, {
+        name: 'Rooftop Terrace',
+      });
+
+      expect(prisma.commonArea.create).toHaveBeenCalledTimes(1);
+      const data = prisma.commonArea.create.mock.calls[0][0].data;
+      // On create both actor fields record the creator.
+      expect(data.createdBy).toBe(USER_ID);
+      expect(data.updatedBy).toBe(USER_ID);
+    });
+
+    // CMA-006 / CMA-003: createdBy / updatedBy are API-owned. A create body
+    // carrying them must never reach Prisma — the allow-listed mapper drops
+    // them and the session user is the only source.
+    it('ignores createdBy / updatedBy supplied in the create body', async () => {
+      prisma.commonArea.create.mockResolvedValue(makeArea());
+
+      const maliciousBody = {
+        name: 'Rooftop Terrace',
+        createdBy: 'attacker-user',
+        updatedBy: 'attacker-user',
+      } as unknown as CreateCommonAreaDto;
+
+      await service.createArea(CONDOMINIUM_ID, USER_ID, maliciousBody);
+
+      const data = prisma.commonArea.create.mock.calls[0][0].data;
+      expect(data.createdBy).toBe(USER_ID);
+      expect(data.updatedBy).toBe(USER_ID);
+    });
+  });
+
+  describe('updateArea', () => {
+    it('persists updatedBy from the acting user and never writes createdBy', async () => {
+      prisma.commonArea.findFirst
+        .mockResolvedValueOnce(makeArea())
+        .mockResolvedValueOnce(
+          makeArea({ name: 'Renamed', updatedBy: USER_ID }),
+        );
+
+      await service.updateArea(CONDOMINIUM_ID, USER_ID, AREA_ID, {
+        name: 'Renamed',
+      });
+
+      expect(prisma.commonArea.updateMany).toHaveBeenCalledTimes(1);
+      const data = prisma.commonArea.updateMany.mock.calls[0][0].data;
+      expect(data.updatedBy).toBe(USER_ID);
+      // createdBy is immutable after creation — an update must not touch it.
+      expect(data).not.toHaveProperty('createdBy');
+    });
+
+    // CMA-006 / CMA-003: a PATCH body carrying createdBy / updatedBy must not
+    // override the session-derived actor.
+    it('ignores createdBy / updatedBy supplied in the update body', async () => {
+      prisma.commonArea.findFirst
+        .mockResolvedValueOnce(makeArea())
+        .mockResolvedValueOnce(makeArea({ name: 'Renamed' }));
+
+      const maliciousBody = {
+        name: 'Renamed',
+        createdBy: 'attacker-user',
+        updatedBy: 'attacker-user',
+      } as unknown as UpdateCommonAreaDto;
+
+      await service.updateArea(CONDOMINIUM_ID, USER_ID, AREA_ID, maliciousBody);
+
+      const data = prisma.commonArea.updateMany.mock.calls[0][0].data;
+      expect(data.updatedBy).toBe(USER_ID);
+      expect(data).not.toHaveProperty('createdBy');
+    });
+  });
+
+  describe('findAllAreas', () => {
+    it('returns rows carrying all four audit fields in the data/meta envelope', async () => {
+      const area = makeArea({ createdBy: USER_ID, updatedBy: USER_ID });
+      prisma.commonArea.findMany.mockResolvedValueOnce([area]);
+      prisma.commonArea.count.mockResolvedValueOnce(1);
+
+      const result = await service.findAllAreas(CONDOMINIUM_ID);
+
+      expect(result.meta).toEqual(
+        expect.objectContaining({ total: 1, page: 1 }),
+      );
+      const row = result.data[0] as Record<string, unknown>;
+      // The list contract exposes createdAt, updatedAt, createdBy, updatedBy.
+      expect(row).toHaveProperty('createdAt');
+      expect(row).toHaveProperty('updatedAt');
+      expect(row.createdBy).toBe(USER_ID);
+      expect(row.updatedBy).toBe(USER_ID);
     });
   });
 });

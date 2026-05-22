@@ -589,6 +589,11 @@ model CommonArea {
   responsiblePerson String?
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+  // Audit-trail actor ids (the JWT `sub` of the acting user). API-owned: set
+  // from the session on create/update, never accepted from the request body.
+  // Nullable so rows created before this column existed remain valid.
+  createdBy         String?
+  updatedBy         String?
 
   condominium    Condominium     @relation(fields: [condominiumId], references: [id])
   inventoryItems InventoryItem[]
