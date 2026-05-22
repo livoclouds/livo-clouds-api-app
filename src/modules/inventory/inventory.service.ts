@@ -85,7 +85,17 @@ export class InventoryService {
     return this.prisma.$transaction(async (tx) => {
       const created = await tx.commonArea.create({
         // `name` is re-read from the create DTO so its type stays required.
-        data: { ...this.toCommonAreaData(dto), name: dto.name, condominiumId },
+        // `createdBy` / `updatedBy` are API-owned audit fields — set from the
+        // session user, never the request body, and appended outside the
+        // allow-listed mapper. On create both record the creator, mirroring how
+        // Prisma's `@updatedAt` makes `updatedAt` equal `createdAt` at creation.
+        data: {
+          ...this.toCommonAreaData(dto),
+          name: dto.name,
+          condominiumId,
+          createdBy: userId,
+          updatedBy: userId,
+        },
       });
 
       await this.audit.log(
@@ -121,10 +131,12 @@ export class InventoryService {
       if (!before) throw new NotFoundException('Common area not found');
 
       // updateMany keeps the `{ id, condominiumId }` filter structural, so
-      // tenant scope does not rely on the read above alone.
+      // tenant scope does not rely on the read above alone. `updatedBy` is an
+      // API-owned audit field — set from the session user and appended outside
+      // the allow-listed mapper so a request body can never override it.
       await tx.commonArea.updateMany({
         where: { id, condominiumId },
-        data: this.toCommonAreaData(dto),
+        data: { ...this.toCommonAreaData(dto), updatedBy: userId },
       });
 
       const updated = await tx.commonArea.findFirst({
