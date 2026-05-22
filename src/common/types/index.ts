@@ -6,6 +6,13 @@ export enum UserRole {
   NEIGHBOR = 'NEIGHBOR',
 }
 
+export enum OnboardingStatus {
+  NOT_STARTED = 'NOT_STARTED',
+  IN_PROGRESS = 'IN_PROGRESS',
+  COMPLETED = 'COMPLETED',
+  SKIPPED = 'SKIPPED',
+}
+
 export interface JwtPayload {
   sub: string;
   email: string;

@@ -9,13 +9,14 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../email/email.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateOnboardingDto } from './dto/update-onboarding.dto';
 
 interface AuthContext {
   ipAddress?: string;
@@ -455,6 +456,80 @@ export class AuthService {
       avatarUrl: user.avatarUrl,
       phone: user.phone,
       condominium: user.condominium ?? null,
+    };
+  }
+
+  async getOnboarding(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true, deletedAt: null },
+      select: {
+        onboardingStatus: true,
+        onboardingStep: true,
+        onboardingCompletedAt: true,
+        onboardingSkippedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return {
+      status: user.onboardingStatus,
+      step: user.onboardingStep,
+      completedAt: user.onboardingCompletedAt,
+      skippedAt: user.onboardingSkippedAt,
+    };
+  }
+
+  async updateOnboarding(userId: string, dto: UpdateOnboardingDto) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const data: {
+      onboardingStatus?: OnboardingStatus;
+      onboardingStep?: number;
+      onboardingCompletedAt?: Date;
+      onboardingSkippedAt?: Date;
+    } = {};
+
+    if (dto.status !== undefined) {
+      data.onboardingStatus = dto.status;
+      // Seal the matching timestamp the first time the tour is finished or
+      // skipped; replaying the tour later simply refreshes it.
+      if (dto.status === OnboardingStatus.COMPLETED) {
+        data.onboardingCompletedAt = new Date();
+      } else if (dto.status === OnboardingStatus.SKIPPED) {
+        data.onboardingSkippedAt = new Date();
+      }
+    }
+
+    if (dto.step !== undefined) {
+      data.onboardingStep = dto.step;
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: {
+        onboardingStatus: true,
+        onboardingStep: true,
+        onboardingCompletedAt: true,
+        onboardingSkippedAt: true,
+      },
+    });
+
+    return {
+      status: updated.onboardingStatus,
+      step: updated.onboardingStep,
+      completedAt: updated.onboardingCompletedAt,
+      skippedAt: updated.onboardingSkippedAt,
     };
   }
 
