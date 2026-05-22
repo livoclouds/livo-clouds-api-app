@@ -352,13 +352,6 @@ model CondominiumSettings {
   allowedFilePdf    Boolean @default(true)
   allowedFileExcel  Boolean @default(true)
 
-  // Notifications
-  notifyNegativeBalance Boolean @default(true)
-  notifyNewFileImported Boolean @default(true)
-  notifyImportError     Boolean @default(true)
-  notifyNewUser         Boolean @default(true)
-  notifyNewIncident     Boolean @default(true)
-
   // Terrace Booking
   terraceBookingEnabled        Boolean  @default(true)
   terraceRentalAmount          Decimal  @default(1500) @db.Decimal(12, 2)

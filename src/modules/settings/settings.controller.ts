@@ -77,21 +77,4 @@ export class SettingsController {
   validateFees(@Request() req: { condominiumId: string }) {
     return this.settingsService.validateFeesConfigured(req.condominiumId);
   }
-
-  @Patch('notifications')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
-  @ApiOperation({ summary: 'Update notification preferences' })
-  updateNotifications(
-    @Request() req: { condominiumId: string },
-    @Body()
-    dto: {
-      notifyNegativeBalance?: boolean;
-      notifyNewFileImported?: boolean;
-      notifyImportError?: boolean;
-      notifyNewUser?: boolean;
-      notifyNewIncident?: boolean;
-    },
-  ) {
-    return this.settingsService.updateNotifications(req.condominiumId, dto);
-  }
 }
