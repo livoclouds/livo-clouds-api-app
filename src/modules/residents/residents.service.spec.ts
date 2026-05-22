@@ -603,3 +603,177 @@ describe('ResidentsService — Phase 2 API contract completion', () => {
     });
   });
 });
+
+describe('ResidentsService — Phase 5 scale & consistency', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: ResidentsService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('RES-009 — server-side pagination, filtering & sorting', () => {
+    it('applies database-level skip/take and a deterministic default order', async () => {
+      await service.findAll(CONDOMINIUM_ID, { page: 3, limit: 25 });
+
+      const findArg = prisma.resident.findMany.mock.calls[0][0];
+      expect(findArg.skip).toBe(50);
+      expect(findArg.take).toBe(25);
+      expect(findArg.orderBy).toEqual([{ unitNumber: 'asc' }, { id: 'asc' }]);
+      expect(findArg.where).toEqual({
+        condominiumId: CONDOMINIUM_ID,
+        deletedAt: null,
+      });
+    });
+
+    it('always scopes the query to the tenant and excludes soft-deleted rows', async () => {
+      await service.findAll(CONDOMINIUM_ID, { q: 'A1', paymentStatus: PaymentStatus.OVERDUE });
+
+      const where = prisma.resident.findMany.mock.calls[0][0].where;
+      expect(where.condominiumId).toBe(CONDOMINIUM_ID);
+      expect(where.deletedAt).toBeNull();
+      expect(where.AND).toEqual(
+        expect.arrayContaining([
+          { paymentStatus: PaymentStatus.OVERDUE },
+          {
+            OR: [
+              { unitNumber: { contains: 'A1', mode: 'insensitive' } },
+              { firstName: { contains: 'A1', mode: 'insensitive' } },
+              { lastName: { contains: 'A1', mode: 'insensitive' } },
+            ],
+          },
+        ]),
+      );
+    });
+
+    it('translates table filters into database conditions', async () => {
+      await service.findAll(CONDOMINIUM_ID, {
+        unitNumber: 'A01',
+        unitExact: true,
+        minDebt: 500,
+        hasVehicles: true,
+        hasTag: false,
+        hasPets: false,
+      });
+
+      const where = prisma.resident.findMany.mock.calls[0][0].where;
+      expect(where.AND).toEqual(
+        expect.arrayContaining([
+          { unitNumber: { equals: 'A01', mode: 'insensitive' } },
+          { debt: { gte: 500 } },
+          { vehicles: { some: {} } },
+          { vehicles: { none: { hasTag: true } } },
+          { pets: { none: {} } },
+        ]),
+      );
+    });
+
+    it('builds a JSON-path clause for the documentation completeness filter', async () => {
+      await service.findAll(CONDOMINIUM_ID, { documentation: 'complete' });
+
+      const where = prisma.resident.findMany.mock.calls[0][0].where;
+      expect(where.AND).toContainEqual({
+        AND: [
+          { documentation: { path: ['propertyTax'], equals: true } },
+          { documentation: { path: ['titleDeed'], equals: true } },
+          { documentation: { path: ['ownerDocumentation'], equals: true } },
+          { documentation: { path: ['nationalId'], equals: true } },
+          { documentation: { path: ['proofOfAddress'], equals: true } },
+        ],
+      });
+    });
+
+    it('negates the documentation clause for the incomplete filter', async () => {
+      await service.findAll(CONDOMINIUM_ID, { documentation: 'incomplete' });
+
+      const where = prisma.resident.findMany.mock.calls[0][0].where;
+      const docClause = where.AND.find(
+        (c: Record<string, unknown>) => 'NOT' in c,
+      );
+      expect(docClause).toBeDefined();
+      expect(docClause.NOT.AND).toHaveLength(5);
+    });
+
+    it('maps sortBy/sortDirection to a deterministic orderBy with a tiebreaker', async () => {
+      await service.findAll(CONDOMINIUM_ID, { sortBy: 'debt', sortDirection: 'desc' });
+
+      const orderBy = prisma.resident.findMany.mock.calls[0][0].orderBy;
+      expect(orderBy).toEqual([{ debt: 'desc' }, { id: 'asc' }]);
+    });
+
+    it('sorts by composite name fields when sortBy is name', async () => {
+      await service.findAll(CONDOMINIUM_ID, { sortBy: 'name', sortDirection: 'asc' });
+
+      const orderBy = prisma.resident.findMany.mock.calls[0][0].orderBy;
+      expect(orderBy).toEqual([
+        { lastName: 'asc' },
+        { firstName: 'asc' },
+        { id: 'asc' },
+      ]);
+    });
+
+    it('returns pagination meta computed from the total count', async () => {
+      prisma.resident.count.mockResolvedValue(57);
+      prisma.resident.findMany.mockResolvedValue([]);
+
+      const result = await service.findAll(CONDOMINIUM_ID, { page: 2, limit: 25 });
+
+      expect(result.meta).toEqual({
+        total: 57,
+        page: 2,
+        limit: 25,
+        totalPages: 3,
+      });
+    });
+
+    it('counts with the same where clause it queries with', async () => {
+      await service.findAll(CONDOMINIUM_ID, { q: 'Lopez' });
+
+      const findWhere = prisma.resident.findMany.mock.calls[0][0].where;
+      const countWhere = prisma.resident.count.mock.calls[0][0].where;
+      expect(countWhere).toEqual(findWhere);
+    });
+  });
+
+  describe('RES-012 — pet tenant-isolation depth', () => {
+    it('stores condominiumId when a pet is created', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.pet.create.mockResolvedValue(makePet());
+
+      await service.addPet(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, createPetDto);
+
+      const createArg = prisma.pet.create.mock.calls[0][0];
+      expect(createArg.data).toHaveProperty('condominiumId', CONDOMINIUM_ID);
+      expect(createArg.data).toHaveProperty('residentId', RESIDENT_ID);
+    });
+
+    it('filters by condominiumId when updating a pet', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.pet.findFirst.mockResolvedValue(makePet());
+      prisma.pet.update.mockResolvedValue(makePet({ name: 'Rex' }));
+
+      await service.updatePet(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, PET_ID, {
+        name: 'Rex',
+      });
+
+      expect(prisma.pet.findFirst).toHaveBeenCalledWith({
+        where: { id: PET_ID, residentId: RESIDENT_ID, condominiumId: CONDOMINIUM_ID },
+      });
+    });
+
+    it('filters by condominiumId when removing a pet', async () => {
+      prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
+      prisma.pet.findFirst.mockResolvedValue(makePet());
+      prisma.pet.delete.mockResolvedValue(makePet());
+
+      await service.removePet(CONDOMINIUM_ID, USER_ID, RESIDENT_ID, PET_ID);
+
+      expect(prisma.pet.findFirst).toHaveBeenCalledWith({
+        where: { id: PET_ID, residentId: RESIDENT_ID, condominiumId: CONDOMINIUM_ID },
+      });
+    });
+  });
+});
