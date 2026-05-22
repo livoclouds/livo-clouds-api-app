@@ -9,15 +9,13 @@ export enum CommonAreaStatusDto {
 }
 
 export class CreateCommonAreaDto {
+  // CMA-010 (Phase 5): the free-text `name` is the single source of truth for
+  // common-area naming. The legacy `nameKey` i18n-catalogue field was removed
+  // from this DTO — the API no longer accepts or persists it.
   @ApiProperty({ example: 'Gym' })
   @IsString()
   @MinLength(1)
   name: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  nameKey?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

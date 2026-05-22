@@ -590,6 +590,11 @@ model CommonArea {
   id                String           @id @default(uuid())
   condominiumId     String
   name              String
+  // DEPRECATED (CMA-010, Phase 5): common areas use the free-text `name` as the
+  // single source of truth. `nameKey` is no longer written or read by the API
+  // or the web client. The column is intentionally kept (nullable) to avoid a
+  // data-loss migration; it can be dropped in a future, dedicated migration
+  // once confirmed unused across all environments.
   nameKey           String?
   description       String?
   physicalLocation  String?
