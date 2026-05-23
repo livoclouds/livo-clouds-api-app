@@ -264,17 +264,18 @@ export class InventoryService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 200;
     const skip = (page - 1) * limit;
-    // INV-012: soft-deleted rows are excluded from every read path. The filter
-    // is structural — applied here, in findItemOrFail, and in the read-back
-    // queries inside update/remove — so deleted items disappear from the API
-    // surface while remaining forensically recoverable in the database.
-    const where = { condominiumId, deletedAt: null };
+    // INV-010 (Phase 5): filtering and sorting run in the database. `where`
+    // always includes the structural tenant scope + soft-delete filter (see
+    // INV-012); `orderBy` only ever uses the allow-listed column mapping.
+    // `count` reuses the same `where` so `meta` reflects the filtered total.
+    const where = buildInventoryItemWhere(condominiumId, query);
+    const orderBy = buildInventoryItemOrderBy(query);
 
     const [data, total] = await Promise.all([
       this.prisma.inventoryItem.findMany({
         where,
         include: { commonArea: { select: { id: true, name: true } } },
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip,
         take: limit,
       }),
@@ -513,5 +514,84 @@ function buildCommonAreaOrderBy(
     case 'name':
     default:
       return [{ name: dir }, tiebreaker];
+  }
+}
+
+// ─── Inventory Items — server-side query builders (INV-010) ────────────────────
+
+// Builds the Prisma `where` for the inventory-items list. Tenant isolation
+// (condominiumId) and soft-delete visibility (deletedAt: null) are always
+// applied and are never derived from request input. Text filters use a
+// case-insensitive substring match; enum and UUID filters are exact matches.
+function buildInventoryItemWhere(
+  condominiumId: string,
+  dto: ListInventoryItemsDto,
+): Prisma.InventoryItemWhereInput {
+  const and: Prisma.InventoryItemWhereInput[] = [];
+
+  if (dto.name) {
+    and.push({ name: { contains: dto.name, mode: 'insensitive' } });
+  }
+
+  // `category` and `condition` are validated against InventoryCategoryDto /
+  // InventoryConditionDto by the DTO's @IsEnum, so they are safe to apply
+  // directly as exact matches.
+  if (dto.category) {
+    and.push({ category: dto.category });
+  }
+
+  if (dto.condition) {
+    and.push({ condition: dto.condition });
+  }
+
+  if (dto.commonAreaId) {
+    and.push({ commonAreaId: dto.commonAreaId });
+  }
+
+  if (dto.purchaseDateFrom || dto.purchaseDateTo) {
+    const range: Prisma.DateTimeNullableFilter = {};
+    if (dto.purchaseDateFrom) range.gte = new Date(dto.purchaseDateFrom);
+    if (dto.purchaseDateTo) range.lte = new Date(dto.purchaseDateTo);
+    and.push({ purchaseDate: range });
+  }
+
+  return {
+    condominiumId,
+    deletedAt: null,
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+}
+
+// Maps the validated `sortBy` to a deterministic Prisma `orderBy`. A
+// client-supplied value never reaches Prisma directly: the DTO allow-list
+// (@IsIn) plus this switch are the two safety layers. `id` is appended as a
+// stable tiebreaker so pagination never skips or repeats a row when two rows
+// share the primary sort value.
+function buildInventoryItemOrderBy(
+  dto: ListInventoryItemsDto,
+): Prisma.InventoryItemOrderByWithRelationInput[] {
+  const dir: Prisma.SortOrder = dto.sortDirection === 'asc' ? 'asc' : 'desc';
+  const tiebreaker: Prisma.InventoryItemOrderByWithRelationInput = {
+    id: 'asc',
+  };
+
+  switch (dto.sortBy) {
+    case 'name':
+      return [{ name: dir }, tiebreaker];
+    case 'category':
+      return [{ category: dir }, tiebreaker];
+    case 'condition':
+      return [{ condition: dir }, tiebreaker];
+    case 'quantity':
+      return [{ quantity: dir }, tiebreaker];
+    case 'purchaseDate':
+      return [{ purchaseDate: dir }, tiebreaker];
+    case 'commonAreaId':
+      return [{ commonAreaId: dir }, tiebreaker];
+    case 'updatedAt':
+      return [{ updatedAt: dir }, tiebreaker];
+    case 'createdAt':
+    default:
+      return [{ createdAt: dir }, tiebreaker];
   }
 }
