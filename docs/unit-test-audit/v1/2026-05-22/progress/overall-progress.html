@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overall Progress — v1 — livo-clouds-api-app</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f8fafc; --bg2: #ffffff; --border: #e2e8f0;
+      --text: #0f172a; --text2: #475569; --text3: #94a3b8;
+      --critical: #b91c1c; --high: #dc2626; --medium: #ea580c; --low: #d97706;
+      --ok: #16a34a; --primary: #4f46e5; --primary-light: #eef2ff;
+      --pending: #94a3b8; --in-progress: #ea580c; --completed: #16a34a; --blocked: #b91c1c; --deferred: #6366f1;
+      --tier-f: #6366f1; --tier-1: #dc2626; --tier-2: #ea580c; --tier-3: #d97706; --tier-4: #16a34a;
+      --shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a; --bg2: #1e293b; --border: #334155;
+        --text: #f1f5f9; --text2: #94a3b8; --text3: #64748b;
+        --primary-light: #1e1b4b; --shadow: 0 1px 3px rgba(0,0,0,.4);
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      line-height: 1.6; font-size: 14px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+    .header {
+      background: linear-gradient(135deg, #1e1b4b, #4f46e5, #6d28d9);
+      color: white; padding: 32px; border-radius: 16px; margin-bottom: 24px;
+    }
+    .header h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    .header p { font-size: 13px; opacity: .85; max-width: 760px; }
+    .header .badge {
+      display: inline-block; margin-top: 12px; font-size: 11px;
+      background: rgba(255,255,255,.2); padding: 4px 12px; border-radius: 20px;
+      font-weight: 700;
+    }
+
+    /* Progress bars */
+    .progress-section { margin-bottom: 28px; }
+    .progress-card {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px; margin-bottom: 12px; box-shadow: var(--shadow);
+    }
+    .progress-label {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 13px; font-weight: 600; margin-bottom: 8px;
+    }
+    .progress-value { color: var(--text2); font-variant-numeric: tabular-nums; }
+    .progress-track {
+      height: 14px; border-radius: 999px; background: var(--bg); overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .progress-fill {
+      height: 100%; background: linear-gradient(90deg, var(--ok), #22c55e);
+      transition: width 600ms ease;
+    }
+    .progress-fill.zero {
+      background: var(--bg); border: none;
+    }
+
+    .section-title {
+      font-size: 16px; font-weight: 700; margin: 24px 0 12px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::before {
+      content: ""; display: inline-block; width: 4px; height: 16px;
+      background: var(--primary); border-radius: 2px;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--bg2);
+            border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+    th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+         color: var(--text2); font-weight: 700; background: var(--bg); }
+    tr:last-child td { border-bottom: none; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .tier {
+      display: inline-block; font-size: 10.5px; font-weight: 700;
+      padding: 2.5px 8px; border-radius: 6px; min-width: 36px; text-align: center;
+      color: white;
+    }
+    .tier.f  { background: var(--tier-f); }
+    .tier.t1 { background: var(--tier-1); }
+    .tier.t2 { background: var(--tier-2); }
+    .tier.t3 { background: var(--tier-3); }
+    .tier.t4 { background: var(--tier-4); }
+
+    .status-badge {
+      display: inline-block; font-size: 10.5px; font-weight: 700;
+      padding: 2.5px 8px; border-radius: 6px;
+    }
+    .status-badge.pending     { background: #e2e8f0; color: #475569; }
+    .status-badge.in-progress { background: #fff7ed; color: #ea580c; }
+    .status-badge.completed   { background: #f0fdf4; color: #16a34a; }
+    .status-badge.blocked     { background: #fee2e2; color: #b91c1c; }
+    .status-badge.deferred    { background: #eef2ff; color: #4f46e5; }
+
+    @media (prefers-color-scheme: dark) {
+      .status-badge.pending     { background: #334155; color: #cbd5e1; }
+      .status-badge.in-progress { background: #431407; color: #fdba74; }
+      .status-badge.completed   { background: #052e16; color: #4ade80; }
+      .status-badge.blocked     { background: #450a0a; color: #fca5a5; }
+      .status-badge.deferred    { background: #1e1b4b; color: #a5b4fc; }
+    }
+
+    footer { margin-top: 28px; color: var(--text3); font-size: 12px; text-align: center; }
+    footer a { color: var(--primary); text-decoration: none; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>📊 Overall Progress — v1</h1>
+    <p>
+      Tracker vivo de la ejecución del audit. Se actualiza con cada PR.
+      Baseline 2026-05-22 · 22 módulos · ~5 710 min Claude Code planeados.
+    </p>
+    <div class="badge">Living tracker — mutable</div>
+  </div>
+
+  <!-- Progress bars -->
+  <div class="progress-section">
+    <div class="progress-card">
+      <div class="progress-label">
+        <span>Specs <code>.spec.ts</code> creados</span>
+        <span class="progress-value">45 / ~130 baseline (0 % progreso)</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill zero" style="width: 0%;"></div></div>
+    </div>
+    <div class="progress-card">
+      <div class="progress-label">
+        <span>Tests <code>.e2e-spec.ts</code> creados</span>
+        <span class="progress-value">0 / ~55 (0 % progreso)</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill zero" style="width: 0%;"></div></div>
+    </div>
+    <div class="progress-card">
+      <div class="progress-label">
+        <span>Módulos con cobertura ≥ 50 %</span>
+        <span class="progress-value">5 / 22 (23 %)</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" style="width: 23%;"></div></div>
+    </div>
+    <div class="progress-card">
+      <div class="progress-label">
+        <span>Sesiones Claude Code ejecutadas</span>
+        <span class="progress-value">0 / ~96 sesiones (0 % progreso)</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill zero" style="width: 0%;"></div></div>
+    </div>
+  </div>
+
+  <!-- Fases -->
+  <div class="section-title">Fases — tracking</div>
+  <table>
+    <thead>
+      <tr>
+        <th class="num">Fase</th>
+        <th>Descripción</th>
+        <th class="num">Min</th>
+        <th class="num">Sesiones</th>
+        <th>Estado</th>
+        <th>Cerrada en</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">0</td><td>Infraestructura e2e</td><td class="num">75</td><td class="num">1</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td class="num">1</td><td>Tier 1 — Seguridad + Tenant</td><td class="num">1 195</td><td class="num">~19</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td class="num">2</td><td>Tier 2 — Financiero crítico</td><td class="num">2 255</td><td class="num">~38</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td class="num">3</td><td>Tier 3 — Datos / dominio</td><td class="num">1 305</td><td class="num">~22</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td class="num">4</td><td>Tier 4 — Operacional</td><td class="num">955</td><td class="num">~16</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+    </tbody>
+  </table>
+
+  <!-- Módulos -->
+  <div class="section-title">Módulos — tracking</div>
+  <table>
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>Módulo</th>
+        <th>Tier</th>
+        <th class="num">Actuales</th>
+        <th class="num">Nuevos</th>
+        <th class="num">Min</th>
+        <th>Estado</th>
+        <th>PR</th>
+        <th class="num">Sesiones</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">00</td><td><a href="../modules/00-foundation-common.md">Foundation</a></td><td><span class="tier f">F</span></td><td class="num">0</td><td class="num">9</td><td class="num">215</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">01</td><td><a href="../modules/01-auth-and-guards.md">Auth + Guards</a></td><td><span class="tier t1">T1</span></td><td class="num">3</td><td class="num">12</td><td class="num">560</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">02</td><td><a href="../modules/02-users.md">Users</a></td><td><span class="tier t1">T1</span></td><td class="num">0</td><td class="num">6</td><td class="num">220</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">03</td><td><a href="../modules/03-condominiums.md">Condominiums</a></td><td><span class="tier t1">T1</span></td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">04</td><td><a href="../modules/04-imports.md">Imports</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">11</td><td class="num">660</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">05</td><td><a href="../modules/05-classification.md">Classification</a></td><td><span class="tier t2">T2</span></td><td class="num">3</td><td class="num">8</td><td class="num">415</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">06</td><td><a href="../modules/06-transactions.md">Transactions</a></td><td><span class="tier t2">T2</span></td><td class="num">1</td><td class="num">6</td><td class="num">225</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">07</td><td><a href="../modules/07-reconciliation-rules.md">Reconciliation-rules</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">5</td><td class="num">155</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">08</td><td><a href="../modules/08-reports.md">Reports</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">09</td><td><a href="../modules/09-collection.md">Collection</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">10</td><td><a href="../modules/10-petty-cash.md">Petty Cash</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">6</td><td class="num">250</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">11</td><td><a href="../modules/11-dashboard.md">Dashboard</a></td><td><span class="tier t2">T2</span></td><td class="num">0</td><td class="num">4</td><td class="num">150</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">12</td><td><a href="../modules/12-residents.md">Residents</a></td><td><span class="tier t3">T3</span></td><td class="num">2</td><td class="num">7</td><td class="num">335</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">13</td><td><a href="../modules/13-settings.md">Settings</a></td><td><span class="tier t3">T3</span></td><td class="num">0</td><td class="num">6</td><td class="num">190</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">14</td><td><a href="../modules/14-bank-profiles.md">Bank-profiles</a></td><td><span class="tier t3">T3</span></td><td class="num">0</td><td class="num">6</td><td class="num">205</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">15</td><td><a href="../modules/15-calendar.md">Calendar</a></td><td><span class="tier t3">T3</span></td><td class="num">7</td><td class="num">7</td><td class="num">355</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">16</td><td><a href="../modules/16-inventory.md">Inventory</a></td><td><span class="tier t3">T3</span></td><td class="num">2</td><td class="num">6</td><td class="num">220</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">17</td><td><a href="../modules/17-notifications.md">Notifications</a></td><td><span class="tier t4">T4</span></td><td class="num">11</td><td class="num">6</td><td class="num">310</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">18</td><td><a href="../modules/18-whatsapp.md">WhatsApp</a></td><td><span class="tier t4">T4</span></td><td class="num">16</td><td class="num">8</td><td class="num">420</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">19</td><td><a href="../modules/19-audit.md">Audit</a></td><td><span class="tier t4">T4</span></td><td class="num">0</td><td class="num">5</td><td class="num">155</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">20</td><td><a href="../modules/20-email.md">Email</a></td><td><span class="tier t4">T4</span></td><td class="num">0</td><td class="num">1</td><td class="num">30</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="num">21</td><td><a href="../modules/21-storage.md">Storage</a></td><td><span class="tier t4">T4</span></td><td class="num">0</td><td class="num">1</td><td class="num">40</td><td><span class="status-badge pending">pending</span></td><td>—</td><td class="num">0</td></tr>
+    </tbody>
+  </table>
+
+  <!-- Hallazgos -->
+  <div class="section-title">Hallazgos colaterales — tracking</div>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Hallazgo</th>
+        <th>Acción</th>
+        <th>Estado</th>
+        <th>Resuelto en</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>FN-1</td><td><code>test/jest-e2e.json</code> no existe — script <code>test:e2e</code> roto</td><td>Crear archivo + carpeta en Fase 0</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td>FN-2</td><td>CLAUDE.md del API sin sección de testing</td><td>Elevar <code>strategy.md</code> al CLAUDE.md tras cerrar v1</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td>FN-3</td><td><code>supertest</code> no instalado</td><td><code>npm install --save-dev supertest @types/supertest</code> en Fase 0</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+      <tr><td>FN-4</td><td>Petty-cash folio race documentada en CLAUDE.md sin test</td><td>Test en módulo <code>10-petty-cash</code> (e2e race)</td><td><span class="status-badge pending">pending</span></td><td>—</td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Living tracker · actualizar con cada PR · 2026-05-22 baseline ·
+    <a href="../report.html">report.html</a> · <a href="../report.md">report.md</a> · <a href="../strategy.md">strategy.md</a>
+  </footer>
+
+</div>
+</body>
+</html>

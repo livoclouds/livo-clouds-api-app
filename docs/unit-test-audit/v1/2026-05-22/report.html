@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unit-Test + e2e Audit — v1 — livo-clouds-api-app</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8fafc;
+      --bg2: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text2: #475569;
+      --text3: #94a3b8;
+      --critical: #b91c1c;
+      --critical-bg: #fee2e2;
+      --high: #dc2626;
+      --high-bg: #fef2f2;
+      --medium: #ea580c;
+      --medium-bg: #fff7ed;
+      --low: #d97706;
+      --low-bg: #fffbeb;
+      --ok: #16a34a;
+      --ok-bg: #f0fdf4;
+      --primary: #4f46e5;
+      --primary-light: #eef2ff;
+      --tier-f: #6366f1;
+      --tier-1: #dc2626;
+      --tier-2: #ea580c;
+      --tier-3: #d97706;
+      --tier-4: #16a34a;
+      --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      --shadow-md: 0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --bg2: #1e293b;
+        --border: #334155;
+        --text: #f1f5f9;
+        --text2: #94a3b8;
+        --text3: #64748b;
+        --critical-bg: #450a0a;
+        --high-bg: #450a0a;
+        --medium-bg: #431407;
+        --low-bg: #451a03;
+        --ok-bg: #052e16;
+        --primary-light: #1e1b4b;
+        --shadow: 0 1px 3px rgba(0,0,0,.4);
+        --shadow-md: 0 4px 6px rgba(0,0,0,.4);
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+
+    .header {
+      background: linear-gradient(135deg, #1e1b4b, #4f46e5, #6d28d9);
+      color: white;
+      padding: 40px 32px;
+      border-radius: 16px;
+      margin-bottom: 32px;
+      position: relative;
+      overflow: hidden;
+    }
+    .header::after {
+      content: ""; position: absolute;
+      top: -60px; right: -60px;
+      width: 220px; height: 220px;
+      background: rgba(255,255,255,.05);
+      border-radius: 50%;
+    }
+    .header::before {
+      content: ""; position: absolute;
+      bottom: -40px; left: 40%;
+      width: 160px; height: 160px;
+      background: rgba(255,255,255,.03);
+      border-radius: 50%;
+    }
+    .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 6px; position: relative; }
+    .header p { font-size: 14px; opacity: .85; position: relative; max-width: 780px; }
+    .header .meta { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; position: relative; }
+    .header .meta span {
+      font-size: 12px; opacity: .9;
+      background: rgba(255,255,255,.14);
+      padding: 5px 12px; border-radius: 20px;
+      font-weight: 600;
+    }
+
+    /* KPIs */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    .kpi-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 16px;
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+    .kpi-card .kpi-value { font-size: 32px; font-weight: 800; line-height: 1; margin-bottom: 8px; }
+    .kpi-card .kpi-label { font-size: 11px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .kpi-card .kpi-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+    .kpi-card.total    .kpi-value { color: var(--primary); }
+    .kpi-card.crit     .kpi-value { color: var(--critical); }
+    .kpi-card.high     .kpi-value { color: var(--high); }
+    .kpi-card.medium   .kpi-value { color: var(--medium); }
+    .kpi-card.ok       .kpi-value { color: var(--ok); }
+    .kpi-card.muted    .kpi-value { color: var(--text2); }
+
+    /* Section */
+    .section { margin-bottom: 36px; }
+    .section-title {
+      font-size: 17px; font-weight: 700;
+      margin-bottom: 14px; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::before {
+      content: ""; display: inline-block; width: 4px; height: 18px;
+      background: var(--primary); border-radius: 2px;
+    }
+
+    .panel {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    /* Phase roadmap */
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+    .phase {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+    }
+    .phase .pnum {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--primary); font-weight: 700;
+    }
+    .phase .ptitle { font-size: 14px; font-weight: 700; margin-top: 4px; }
+    .phase .pmeta { font-size: 12px; color: var(--text2); margin-top: 8px; line-height: 1.5; }
+    .phase .phours {
+      display: inline-block; margin-top: 10px; font-size: 11px;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--primary-light); color: var(--primary); font-weight: 700;
+    }
+
+    /* Matrix table */
+    table.matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.matrix th, table.matrix td {
+      padding: 10px 10px; border-bottom: 1px solid var(--border); text-align: left;
+    }
+    table.matrix th {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text2); font-weight: 700; background: var(--bg);
+    }
+    table.matrix tr:hover { background: var(--primary-light); }
+    table.matrix td.num, table.matrix th.num {
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    table.matrix a { color: var(--primary); text-decoration: none; font-weight: 500; }
+    table.matrix a:hover { text-decoration: underline; }
+
+    .tier {
+      display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;
+      padding: 3px 8px; border-radius: 6px; text-align: center; min-width: 40px;
+      color: white;
+    }
+    .tier.f  { background: var(--tier-f); }
+    .tier.t1 { background: var(--tier-1); }
+    .tier.t2 { background: var(--tier-2); }
+    .tier.t3 { background: var(--tier-3); }
+    .tier.t4 { background: var(--tier-4); }
+
+    .status {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      vertical-align: middle; margin-right: 6px;
+    }
+    .status.ok   { background: var(--ok); }
+    .status.warn { background: var(--medium); }
+    .status.crit { background: var(--critical); }
+
+    /* Module cards grid */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .card:hover {
+      border-color: var(--primary);
+      box-shadow: var(--shadow-md);
+    }
+    .card .head {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      margin-bottom: 8px;
+    }
+    .card .name { font-size: 14px; font-weight: 700; }
+    .card .name a { color: var(--text); text-decoration: none; }
+    .card .name a:hover { color: var(--primary); text-decoration: underline; }
+    .card .meta { font-size: 12px; color: var(--text2); line-height: 1.55; }
+    .card .est {
+      display: inline-block; margin-top: 10px; font-size: 11px;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--primary-light); border: 1px solid var(--border); color: var(--primary);
+      font-weight: 600;
+    }
+
+    /* Priority list */
+    ol.top { padding-left: 20px; margin: 0; }
+    ol.top li {
+      font-size: 13px; line-height: 1.65;
+      padding: 10px 0; border-bottom: 1px dashed var(--border);
+    }
+    ol.top li:last-child { border-bottom: none; }
+    ol.top code {
+      background: var(--bg); padding: 2px 6px; border-radius: 4px;
+      border: 1px solid var(--border); font-size: 12px;
+    }
+
+    /* Findings */
+    ul.findings { list-style: none; padding: 0; }
+    ul.findings li {
+      padding: 10px 12px; margin-bottom: 8px; border-radius: 8px;
+      background: var(--high-bg); border-left: 3px solid var(--high);
+      font-size: 13px; line-height: 1.55;
+    }
+    ul.findings li code { font-size: 12px; background: var(--bg2); padding: 1px 5px; border-radius: 3px; }
+
+    footer {
+      margin-top: 36px; color: var(--text3); font-size: 12px; text-align: center;
+    }
+    footer a { color: var(--primary); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>Unit-Test + e2e Audit — v1</h1>
+    <p>
+      Auditoría completa de cobertura de pruebas (unit + e2e) sobre los 22 módulos del API NestJS.
+      Plan priorizado por <strong>seguridad + aislamiento de tenant primero</strong>, luego financiero,
+      datos, operacional. Total estimado: <strong>~5 700 minutos de Claude Code (~95 h)</strong>.
+    </p>
+    <div class="meta">
+      <span>livo-clouds-api-app</span>
+      <span>2026-05-22</span>
+      <span>v1 baseline</span>
+      <span>NestJS 10 + Fastify + Prisma 6.8</span>
+    </div>
+  </div>
+
+  <!-- KPI Row -->
+  <div class="kpi-row">
+    <div class="kpi-card total">
+      <div class="kpi-value">22</div>
+      <div class="kpi-label">Módulos auditados</div>
+      <div class="kpi-sub">21 features + foundation</div>
+    </div>
+    <div class="kpi-card high">
+      <div class="kpi-value">45</div>
+      <div class="kpi-label">Specs existentes</div>
+      <div class="kpi-sub">~734 bloques it</div>
+    </div>
+    <div class="kpi-card crit">
+      <div class="kpi-value">0</div>
+      <div class="kpi-label">e2e existentes</div>
+      <div class="kpi-sub">script roto</div>
+    </div>
+    <div class="kpi-card ok">
+      <div class="kpi-value">5</div>
+      <div class="kpi-label">Módulos ≥ 50 %</div>
+      <div class="kpi-sub">whatsapp · calendar · auth · notifications · residents</div>
+    </div>
+    <div class="kpi-card crit">
+      <div class="kpi-value">13</div>
+      <div class="kpi-label">Módulos sin tests</div>
+      <div class="kpi-sub">imports incluido (crítico)</div>
+    </div>
+    <div class="kpi-card medium">
+      <div class="kpi-value">~140</div>
+      <div class="kpi-label">Tests sugeridos</div>
+      <div class="kpi-sub">~810 casos · ~55 e2e</div>
+    </div>
+    <div class="kpi-card total">
+      <div class="kpi-value">~95 h</div>
+      <div class="kpi-label">Claude Code total</div>
+      <div class="kpi-sub">~96 sesiones · 5 fases</div>
+    </div>
+  </div>
+
+  <!-- Phase Roadmap -->
+  <div class="section">
+    <div class="section-title">Plan de fases (orden por seguridad → financiero → datos → operacional)</div>
+    <div class="roadmap">
+      <div class="phase">
+        <div class="pnum">Fase 0</div>
+        <div class="ptitle">Infraestructura e2e</div>
+        <div class="pmeta">Crear <code>test/jest-e2e.json</code>; instalar <code>supertest</code>; setup test DB.</div>
+        <div class="phours">~75 min · 1 sesión</div>
+      </div>
+      <div class="phase">
+        <div class="pnum">Fase 1</div>
+        <div class="ptitle">Tier 1 — Seguridad + Tenant</div>
+        <div class="pmeta">Foundation + Auth/Guards + Users + Condominiums. La frontera de aislamiento.</div>
+        <div class="phours">~1 195 min · ~19 sesiones</div>
+      </div>
+      <div class="phase">
+        <div class="pnum">Fase 2</div>
+        <div class="ptitle">Tier 2 — Financiero crítico</div>
+        <div class="pmeta">Imports + Classification + Transactions + Reconciliation + Reports + Collection + Petty Cash + Dashboard.</div>
+        <div class="phours">~2 255 min · ~38 sesiones</div>
+      </div>
+      <div class="phase">
+        <div class="pnum">Fase 3</div>
+        <div class="ptitle">Tier 3 — Datos / dominio</div>
+        <div class="pmeta">Residents + Settings + Bank-profiles + Calendar/Terraza + Inventory.</div>
+        <div class="phours">~1 305 min · ~22 sesiones</div>
+      </div>
+      <div class="phase">
+        <div class="pnum">Fase 4</div>
+        <div class="ptitle">Tier 4 — Operacional</div>
+        <div class="pmeta">Notifications + WhatsApp + Audit + Email + Storage.</div>
+        <div class="phours">~955 min · ~16 sesiones</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Coverage matrix -->
+  <div class="section">
+    <div class="section-title">Matriz de cobertura — todos los módulos</div>
+    <div class="panel" style="padding: 0; overflow: hidden;">
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>Módulo</th>
+            <th>Tier</th>
+            <th>Estado</th>
+            <th class="num">Specs actuales</th>
+            <th class="num">Tests sugeridos</th>
+            <th class="num">Min</th>
+            <th class="num">Sesiones</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="num">00</td><td><a href="./modules/00-foundation-common.md">Foundation (common · config · prisma · health)</a></td><td><span class="tier f">F</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">9</td><td class="num">215</td><td class="num">3.5</td></tr>
+          <tr><td class="num">01</td><td><a href="./modules/01-auth-and-guards.md">Auth + Guards</a></td><td><span class="tier t1">T1</span></td><td><span class="status ok"></span>≥ 50 %</td><td class="num">3</td><td class="num">12</td><td class="num">560</td><td class="num">9</td></tr>
+          <tr><td class="num">02</td><td><a href="./modules/02-users.md">Users</a></td><td><span class="tier t1">T1</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">220</td><td class="num">3.5</td></tr>
+          <tr><td class="num">03</td><td><a href="./modules/03-condominiums.md">Condominiums</a></td><td><span class="tier t1">T1</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td class="num">3</td></tr>
+          <tr><td class="num">04</td><td><a href="./modules/04-imports.md">Imports (pipeline)</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">11</td><td class="num">660</td><td class="num">11</td></tr>
+          <tr><td class="num">05</td><td><a href="./modules/05-classification.md">Classification</a></td><td><span class="tier t2">T2</span></td><td><span class="status warn"></span>Parcial</td><td class="num">3</td><td class="num">8</td><td class="num">415</td><td class="num">7</td></tr>
+          <tr><td class="num">06</td><td><a href="./modules/06-transactions.md">Transactions</a></td><td><span class="tier t2">T2</span></td><td><span class="status warn"></span>Parcial</td><td class="num">1</td><td class="num">6</td><td class="num">225</td><td class="num">4</td></tr>
+          <tr><td class="num">07</td><td><a href="./modules/07-reconciliation-rules.md">Reconciliation-rules</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">5</td><td class="num">155</td><td class="num">2.5</td></tr>
+          <tr><td class="num">08</td><td><a href="./modules/08-reports.md">Reports</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td class="num">3.5</td></tr>
+          <tr><td class="num">09</td><td><a href="./modules/09-collection.md">Collection</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">200</td><td class="num">3.5</td></tr>
+          <tr><td class="num">10</td><td><a href="./modules/10-petty-cash.md">Petty Cash (folio race)</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">250</td><td class="num">4</td></tr>
+          <tr><td class="num">11</td><td><a href="./modules/11-dashboard.md">Dashboard</a></td><td><span class="tier t2">T2</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">4</td><td class="num">150</td><td class="num">2.5</td></tr>
+          <tr><td class="num">12</td><td><a href="./modules/12-residents.md">Residents</a></td><td><span class="tier t3">T3</span></td><td><span class="status warn"></span>Parcial</td><td class="num">2</td><td class="num">7</td><td class="num">335</td><td class="num">5.5</td></tr>
+          <tr><td class="num">13</td><td><a href="./modules/13-settings.md">Settings</a></td><td><span class="tier t3">T3</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">190</td><td class="num">3</td></tr>
+          <tr><td class="num">14</td><td><a href="./modules/14-bank-profiles.md">Bank-profiles</a></td><td><span class="tier t3">T3</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">6</td><td class="num">205</td><td class="num">3.5</td></tr>
+          <tr><td class="num">15</td><td><a href="./modules/15-calendar.md">Calendar / Terraza</a></td><td><span class="tier t3">T3</span></td><td><span class="status ok"></span>≥ 50 %</td><td class="num">7</td><td class="num">7</td><td class="num">355</td><td class="num">6</td></tr>
+          <tr><td class="num">16</td><td><a href="./modules/16-inventory.md">Inventory</a></td><td><span class="tier t3">T3</span></td><td><span class="status warn"></span>Parcial</td><td class="num">2</td><td class="num">6</td><td class="num">220</td><td class="num">3.5</td></tr>
+          <tr><td class="num">17</td><td><a href="./modules/17-notifications.md">Notifications</a></td><td><span class="tier t4">T4</span></td><td><span class="status ok"></span>≥ 50 %</td><td class="num">11</td><td class="num">6</td><td class="num">310</td><td class="num">5</td></tr>
+          <tr><td class="num">18</td><td><a href="./modules/18-whatsapp.md">WhatsApp</a></td><td><span class="tier t4">T4</span></td><td><span class="status ok"></span>≥ 50 %</td><td class="num">16</td><td class="num">8</td><td class="num">420</td><td class="num">7</td></tr>
+          <tr><td class="num">19</td><td><a href="./modules/19-audit.md">Audit log</a></td><td><span class="tier t4">T4</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">5</td><td class="num">155</td><td class="num">2.5</td></tr>
+          <tr><td class="num">20</td><td><a href="./modules/20-email.md">Email</a></td><td><span class="tier t4">T4</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">1</td><td class="num">30</td><td class="num">0.5</td></tr>
+          <tr><td class="num">21</td><td><a href="./modules/21-storage.md">Storage</a></td><td><span class="tier t4">T4</span></td><td><span class="status crit"></span>0 %</td><td class="num">0</td><td class="num">1</td><td class="num">40</td><td class="num">0.7</td></tr>
+          <tr style="background: var(--primary-light); font-weight: 700;">
+            <td class="num"></td><td colspan="3">TOTAL</td>
+            <td class="num">45</td><td class="num">~140</td><td class="num">5 710</td><td class="num">~95</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top: 10px; font-size: 12px; color: var(--text3);">
+      Tier: <span class="tier f">F</span> Foundation transversal · <span class="tier t1">T1</span> Seguridad + Tenant · <span class="tier t2">T2</span> Financiero crítico · <span class="tier t3">T3</span> Datos / dominio · <span class="tier t4">T4</span> Operacional / soporte.
+    </p>
+  </div>
+
+  <!-- Top 10 -->
+  <div class="section">
+    <div class="section-title">Top 10 unidades a priorizar (impacto × complejidad)</div>
+    <div class="panel">
+      <ol class="top">
+        <li><code>src/common/guards/condominium-access.guard.ts</code> ⭐ — frontera de aislamiento multi-tenant. Un bug aquí filtra datos entre tenants.</li>
+        <li><code>src/modules/imports/imports.service.ts</code> — pipeline completo (parse + dedup + reconcile + classify). <strong>0 specs</strong>.</li>
+        <li><code>src/modules/imports/parser/excel.parser.ts</code> — 5 formatos de fecha; columnas con aliases ES/EN; magic bytes. <strong>0 specs</strong>.</li>
+        <li><code>src/modules/auth/auth.service.ts::refresh()</code> — token rotation + reuse detection (LOG-011). Cubierto — verificar gaps.</li>
+        <li><code>src/modules/classification/classification.service.ts::classifyBatch</code> — clasificación + period detection + FinancialMonthlySummary upsert.</li>
+        <li><code>src/modules/petty-cash/petty-cash.service.ts::create()</code> — patrón canónico P2002 retry (CLAUDE.md §5 lo cita).</li>
+        <li><code>src/modules/users/users.service.ts</code> — bcryptjs 12 rounds + role hierarchy + email uniqueness scoped. <strong>0 specs</strong>.</li>
+        <li><code>src/modules/audit/audit.service.ts</code> — append-only invariant; rotura = compliance violation. <strong>0 specs</strong>.</li>
+        <li><code>src/modules/whatsapp/whatsapp-meta-client.service.ts</code> — wrapper de Meta API; HMAC webhook verify; encryption.</li>
+        <li><code>src/modules/transactions/transactions.service.ts::exportClassifiedCsv</code> — EXPORT_HARD_CAP 50 000 + streaming. <strong>0 specs</strong>.</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Module cards -->
+  <div class="section">
+    <div class="section-title">Tarjetas por módulo</div>
+    <div class="cards">
+      <div class="card"><div class="head"><div class="name"><a href="./modules/00-foundation-common.md">00 · Foundation</a></div><span class="tier f">F</span></div><div class="meta">common (decorators, filters, interceptors, types, utils) + config + prisma + health. Establece patrones para todo lo demás.</div><div class="est">215 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/01-auth-and-guards.md">01 · Auth + Guards</a></div><span class="tier t1">T1</span></div><div class="meta">Frontera de seguridad. Auth ya muy cubierto (~97 %); guards (jwt, roles, <strong>condominium-access</strong>, throttler) sin tests.</div><div class="est">560 min · 9 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/02-users.md">02 · Users</a></div><span class="tier t1">T1</span></div><div class="meta">bcryptjs 12 rounds + role hierarchy + email scoped. 0 specs.</div><div class="est">220 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/03-condominiums.md">03 · Condominiums</a></div><span class="tier t1">T1</span></div><div class="meta">Slug global unique + role-based visibility + deactivation cascade vía guard.</div><div class="est">200 min · 3 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/04-imports.md">04 · Imports</a></div><span class="tier t2">T2</span></div><div class="meta">⚠️ El gap más grande del repo. Pipeline completo (parse + dedup + reconcile + classify). 2 605 LOC, 0 specs.</div><div class="est">660 min · 11 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/05-classification.md">05 · Classification</a></div><span class="tier t2">T2</span></div><div class="meta">Rule matching + terrace + period detection. 3 specs (~50 it). Falta bulk + reclassify.</div><div class="est">415 min · 7 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/06-transactions.md">06 · Transactions</a></div><span class="tier t2">T2</span></div><div class="meta">Ledger maestro. Solo audit chain cubierto (1 spec). Falta list/filter/export CSV.</div><div class="est">225 min · 4 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/07-reconciliation-rules.md">07 · Reconciliation-rules</a></div><span class="tier t2">T2</span></div><div class="meta">CRUD + event emission best-effort. Alimenta classification.</div><div class="est">155 min · 2.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/08-reports.md">08 · Reports</a></div><span class="tier t2">T2</span></div><div class="meta">3 endpoints: overdue, collection matrix, executive summary. KPI math.</div><div class="est">200 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/09-collection.md">09 · Collection</a></div><span class="tier t2">T2</span></div><div class="meta">Account statement aggregation (balance = paid − expected).</div><div class="est">200 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/10-petty-cash.md">10 · Petty Cash</a></div><span class="tier t2">T2</span></div><div class="meta">⭐ Patrón canónico P2002 retry (MAX_FOLIO_RETRIES=5) + running balance.</div><div class="est">250 min · 4 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/11-dashboard.md">11 · Dashboard</a></div><span class="tier t2">T2</span></div><div class="meta">5-way Promise.all KPIs + monthly trend con fallback raw SQL.</div><div class="est">150 min · 2.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/12-residents.md">12 · Residents</a></div><span class="tier t3">T3</span></div><div class="meta">Sub-entities (vehicles, pets, additional). Soft-delete + nested atomicity. 2 specs (~40 it).</div><div class="est">335 min · 5.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/13-settings.md">13 · Settings</a></div><span class="tier t3">T3</span></div><div class="meta">Singleton por tenant. Upsert paths + cross-field constraints en fees.</div><div class="est">190 min · 3 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/14-bank-profiles.md">14 · Bank-profiles</a></div><span class="tier t3">T3</span></div><div class="meta">isDefault atomicity + field definition allowlist.</div><div class="est">205 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/15-calendar.md">15 · Calendar</a></div><span class="tier t3">T3</span></div><div class="meta">Helpers excelentemente cubiertos (recurrence, terrace metadata, visibility, timezone). 7 specs.</div><div class="est">355 min · 6 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/16-inventory.md">16 · Inventory</a></div><span class="tier t3">T3</span></div><div class="meta">Common areas + items. 2 specs. Falta InventoryItem + nested.</div><div class="est">220 min · 3.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/17-notifications.md">17 · Notifications</a></div><span class="tier t4">T4</span></div><div class="meta">11 specs. SSE gateway + role matrix. Falta SSE controller + DTOs.</div><div class="est">310 min · 5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/18-whatsapp.md">18 · WhatsApp</a></div><span class="tier t4">T4</span></div><div class="meta">Módulo más grande (8 300 LOC) + mejor cubierto (16 specs). Falta Meta client wrapper + webhook controller.</div><div class="est">420 min · 7 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/19-audit.md">19 · Audit</a></div><span class="tier t4">T4</span></div><div class="meta">Append-only invariant absoluta. 154 LOC, 0 specs.</div><div class="est">155 min · 2.5 sesiones</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/20-email.md">20 · Email</a></div><span class="tier t4">T4</span></div><div class="meta">Resend wrapper con graceful degradation. 84 LOC.</div><div class="est">30 min · 0.5 sesión</div></div>
+      <div class="card"><div class="head"><div class="name"><a href="./modules/21-storage.md">21 · Storage</a></div><span class="tier t4">T4</span></div><div class="meta">Cloudflare R2 wrapper. 101 LOC. Config validation + signed URL.</div><div class="est">40 min · 0.5 sesión</div></div>
+    </div>
+  </div>
+
+  <!-- Hallazgos colaterales -->
+  <div class="section">
+    <div class="section-title">Hallazgos colaterales (detectados al auditar)</div>
+    <div class="panel">
+      <ul class="findings">
+        <li><strong>`test/jest-e2e.json` no existe</strong> — el script <code>npm run test:e2e</code> está roto desde siempre. <strong>Fase 0 lo arregla</strong> creando <code>test/</code> + config.</li>
+        <li><strong>CLAUDE.md del API no tiene sección de testing</strong> — a diferencia del web (§18). Esta auditoría la establece de facto vía <code>strategy.md</code>; propuesta de elevarla al CLAUDE.md en PR posterior.</li>
+        <li><strong><code>supertest</code> no está en devDependencies</strong> — necesario para e2e (Fase 0 lo instala).</li>
+        <li><strong>Imports module (2 605 LOC) sin ninguna prueba</strong> — gap más crítico del repo dado su impacto financiero.</li>
+        <li><strong>Petty-cash folio race</strong> documentada en CLAUDE.md como referencia pero <strong>sin test que la fije</strong>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Restricciones -->
+  <div class="section">
+    <div class="section-title">Restricciones del CLAUDE.md que afectan el plan</div>
+    <div class="panel">
+      <p style="font-size: 13px; line-height: 1.7;">
+        15 invariantes enumeradas en <code>strategy.md §5</code>. Las más relevantes:
+      </p>
+      <ul style="font-size: 13px; line-height: 1.8; margin: 12px 0 0 20px;">
+        <li><strong>Tenant scoping</strong> vía <code>request.condominiumId</code> del <code>CondominiumAccessGuard</code>. Nunca de query/body/path.</li>
+        <li><strong>Pagination shape</strong>: <code>{ data, meta: { total, page, limit, totalPages } }</code>. Defaults por endpoint documentados.</li>
+        <li><strong>P2002 retry pattern</strong> referenciado en petty-cash. Replicar al añadir nuevos identificadores tenant-scoped.</li>
+        <li><strong>Time-bounded endpoints</strong> (calendar, transactions, audit) exigen from/to validados + overlap predicate.</li>
+        <li><strong>Append-only audit</strong> — invariante de compliance absoluta.</li>
+        <li><strong>safeSelect()</strong> — nunca <code>passwordHash</code> en responses.</li>
+        <li><strong>bcryptjs 12 rounds</strong> (NUNCA bcrypt; Vercel compat).</li>
+        <li><strong>Encryption WhatsApp</strong>: AES-256-GCM + auth tag; nunca plaintext en logs/responses.</li>
+        <li><strong>Webhook HMAC verify</strong> con <code>timingSafeEqual</code>.</li>
+        <li><strong>NestJS Logger</strong> siempre, nunca <code>console.*</code>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>
+    Generado el 2026-05-22 · Documentos vinculados:
+    <a href="./report.md">report.md</a> · <a href="./strategy.md">strategy.md</a> · <a href="./progress/overall-progress.html">progress dashboard</a> · <a href="./modules/">modules/</a>
+  </footer>
+
+</div>
+</body>
+</html>
