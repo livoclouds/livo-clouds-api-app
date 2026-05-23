@@ -232,8 +232,9 @@ export class InventoryService {
   // Builds an explicit, allow-listed Prisma payload from an inventory-item DTO.
   // The DTO (or request body) must never be spread into Prisma `data:` — the
   // allow-list is the structural guarantee that `condominiumId`, `commonAreaId`
-  // (handled separately on update), `deletedAt`, or any other unknown key can
-  // never be written through a request body (INV-003 mass-assignment guard).
+  // (handled separately on update), `deletedAt`, `createdBy`, `updatedBy`, or
+  // any other unknown key can never be written through a request body
+  // (INV-003 mass-assignment guard; INV-005 actor-spoof guard).
   // Prisma treats `undefined` as "leave unchanged", so the same mapper is safe
   // for both create and partial update.
   private toInventoryItemData(
@@ -308,12 +309,16 @@ export class InventoryService {
         // mapper accepts the partial-update union, which widens them to
         // `T | undefined`). `condominiumId` comes from the guard-derived
         // session value so a request body can never override tenant scope.
+        // `createdBy` carries the JWT `sub` of the acting user (INV-005). It
+        // is API-owned: sourced from the controller-injected `userId`, never
+        // from the request body, and protected by the allow-listed mapper.
         data: {
           ...this.toInventoryItemData(dto),
           name: dto.name,
           category: dto.category,
           commonAreaId: dto.commonAreaId,
           condominiumId,
+          createdBy: userId,
         },
       });
 
@@ -361,6 +366,9 @@ export class InventoryService {
       // structural so tenant scope and soft-delete visibility do not rely on
       // the read above alone. `commonAreaId` is appended outside the
       // allow-listed mapper after re-validation; the mapper never carries it.
+      // `updatedBy` carries the JWT `sub` of the acting user (INV-005). It is
+      // API-owned: sourced from the controller-injected `userId`, never from
+      // the request body, and protected by the allow-listed mapper.
       const result = await tx.inventoryItem.updateMany({
         where: { id, condominiumId, deletedAt: null },
         data: {
@@ -368,6 +376,7 @@ export class InventoryService {
           ...(dto.commonAreaId !== undefined
             ? { commonAreaId: dto.commonAreaId }
             : {}),
+          updatedBy: userId,
         },
       });
       if (result.count === 0)

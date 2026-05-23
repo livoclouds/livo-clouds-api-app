@@ -5,11 +5,17 @@ import {
   CreateCommonAreaDto,
 } from './dto/create-common-area.dto';
 import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
+import {
+  CreateInventoryItemDto,
+  InventoryCategoryDto,
+} from './dto/create-inventory-item.dto';
+import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 
 const CONDOMINIUM_ID = 'cond-1';
 const OTHER_CONDOMINIUM_ID = 'cond-evil';
 const USER_ID = 'user-42';
 const AREA_ID = 'area-1';
+const ITEM_ID = 'item-1';
 
 interface PrismaMock {
   commonArea: {
@@ -21,7 +27,11 @@ interface PrismaMock {
     deleteMany: jest.Mock;
   };
   inventoryItem: {
+    findFirst: jest.Mock;
+    findMany: jest.Mock;
     count: jest.Mock;
+    create: jest.Mock;
+    updateMany: jest.Mock;
   };
   $transaction: jest.Mock;
 }
@@ -41,7 +51,11 @@ function makePrismaMock(): PrismaMock {
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     inventoryItem: {
+      findFirst: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
+      create: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   } as Omit<PrismaMock, '$transaction'>;
 
@@ -76,6 +90,34 @@ function makeArea(overrides: Record<string, unknown> = {}): Record<string, unkno
     createdBy: null,
     updatedBy: null,
     inventoryItems: [],
+    ...overrides,
+  };
+}
+
+function makeItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: ITEM_ID,
+    condominiumId: CONDOMINIUM_ID,
+    commonAreaId: AREA_ID,
+    name: 'Coffee Machine',
+    category: 'APPLIANCES',
+    brand: null,
+    model: null,
+    serialNumber: null,
+    quantity: 1,
+    condition: 'GOOD',
+    purchaseDate: null,
+    approximateCost: null,
+    supplier: null,
+    hasInvoice: false,
+    invoiceNumber: null,
+    notes: null,
+    deletedAt: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+    createdBy: null,
+    updatedBy: null,
+    commonArea: { id: AREA_ID, name: 'Rooftop Terrace' },
     ...overrides,
   };
 }
@@ -459,6 +501,122 @@ describe('InventoryService — Common Areas (Phase 5 — server-side filter / so
         limit: 25,
         totalPages: 3,
       });
+    });
+  });
+});
+
+describe('InventoryService — Inventory Items (Phase 2 audit-trail contract)', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let service: InventoryService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    service = makeService(prisma, audit);
+  });
+
+  describe('createItem', () => {
+    it('persists createdBy from the acting user', async () => {
+      // findAreaOrFail resolves so the create proceeds.
+      prisma.commonArea.findFirst.mockResolvedValue(makeArea());
+      prisma.inventoryItem.create.mockResolvedValue(
+        makeItem({ createdBy: USER_ID }),
+      );
+
+      const dto: CreateInventoryItemDto = {
+        name: 'Coffee Machine',
+        category: InventoryCategoryDto.APPLIANCES,
+        commonAreaId: AREA_ID,
+      };
+      await service.createItem(CONDOMINIUM_ID, USER_ID, dto);
+
+      expect(prisma.inventoryItem.create).toHaveBeenCalledTimes(1);
+      const data = prisma.inventoryItem.create.mock.calls[0][0].data;
+      // INV-005: the create payload stamps the session user as the creator.
+      expect(data.createdBy).toBe(USER_ID);
+    });
+
+    // INV-005 / INV-003: createdBy / updatedBy are API-owned. A create body
+    // carrying them must never reach Prisma — the allow-listed mapper drops
+    // them and the session user is the only source.
+    it('ignores createdBy / updatedBy supplied in the create body', async () => {
+      prisma.commonArea.findFirst.mockResolvedValue(makeArea());
+      prisma.inventoryItem.create.mockResolvedValue(makeItem());
+
+      const maliciousBody = {
+        name: 'Coffee Machine',
+        category: InventoryCategoryDto.APPLIANCES,
+        commonAreaId: AREA_ID,
+        createdBy: 'attacker-user',
+        updatedBy: 'attacker-user',
+      } as unknown as CreateInventoryItemDto;
+
+      await service.createItem(CONDOMINIUM_ID, USER_ID, maliciousBody);
+
+      const data = prisma.inventoryItem.create.mock.calls[0][0].data;
+      expect(data.createdBy).toBe(USER_ID);
+      // updatedBy is not written on create (Prisma defaults the column to null);
+      // the allow-listed mapper guarantees the body cannot inject it either.
+      expect(data).not.toHaveProperty('updatedBy');
+    });
+  });
+
+  describe('updateItem', () => {
+    it('persists updatedBy from the acting user and never writes createdBy', async () => {
+      prisma.inventoryItem.findFirst
+        .mockResolvedValueOnce(makeItem())
+        .mockResolvedValueOnce(makeItem({ name: 'Renamed', updatedBy: USER_ID }));
+
+      await service.updateItem(CONDOMINIUM_ID, USER_ID, ITEM_ID, {
+        name: 'Renamed',
+      });
+
+      expect(prisma.inventoryItem.updateMany).toHaveBeenCalledTimes(1);
+      const data = prisma.inventoryItem.updateMany.mock.calls[0][0].data;
+      expect(data.updatedBy).toBe(USER_ID);
+      // createdBy is immutable after creation — an update must not touch it.
+      expect(data).not.toHaveProperty('createdBy');
+    });
+
+    // INV-005 / INV-003: a PATCH body carrying createdBy / updatedBy must not
+    // override the session-derived actor.
+    it('ignores createdBy / updatedBy supplied in the update body', async () => {
+      prisma.inventoryItem.findFirst
+        .mockResolvedValueOnce(makeItem())
+        .mockResolvedValueOnce(makeItem({ name: 'Renamed' }));
+
+      const maliciousBody = {
+        name: 'Renamed',
+        createdBy: 'attacker-user',
+        updatedBy: 'attacker-user',
+      } as unknown as UpdateInventoryItemDto;
+
+      await service.updateItem(CONDOMINIUM_ID, USER_ID, ITEM_ID, maliciousBody);
+
+      const data = prisma.inventoryItem.updateMany.mock.calls[0][0].data;
+      expect(data.updatedBy).toBe(USER_ID);
+      expect(data).not.toHaveProperty('createdBy');
+    });
+  });
+
+  describe('findAllItems', () => {
+    it('returns rows carrying all four audit fields in the data/meta envelope', async () => {
+      const item = makeItem({ createdBy: USER_ID, updatedBy: USER_ID });
+      prisma.inventoryItem.findMany.mockResolvedValueOnce([item]);
+      prisma.inventoryItem.count.mockResolvedValueOnce(1);
+
+      const result = await service.findAllItems(CONDOMINIUM_ID);
+
+      expect(result.meta).toEqual(
+        expect.objectContaining({ total: 1, page: 1 }),
+      );
+      const row = (result.data as Array<Record<string, unknown>>)[0];
+      // The list contract exposes createdAt, updatedAt, createdBy, updatedBy.
+      expect(row).toHaveProperty('createdAt');
+      expect(row).toHaveProperty('updatedAt');
+      expect(row.createdBy).toBe(USER_ID);
+      expect(row.updatedBy).toBe(USER_ID);
     });
   });
 });
