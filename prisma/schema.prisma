@@ -633,6 +633,7 @@ model InventoryItem {
   hasInvoice      Boolean            @default(false)
   invoiceNumber   String?
   notes           String?
+  deletedAt       DateTime?
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
@@ -642,6 +643,7 @@ model InventoryItem {
   @@index([condominiumId])
   @@index([commonAreaId])
   @@index([condition])
+  @@index([deletedAt])
   @@map("inventory_items")
 }
 

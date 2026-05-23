@@ -12,6 +12,7 @@ import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { ListCommonAreasDto } from './dto/list-common-areas.dto';
 import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
 import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
+import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 
 const INVENTORY_MODULE = 'inventory';
 
@@ -19,6 +20,9 @@ const AUDIT_ACTION = {
   COMMON_AREA_CREATED: 'COMMON_AREA_CREATED',
   COMMON_AREA_UPDATED: 'COMMON_AREA_UPDATED',
   COMMON_AREA_DELETED: 'COMMON_AREA_DELETED',
+  INVENTORY_ITEM_CREATED: 'INVENTORY_ITEM_CREATED',
+  INVENTORY_ITEM_UPDATED: 'INVENTORY_ITEM_UPDATED',
+  INVENTORY_ITEM_DELETED: 'INVENTORY_ITEM_DELETED',
 } as const;
 
 @Injectable()
@@ -225,6 +229,33 @@ export class InventoryService {
 
   // ─── Inventory Items ──────────────────────────────────────────
 
+  // Builds an explicit, allow-listed Prisma payload from an inventory-item DTO.
+  // The DTO (or request body) must never be spread into Prisma `data:` — the
+  // allow-list is the structural guarantee that `condominiumId`, `commonAreaId`
+  // (handled separately on update), `deletedAt`, or any other unknown key can
+  // never be written through a request body (INV-003 mass-assignment guard).
+  // Prisma treats `undefined` as "leave unchanged", so the same mapper is safe
+  // for both create and partial update.
+  private toInventoryItemData(
+    dto: CreateInventoryItemDto | UpdateInventoryItemDto,
+  ) {
+    return {
+      name: dto.name,
+      category: dto.category,
+      brand: dto.brand,
+      model: dto.model,
+      serialNumber: dto.serialNumber,
+      quantity: dto.quantity,
+      condition: dto.condition,
+      purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
+      approximateCost: dto.approximateCost,
+      supplier: dto.supplier,
+      hasInvoice: dto.hasInvoice,
+      invoiceNumber: dto.invoiceNumber,
+      notes: dto.notes,
+    };
+  }
+
   async findAllItems(
     condominiumId: string,
     query: ListInventoryItemsDto = {},
@@ -232,7 +263,11 @@ export class InventoryService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 200;
     const skip = (page - 1) * limit;
-    const where = { condominiumId };
+    // INV-012: soft-deleted rows are excluded from every read path. The filter
+    // is structural — applied here, in findItemOrFail, and in the read-back
+    // queries inside update/remove — so deleted items disappear from the API
+    // surface while remaining forensically recoverable in the database.
+    const where = { condominiumId, deletedAt: null };
 
     const [data, total] = await Promise.all([
       this.prisma.inventoryItem.findMany({
@@ -256,49 +291,155 @@ export class InventoryService {
     };
   }
 
-  async createItem(condominiumId: string, dto: CreateInventoryItemDto) {
+  async createItem(
+    condominiumId: string,
+    userId: string,
+    dto: CreateInventoryItemDto,
+  ) {
+    // commonAreaId is re-validated against the caller's tenant before any
+    // write — the structural tenant filter on findAreaOrFail is the safety
+    // net that prevents an item from being created under another condo's area.
     await this.findAreaOrFail(condominiumId, dto.commonAreaId);
 
-    return this.prisma.inventoryItem.create({
-      data: {
-        ...dto,
-        condominiumId,
-        purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.inventoryItem.create({
+        // `name`, `category` and `commonAreaId` are re-read from the create DTO
+        // after the spread so their required types narrow correctly (the shared
+        // mapper accepts the partial-update union, which widens them to
+        // `T | undefined`). `condominiumId` comes from the guard-derived
+        // session value so a request body can never override tenant scope.
+        data: {
+          ...this.toInventoryItemData(dto),
+          name: dto.name,
+          category: dto.category,
+          commonAreaId: dto.commonAreaId,
+          condominiumId,
+        },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.INVENTORY_ITEM_CREATED,
+          actionCategory: 'CREATE',
+          module: INVENTORY_MODULE,
+          entityType: 'InventoryItem',
+          entityId: created.id,
+          afterState: created,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return created;
     });
   }
 
   async updateItem(
     condominiumId: string,
+    userId: string,
     id: string,
-    dto: Partial<CreateInventoryItemDto>,
+    dto: UpdateInventoryItemDto,
   ) {
-    await this.findItemOrFail(condominiumId, id);
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.inventoryItem.findFirst({
+        where: { id, condominiumId, deletedAt: null },
+        include: { commonArea: { select: { id: true, name: true } } },
+      });
+      if (!before) throw new NotFoundException('Inventory item not found');
 
-    const data = { ...dto } as Record<string, unknown>;
-    if (dto.purchaseDate) {
-      data.purchaseDate = new Date(dto.purchaseDate);
-    }
+      // When the caller wants to move an item to a different common area we
+      // must re-validate that the target area belongs to the same tenant —
+      // CreateInventoryItemDto's @IsString validator only proves the value is
+      // a non-empty string, not that it lives inside the caller's condominium.
+      if (dto.commonAreaId !== undefined) {
+        await this.findAreaOrFail(condominiumId, dto.commonAreaId);
+      }
 
-    const result = await this.prisma.inventoryItem.updateMany({
-      where: { id, condominiumId },
-      data,
-    });
-    if (result.count === 0) throw new NotFoundException('Inventory item not found');
-    return this.prisma.inventoryItem.findFirst({
-      where: { id, condominiumId },
-      include: { commonArea: { select: { id: true, name: true } } },
+      // updateMany keeps the `{ id, condominiumId, deletedAt: null }` filter
+      // structural so tenant scope and soft-delete visibility do not rely on
+      // the read above alone. `commonAreaId` is appended outside the
+      // allow-listed mapper after re-validation; the mapper never carries it.
+      const result = await tx.inventoryItem.updateMany({
+        where: { id, condominiumId, deletedAt: null },
+        data: {
+          ...this.toInventoryItemData(dto),
+          ...(dto.commonAreaId !== undefined
+            ? { commonAreaId: dto.commonAreaId }
+            : {}),
+        },
+      });
+      if (result.count === 0)
+        throw new NotFoundException('Inventory item not found');
+
+      const updated = await tx.inventoryItem.findFirst({
+        where: { id, condominiumId, deletedAt: null },
+        include: { commonArea: { select: { id: true, name: true } } },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.INVENTORY_ITEM_UPDATED,
+          actionCategory: 'UPDATE',
+          module: INVENTORY_MODULE,
+          entityType: 'InventoryItem',
+          entityId: id,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
     });
   }
 
-  async removeItem(condominiumId: string, id: string) {
-    await this.findItemOrFail(condominiumId, id);
-    return this.prisma.inventoryItem.delete({ where: { id } });
+  async removeItem(condominiumId: string, userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.inventoryItem.findFirst({
+        where: { id, condominiumId, deletedAt: null },
+        include: { commonArea: { select: { id: true, name: true } } },
+      });
+      if (!before) throw new NotFoundException('Inventory item not found');
+
+      // INV-012: soft delete. updateMany's `{ id, condominiumId, deletedAt:
+      // null }` filter makes tenant isolation structural — it no longer depends
+      // on the read above happening first. The row remains in the database for
+      // forensic recovery; reads filter `deletedAt` out across the service.
+      const result = await tx.inventoryItem.updateMany({
+        where: { id, condominiumId, deletedAt: null },
+        data: { deletedAt: new Date() },
+      });
+      if (result.count === 0)
+        throw new NotFoundException('Inventory item not found');
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.INVENTORY_ITEM_DELETED,
+          actionCategory: 'DELETE',
+          module: INVENTORY_MODULE,
+          entityType: 'InventoryItem',
+          entityId: id,
+          beforeState: before,
+          afterState: null,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return before;
+    });
   }
 
   private async findItemOrFail(condominiumId: string, id: string) {
     const item = await this.prisma.inventoryItem.findFirst({
-      where: { id, condominiumId },
+      where: { id, condominiumId, deletedAt: null },
     });
     if (!item) throw new NotFoundException('Inventory item not found');
     return item;

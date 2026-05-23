@@ -20,11 +20,12 @@ import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { ListCommonAreasDto } from './dto/list-common-areas.dto';
 import { ListInventoryItemsDto } from './dto/list-inventory-items.dto';
 import { UpdateCommonAreaDto } from './dto/update-common-area.dto';
+import { UpdateInventoryItemDto } from './dto/update-inventory-item.dto';
 import { InventoryService } from './inventory.service';
 
 // `condominiumId` is set by CondominiumAccessGuard from the session-bound slug;
-// `user` is the authenticated JWT payload. Common-area mutations forward
-// `user.sub` so every audit row records the acting user.
+// `user` is the authenticated JWT payload. Mutations forward `user.sub` so
+// every audit row records the acting user.
 type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Inventory')
@@ -100,30 +101,40 @@ export class InventoryController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Create inventory item' })
   createItem(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Body() dto: CreateInventoryItemDto,
   ) {
-    return this.inventoryService.createItem(req.condominiumId, dto);
+    return this.inventoryService.createItem(
+      req.condominiumId,
+      req.user.sub,
+      dto,
+    );
   }
 
   @Patch('condominiums/:condominiumSlug/inventory/:id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Update inventory item' })
   updateItem(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') id: string,
-    @Body() dto: Partial<CreateInventoryItemDto>,
+    @Body() dto: UpdateInventoryItemDto,
   ) {
-    return this.inventoryService.updateItem(req.condominiumId, id, dto);
+    return this.inventoryService.updateItem(
+      req.condominiumId,
+      req.user.sub,
+      id,
+      dto,
+    );
   }
 
   @Delete('condominiums/:condominiumSlug/inventory/:id')
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Delete inventory item' })
-  removeItem(
-    @Request() req: { condominiumId: string },
-    @Param('id') id: string,
-  ) {
-    return this.inventoryService.removeItem(req.condominiumId, id);
+  removeItem(@Request() req: AuthedRequest, @Param('id') id: string) {
+    return this.inventoryService.removeItem(
+      req.condominiumId,
+      req.user.sub,
+      id,
+    );
   }
 }
