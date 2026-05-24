@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import * as ExcelJS from 'exceljs';
 import type { ParsedRow } from './types';
 import {
   buildAliasIndex,
