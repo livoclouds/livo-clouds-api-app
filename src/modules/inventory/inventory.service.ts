@@ -283,7 +283,7 @@ export class InventoryService {
     ]);
 
     return {
-      data,
+      data: data.map(serializeInventoryItem),
       meta: {
         total,
         page,
@@ -338,7 +338,7 @@ export class InventoryService {
         tx,
       );
 
-      return created;
+      return serializeInventoryItem(created);
     });
   }
 
@@ -404,7 +404,7 @@ export class InventoryService {
         tx,
       );
 
-      return updated;
+      return updated != null ? serializeInventoryItem(updated) : null;
     });
   }
 
@@ -443,7 +443,7 @@ export class InventoryService {
         tx,
       );
 
-      return before;
+      return serializeInventoryItem(before);
     });
   }
 
@@ -454,6 +454,22 @@ export class InventoryService {
     if (!item) throw new NotFoundException('Inventory item not found');
     return item;
   }
+}
+
+// ─── Serialization helper ──────────────────────────────────────────────────────
+
+// Prisma serializes `Decimal` columns as strings in JSON (via decimal.js
+// `toJSON()`). The web client's Zod schema expects a plain JavaScript number,
+// so every service method that returns an InventoryItem must pass through here
+// to convert `approximateCost` before the ResponseInterceptor serializes it.
+function serializeInventoryItem<T extends { approximateCost: unknown }>(
+  item: T,
+): T & { approximateCost: number | null } {
+  return {
+    ...item,
+    approximateCost:
+      item.approximateCost != null ? Number(item.approximateCost) : null,
+  };
 }
 
 // ─── Common Areas — server-side query builders (CMA-013) ───────────────────────
