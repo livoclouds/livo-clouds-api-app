@@ -39,8 +39,8 @@ describe('ImportsService.checkHashesForCondominium', () => {
     const service = makeService(prisma);
 
     prisma.importBatch.findMany.mockResolvedValueOnce([
-      { fileHash: HASH_A, _count: { transactions: 350 } },
-      { fileHash: HASH_B, _count: { transactions: 0 } },
+      { fileHash: HASH_A, fileName: 'file_a.xlsx', _count: { transactions: 350 } },
+      { fileHash: HASH_B, fileName: 'file_b.xlsx', _count: { transactions: 0 } },
     ]);
 
     const result = await service.checkHashesForCondominium(CONDOMINIUM_ID, [
@@ -49,14 +49,21 @@ describe('ImportsService.checkHashesForCondominium', () => {
       HASH_C,
     ]);
 
-    expect(result).toEqual({ duplicateHashes: [HASH_A] });
+    expect(result).toEqual({
+      duplicateHashes: [HASH_A],
+      duplicateFiles: [{ hash: HASH_A, fileName: 'file_a.xlsx' }],
+    });
     expect(prisma.importBatch.findMany).toHaveBeenCalledWith({
       where: {
         condominiumId: CONDOMINIUM_ID,
         fileHash: { in: [HASH_A, HASH_B, HASH_C] },
         status: 'COMPLETED',
       },
-      select: { fileHash: true, _count: { select: { transactions: true } } },
+      select: {
+        fileHash: true,
+        fileName: true,
+        _count: { select: { transactions: true } },
+      },
     });
   });
 
@@ -66,7 +73,7 @@ describe('ImportsService.checkHashesForCondominium', () => {
 
     const result = await service.checkHashesForCondominium(CONDOMINIUM_ID, []);
 
-    expect(result).toEqual({ duplicateHashes: [] });
+    expect(result).toEqual({ duplicateHashes: [], duplicateFiles: [] });
     expect(prisma.importBatch.findMany).not.toHaveBeenCalled();
   });
 
@@ -75,12 +82,15 @@ describe('ImportsService.checkHashesForCondominium', () => {
     const service = makeService(prisma);
 
     prisma.importBatch.findMany.mockResolvedValueOnce([
-      { fileHash: HASH_A, _count: { transactions: 100 } },
-      { fileHash: HASH_A, _count: { transactions: 50 } },
+      { fileHash: HASH_A, fileName: 'file_a.xlsx', _count: { transactions: 100 } },
+      { fileHash: HASH_A, fileName: 'file_a.xlsx', _count: { transactions: 50 } },
     ]);
 
     const result = await service.checkHashesForCondominium(CONDOMINIUM_ID, [HASH_A]);
 
-    expect(result).toEqual({ duplicateHashes: [HASH_A] });
+    expect(result).toEqual({
+      duplicateHashes: [HASH_A],
+      duplicateFiles: [{ hash: HASH_A, fileName: 'file_a.xlsx' }],
+    });
   });
 });
