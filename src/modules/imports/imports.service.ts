@@ -606,9 +606,12 @@ export class ImportsService {
   async checkHashesForCondominium(
     condominiumId: string,
     hashes: string[],
-  ): Promise<{ duplicateHashes: string[] }> {
+  ): Promise<{
+    duplicateHashes: string[];
+    duplicateFiles: { hash: string; fileName: string }[];
+  }> {
     if (hashes.length === 0) {
-      return { duplicateHashes: [] };
+      return { duplicateHashes: [], duplicateFiles: [] };
     }
     const existing = await this.prisma.importBatch.findMany({
       where: {
@@ -616,12 +619,23 @@ export class ImportsService {
         fileHash: { in: hashes },
         status: 'COMPLETED',
       },
-      select: { fileHash: true, _count: { select: { transactions: true } } },
+      select: {
+        fileHash: true,
+        fileName: true,
+        _count: { select: { transactions: true } },
+      },
     });
-    const duplicateHashes = existing
-      .filter((b) => b._count.transactions > 0)
-      .map((b) => b.fileHash);
-    return { duplicateHashes: Array.from(new Set(duplicateHashes)) };
+    const seen = new Map<string, string>();
+    for (const b of existing) {
+      if (b._count.transactions > 0) seen.set(b.fileHash, b.fileName);
+    }
+    return {
+      duplicateHashes: Array.from(seen.keys()),
+      duplicateFiles: Array.from(seen.entries()).map(([hash, fileName]) => ({
+        hash,
+        fileName,
+      })),
+    };
   }
 
   async preview(
