@@ -603,6 +603,27 @@ export class ImportsService {
     return results;
   }
 
+  async checkHashesForCondominium(
+    condominiumId: string,
+    hashes: string[],
+  ): Promise<{ duplicateHashes: string[] }> {
+    if (hashes.length === 0) {
+      return { duplicateHashes: [] };
+    }
+    const existing = await this.prisma.importBatch.findMany({
+      where: {
+        condominiumId,
+        fileHash: { in: hashes },
+        status: 'COMPLETED',
+      },
+      select: { fileHash: true, _count: { select: { transactions: true } } },
+    });
+    const duplicateHashes = existing
+      .filter((b) => b._count.transactions > 0)
+      .map((b) => b.fileHash);
+    return { duplicateHashes: Array.from(new Set(duplicateHashes)) };
+  }
+
   async preview(
     condominiumId: string,
     files: { buffer: Buffer; originalname: string; mimetype: string; size: number }[],
@@ -611,6 +632,30 @@ export class ImportsService {
     bankProfileId?: string,
   ): Promise<PreviewApiResponse> {
     const results: PreviewFileResult[] = [];
+
+    // Defence-in-depth dedup: hash each uploaded file once up-front and look up
+    // all matching COMPLETED batches in this condominium in a single query, so
+    // we catch duplicates that the client's localStorage cache missed (different
+    // browser, cleared cache, second device). The web also pre-checks with
+    // POST /imports/check-hashes before uploading; this server-side check
+    // guarantees the parser is skipped even if that pre-check is bypassed.
+    const fileHashes: string[] = files.map((f) =>
+      crypto.createHash('sha256').update(f.buffer).digest('hex'),
+    );
+    const dbDuplicateHashes = new Set<string>();
+    if (fileHashes.length > 0) {
+      const existing = await this.prisma.importBatch.findMany({
+        where: {
+          condominiumId,
+          fileHash: { in: fileHashes },
+          status: 'COMPLETED',
+        },
+        select: { fileHash: true, _count: { select: { transactions: true } } },
+      });
+      for (const b of existing) {
+        if (b._count.transactions > 0) dbDuplicateHashes.add(b.fileHash);
+      }
+    }
 
     for (let index = 0; index < files.length; index++) {
       const file = files[index];
@@ -640,9 +685,9 @@ export class ImportsService {
         continue;
       }
 
-      const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      const hash = fileHashes[index];
 
-      if (storedHashes.includes(hash)) {
+      if (storedHashes.includes(hash) || dbDuplicateHashes.has(hash)) {
         const ext = file.originalname.toLowerCase().endsWith('.pdf') ? 'pdf' : 'xlsx';
         results.push({
           ...base,

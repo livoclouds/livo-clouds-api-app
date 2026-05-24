@@ -22,6 +22,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { ImportsService } from './imports.service';
+import { CheckHashesDto } from './dto/check-hashes.dto';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
 
@@ -129,6 +130,23 @@ export class ImportsController {
     }
 
     return this.importsService.upload(req.condominiumId, files, user);
+  }
+
+  @Post('check-hashes')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Return which SHA-256 hashes already correspond to a COMPLETED import batch with transactions in this condominium',
+  })
+  checkHashes(
+    @Request() req: { condominiumId: string },
+    @Body() dto: CheckHashesDto,
+  ) {
+    return this.importsService.checkHashesForCondominium(
+      req.condominiumId,
+      dto.hashes,
+    );
   }
 
   @Post('preview')
