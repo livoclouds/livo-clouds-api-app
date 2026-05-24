@@ -8,6 +8,14 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
+import { PrismaService } from '../../prisma/prisma.service';
+import { R2AccessType } from '@prisma/client';
+
+export interface AccessLogContext {
+  userId?: string | null;
+  condominiumId?: string | null;
+  byteSize?: number | null;
+}
 
 @Injectable()
 export class StorageService {
@@ -15,7 +23,10 @@ export class StorageService {
   private readonly bucket: string;
   private readonly configured: boolean;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     const accountId = config.get<string>('storage.accountId');
     const accessKeyId = config.get<string>('storage.accessKeyId');
     const secretAccessKey = config.get<string>('storage.secretAccessKey');
@@ -43,13 +54,25 @@ export class StorageService {
     return this.configured;
   }
 
+  getBucketName(): string {
+    return this.bucket;
+  }
+
+  getClient(): S3Client {
+    if (!this.client) throw new Error('External storage is not configured');
+    return this.client;
+  }
+
   async uploadFile(
     key: string,
     buffer: Buffer,
     mimeType: string,
+    ctx?: AccessLogContext,
   ): Promise<string> {
     if (!this.client) throw new Error('External storage is not configured');
-    console.log(`[StorageService] uploadFile: bucket=${this.bucket}, key=${key}, size=${buffer.length}B`);
+    console.log(
+      `[StorageService] uploadFile: bucket=${this.bucket}, key=${key}, size=${buffer.length}B`,
+    );
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -59,16 +82,26 @@ export class StorageService {
       }),
     );
     console.log(`[StorageService] uploadFile: success, key=${key}`);
+    await this.recordAccess(key, R2AccessType.UPLOAD, {
+      ...ctx,
+      byteSize: ctx?.byteSize ?? buffer.length,
+    });
     return key;
   }
 
-  async getPresignedUrl(key: string, expiresIn = 3600): Promise<string> {
+  async getPresignedUrl(
+    key: string,
+    expiresIn = 3600,
+    ctx?: AccessLogContext,
+  ): Promise<string> {
     if (!this.client) throw new Error('External storage is not configured');
     const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
-    return getSignedUrl(this.client, command, { expiresIn });
+    const url = await getSignedUrl(this.client, command, { expiresIn });
+    await this.recordAccess(key, R2AccessType.PRESIGNED_GET, ctx);
+    return url;
   }
 
-  async downloadFile(key: string): Promise<Buffer> {
+  async downloadFile(key: string, ctx?: AccessLogContext): Promise<Buffer> {
     if (!this.client) throw new Error('External storage is not configured');
     const response = await this.client.send(
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
@@ -80,13 +113,43 @@ export class StorageService {
     for await (const chunk of response.Body as Readable) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    return Buffer.concat(chunks);
+    const buffer = Buffer.concat(chunks);
+    await this.recordAccess(key, R2AccessType.STREAM, {
+      ...ctx,
+      byteSize: ctx?.byteSize ?? buffer.length,
+    });
+    return buffer;
   }
 
-  async deleteFile(key: string): Promise<void> {
+  async deleteFile(key: string, ctx?: AccessLogContext): Promise<void> {
     if (!this.client) throw new Error('External storage is not configured');
     await this.client.send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
+    await this.recordAccess(key, R2AccessType.DELETE, ctx);
+  }
+
+  private async recordAccess(
+    objectKey: string,
+    accessType: R2AccessType,
+    ctx?: AccessLogContext,
+  ): Promise<void> {
+    try {
+      await this.prisma.r2AccessLog.create({
+        data: {
+          objectKey,
+          bucket: this.bucket || null,
+          accessType,
+          userId: ctx?.userId ?? null,
+          condominiumId: ctx?.condominiumId ?? null,
+          byteSize: ctx?.byteSize ?? null,
+        },
+      });
+    } catch (err) {
+      console.warn(
+        `[StorageService] recordAccess failed (key=${objectKey}, type=${accessType}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }
