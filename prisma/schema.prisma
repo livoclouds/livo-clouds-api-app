@@ -279,6 +279,14 @@ enum WhatsAppNotifyChannel {
   NONE
 }
 
+enum R2AccessType {
+  PRESIGNED_GET
+  PRESIGNED_PUT
+  STREAM
+  DELETE
+  UPLOAD
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model Condominium {
@@ -316,6 +324,7 @@ model Condominium {
   whatsAppUnregisteredContacts     WhatsAppUnregisteredContact[]
   whatsAppNotificationPrefs        WhatsAppNotificationPreference[]
   bankProfiles                     BankProfile[]
+  r2AccessLogs                     R2AccessLog[]
 
   @@map("condominiums")
 }
@@ -416,6 +425,7 @@ model User {
   whatsAppNotificationPrefs WhatsAppNotificationPreference[]
   notificationPreferences   UserNotificationPreference[]
   rootNotificationScope     RootNotificationScope?
+  r2AccessLogs              R2AccessLog[]
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -1197,4 +1207,24 @@ model WhatsAppNotificationPreference {
   @@unique([userId, condominiumId])
   @@index([condominiumId, personalPhoneNumber])
   @@map("whatsapp_notification_preferences")
+}
+
+model R2AccessLog {
+  id            String       @id @default(uuid())
+  objectKey     String       @db.VarChar(1024)
+  bucket        String?
+  condominiumId String?
+  userId        String?
+  accessType    R2AccessType
+  byteSize      Int?
+  accessedAt    DateTime     @default(now())
+
+  condominium Condominium? @relation(fields: [condominiumId], references: [id], onDelete: SetNull)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([objectKey, accessedAt])
+  @@index([condominiumId, accessedAt])
+  @@index([userId, accessedAt])
+  @@index([accessType])
+  @@map("r2_access_logs")
 }
