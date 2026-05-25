@@ -944,6 +944,7 @@ enum RuleChangeAction {
   UPDATED
   DELETED
   TOGGLED
+  REORDERED
 }
 
 model ReconciliationRuleChangeLog {

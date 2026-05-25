@@ -472,6 +472,8 @@ async function main() {
 
   // ─── Reconciliation Rules ──────────────────────────────────────────────────
 
+  // Priorities are stored as a consecutive 1..N sequence per condominium,
+  // ordered by their position in this seed array (no gaps).
   const baseRules = (condominiumId: string) => [
     {
       condominiumId,
@@ -480,7 +482,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'MAINTENANCE',
       confidenceThreshold: new Prisma.Decimal('0.85'),
-      priority: 0,
+      priority: 1,
       isActive: true,
     },
     {
@@ -490,7 +492,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'UTILITY',
       confidenceThreshold: new Prisma.Decimal('0.80'),
-      priority: 10,
+      priority: 2,
       isActive: true,
     },
     {
@@ -500,7 +502,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'PARKING',
       confidenceThreshold: new Prisma.Decimal('0.80'),
-      priority: 20,
+      priority: 3,
       isActive: true,
     },
   ];
@@ -514,7 +516,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'DEPOSIT',
       confidenceThreshold: new Prisma.Decimal('0.85'),
-      priority: 5,
+      priority: 4,
       isActive: true,
     },
     {
@@ -524,7 +526,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'FINE',
       confidenceThreshold: new Prisma.Decimal('0.85'),
-      priority: 15,
+      priority: 5,
       isActive: true,
     },
     {
@@ -534,7 +536,7 @@ async function main() {
       unitPatterns: [] as string[],
       conceptType: 'AMENITY',
       confidenceThreshold: new Prisma.Decimal('0.80'),
-      priority: 25,
+      priority: 6,
       isActive: true,
     },
   ];
