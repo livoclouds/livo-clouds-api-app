@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -327,6 +327,7 @@ export class ClassificationService {
 
   constructor(
     private readonly prisma: PrismaService,
+    @Inject(forwardRef(() => ReconciliationRulesService))
     private readonly rulesService: ReconciliationRulesService,
     private readonly events: EventEmitter2,
   ) {}
@@ -607,6 +608,196 @@ export class ClassificationService {
     }
 
     return summary;
+  }
+
+  /**
+   * Reclassify every transaction in the tenant that is awaiting review
+   * (`classificationStatus=NEEDS_REVIEW` + `reconciliationStatus=PENDING`)
+   * using the current set of active reconciliation rules.
+   *
+   * Designed to be called after the admin modifies rules: a row that newly
+   * matches a rule becomes AUTO, the rest stays NEEDS_REVIEW. Monthly
+   * summaries for the affected periods are recomputed at the end.
+   */
+  async reapplyToPending(
+    condominiumId: string,
+    actorUserId: string | null,
+  ): Promise<ClassificationSummary> {
+    const [residents, transactions, activeRules, rawTerraceEvents, settings] =
+      await Promise.all([
+        this.prisma.resident.findMany({
+          where: { condominiumId, deletedAt: null },
+          select: { id: true, unitNumber: true, firstName: true, lastName: true },
+        }),
+        this.prisma.transaction.findMany({
+          where: {
+            condominiumId,
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+            reconciliationStatus: ReconciliationStatus.PENDING,
+          },
+          select: {
+            id: true,
+            description: true,
+            transactionDate: true,
+            credits: true,
+            charges: true,
+            flowType: true,
+          },
+        }),
+        this.rulesService.findActive(condominiumId),
+        this.prisma.calendarEvent.findMany({
+          where: {
+            condominiumId,
+            eventType: 'TERRACE_BOOKING',
+            status: { not: 'CANCELLED' },
+            deletedAt: null,
+          },
+          select: {
+            id: true,
+            residentId: true,
+            unitNumber: true,
+            startDate: true,
+            metadata: true,
+          },
+        }),
+        this.prisma.condominiumSettings.findUnique({
+          where: { condominiumId },
+          select: { terraceGlobalKeywords: true },
+        }),
+      ]);
+
+    const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
+    const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
+      const validation = validateTerraceMetadata(ev.metadata);
+      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
+      return [
+        {
+          id: ev.id,
+          residentId: ev.residentId,
+          unitNumber: ev.unitNumber,
+          startDate: new Date(ev.startDate),
+          terraceRentalAmount: validation.data.terraceRentalAmount,
+          customKeywords: validation.data.customKeywords,
+        },
+      ];
+    });
+
+    let classified = 0;
+    let needsReview = 0;
+    let unmatched = 0;
+
+    const affectedMonths = new Set<string>();
+
+    const CHUNK = 200;
+    for (let i = 0; i < transactions.length; i += CHUNK) {
+      const chunk = transactions.slice(i, i + CHUNK);
+      const nowForChunk = new Date();
+
+      const groups = new Map<
+        string,
+        { ids: string[]; data: Prisma.TransactionUncheckedUpdateManyInput }
+      >();
+
+      for (const tx of chunk) {
+        const terraceContext =
+          tx.flowType === 'INCOME' && terraceEvents.length > 0
+            ? {
+                events: terraceEvents,
+                amount: tx.credits ? Number(tx.credits) : null,
+                transactionDate: new Date(tx.transactionDate),
+                globalKeywords: terraceGlobalKeywords,
+              }
+            : undefined;
+
+        const result = this.classifyTransaction(
+          tx.description,
+          residents,
+          activeRules,
+          terraceContext,
+        );
+
+        const data: Prisma.TransactionUncheckedUpdateManyInput = {
+          unitNumberDetected: result.unitNumberDetected,
+          payerNameDetected: result.payerNameDetected,
+          paymentConcept: result.paymentConcept,
+          paymentPeriodYear: result.paymentPeriodYear,
+          paymentPeriodMonth: result.paymentPeriodMonth,
+          matchSource: result.matchSource,
+          confidenceScore: result.confidenceScore
+            ? new Prisma.Decimal(result.confidenceScore.toFixed(4))
+            : null,
+          matchedAt: result.matchedAt ? nowForChunk : null,
+          residentId: result.residentId,
+          classificationStatus: result.classificationStatus,
+          requiresReviewReason: result.requiresReviewReason ?? null,
+          matchedRuleId: result.matchedRuleId ?? null,
+          matchedCalendarEventId: result.matchedCalendarEventId ?? null,
+          classificationVersion: { increment: 1 },
+        };
+
+        const key = JSON.stringify(data, (_k, v) =>
+          v instanceof Prisma.Decimal ? v.toString() : v,
+        );
+        const existing = groups.get(key);
+        if (existing) {
+          existing.ids.push(tx.id);
+        } else {
+          groups.set(key, { ids: [tx.id], data });
+        }
+
+        if (result.classificationStatus === ClassificationStatus.AUTO) {
+          classified++;
+        } else {
+          needsReview++;
+          if (!result.residentId) unmatched++;
+        }
+
+        const d = new Date(tx.transactionDate);
+        affectedMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
+      }
+
+      const updates = Array.from(groups.values()).map(({ ids, data }) =>
+        this.prisma.transaction.updateMany({
+          where: { condominiumId, id: { in: ids } },
+          data,
+        }),
+      );
+      await this.prisma.$transaction(updates);
+    }
+
+    // Recompute monthly summaries for every period that had at least one
+    // touched transaction. classifyBatch does this scoped by batchId; here
+    // we span batches but the per-month aggregation is the same.
+    await Promise.all(
+      Array.from(affectedMonths).map((key) => {
+        const [year, month] = key.split('-').map(Number);
+        return this.upsertSummaryForMonth(condominiumId, year, month);
+      }),
+    );
+
+    if (actorUserId) {
+      await this.prisma.auditLog.create({
+        data: {
+          condominiumId,
+          userId: actorUserId,
+          action: 'RULES_REAPPLIED_TO_PENDING',
+          actionCategory: 'CLASSIFICATION',
+          module: 'classification',
+          entityType: 'Condominium',
+          entityId: condominiumId,
+          afterState: {
+            total: transactions.length,
+            classified,
+            needsReview,
+            unmatched,
+          },
+          result: 'SUCCESS',
+          description: `Reapplied rules to ${transactions.length} pending transactions: ${classified} classified, ${needsReview} still need review`,
+        },
+      });
+    }
+
+    return { total: transactions.length, classified, needsReview, unmatched };
   }
 
   async manualMatch(

@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { Prisma, RuleChangeAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -39,6 +39,34 @@ export class ReconciliationRulesService {
     } catch (err) {
       this.logger.warn(
         `emitRuleModified failed for rule ${ruleId}: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Append a row to the rule-change log. The log drives the "rules modified
+   * since last reapply" banner in the web app and the apply-pending endpoint.
+   */
+  private async recordChange(
+    condominiumId: string,
+    ruleId: string | null,
+    ruleName: string,
+    action: RuleChangeAction,
+    actorUserId?: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.reconciliationRuleChangeLog.create({
+        data: {
+          condominiumId,
+          ruleId,
+          ruleName,
+          action,
+          changedByUserId: actorUserId ?? null,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `recordChange failed for rule ${ruleId ?? '(deleted)'}: ${String(err)}`,
       );
     }
   }
@@ -96,6 +124,13 @@ export class ReconciliationRulesService {
         isActive: dto.isActive ?? true,
       },
     });
+    await this.recordChange(
+      condominiumId,
+      rule.id,
+      rule.name,
+      RuleChangeAction.CREATED,
+      actorUserId,
+    );
     this.emitRuleModified(
       condominiumId,
       rule.id,
@@ -128,9 +163,16 @@ export class ReconciliationRulesService {
       where: { id },
       data,
     });
-    // Skip the notification for a no-op PATCH (empty DTO) — only a real
+    // Skip the log + notification for a no-op PATCH (empty DTO) — only a real
     // change is worth surfacing.
     if (Object.keys(data).length > 0) {
+      await this.recordChange(
+        condominiumId,
+        rule.id,
+        rule.name,
+        RuleChangeAction.UPDATED,
+        actorUserId,
+      );
       this.emitRuleModified(
         condominiumId,
         rule.id,
@@ -148,6 +190,13 @@ export class ReconciliationRulesService {
       where: { id },
       data: { isActive: !rule.isActive },
     });
+    await this.recordChange(
+      condominiumId,
+      updated.id,
+      updated.name,
+      RuleChangeAction.TOGGLED,
+      actorUserId,
+    );
     this.emitRuleModified(
       condominiumId,
       updated.id,
@@ -158,9 +207,65 @@ export class ReconciliationRulesService {
     return updated;
   }
 
-  async remove(condominiumId: string, id: string) {
-    await this.findOneOrFail(condominiumId, id);
+  async remove(condominiumId: string, id: string, actorUserId?: string) {
+    const rule = await this.findOneOrFail(condominiumId, id);
     await this.prisma.reconciliationRule.delete({ where: { id } });
+    // ruleId is intentionally null — the row is gone — but we keep the name
+    // as a snapshot so the UI can still render "Cuota mensual" in the change
+    // list after a delete.
+    await this.recordChange(
+      condominiumId,
+      null,
+      rule.name,
+      RuleChangeAction.DELETED,
+      actorUserId,
+    );
+  }
+
+  /**
+   * Returns the unapplied rule changes for the tenant plus how many pending
+   * transactions exist that would be affected by a reapply.
+   */
+  async getPendingChanges(condominiumId: string) {
+    const [changes, pendingTransactionsCount] = await Promise.all([
+      this.prisma.reconciliationRuleChangeLog.findMany({
+        where: { condominiumId, appliedAt: null },
+        orderBy: { changedAt: 'desc' },
+      }),
+      this.prisma.transaction.count({
+        where: {
+          condominiumId,
+          classificationStatus: 'NEEDS_REVIEW',
+          reconciliationStatus: 'PENDING',
+        },
+      }),
+    ]);
+
+    return {
+      hasPending: changes.length > 0,
+      pendingCount: changes.length,
+      pendingTransactionsCount,
+      changes: changes.map((c) => ({
+        id: c.id,
+        ruleId: c.ruleId,
+        ruleName: c.ruleName,
+        action: c.action,
+        changedAt: c.changedAt.toISOString(),
+        changedByUserId: c.changedByUserId,
+      })),
+    };
+  }
+
+  /** Mark every unapplied change for the tenant as applied by `userId` now. */
+  async markAllChangesApplied(condominiumId: string, userId: string | null) {
+    const result = await this.prisma.reconciliationRuleChangeLog.updateMany({
+      where: { condominiumId, appliedAt: null },
+      data: {
+        appliedAt: new Date(),
+        appliedByUserId: userId,
+      },
+    });
+    return result.count;
   }
 
   private async findOneOrFail(condominiumId: string, id: string) {

@@ -314,6 +314,7 @@ model Condominium {
   notifications                    Notification[]
   financialMonthlySummaries        FinancialMonthlySummary[]
   reconciliationRules              ReconciliationRule[]
+  reconciliationRuleChangeLogs     ReconciliationRuleChangeLog[]
   paymentAllocations               PaymentAllocation[]
   reconciliationCorrectionPatterns ReconciliationCorrectionPattern[]
   calendarEvents                   CalendarEvent[]
@@ -936,6 +937,31 @@ model ReconciliationRule {
   @@index([condominiumId, isActive])
   @@index([condominiumId, priority])
   @@map("reconciliation_rules")
+}
+
+enum RuleChangeAction {
+  CREATED
+  UPDATED
+  DELETED
+  TOGGLED
+}
+
+model ReconciliationRuleChangeLog {
+  id              String           @id @default(uuid())
+  condominiumId   String
+  ruleId          String?
+  ruleName        String
+  action          RuleChangeAction
+  changedAt       DateTime         @default(now())
+  changedByUserId String?
+  appliedAt       DateTime?
+  appliedByUserId String?
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+
+  @@index([condominiumId, appliedAt])
+  @@index([condominiumId, changedAt])
+  @@map("reconciliation_rule_change_logs")
 }
 
 model PaymentAllocation {

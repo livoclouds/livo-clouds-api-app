@@ -2,7 +2,9 @@ import {
   Body,
   Controller,
   Delete,
+  forwardRef,
   Get,
+  Inject,
   Param,
   Patch,
   Post,
@@ -16,6 +18,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
+import { ClassificationService } from '../classification/classification.service';
 import { ReconciliationRulesService } from './reconciliation-rules.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -25,7 +28,11 @@ import { ListReconciliationRulesDto } from './dto/list-reconciliation-rules.dto'
 @Controller('condominiums/:condominiumSlug/settings/reconciliation-rules')
 @UseGuards(CondominiumAccessGuard, RolesGuard)
 export class ReconciliationRulesController {
-  constructor(private readonly service: ReconciliationRulesService) {}
+  constructor(
+    private readonly service: ReconciliationRulesService,
+    @Inject(forwardRef(() => ClassificationService))
+    private readonly classification: ClassificationService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'List reconciliation rules for a condominium' })
@@ -34,6 +41,36 @@ export class ReconciliationRulesController {
     @Query() dto: ListReconciliationRulesDto,
   ) {
     return this.service.findAll(req.condominiumId, dto);
+  }
+
+  @Get('pending-changes')
+  @ApiOperation({
+    summary:
+      'List rule changes that have not been reapplied to pending transactions yet, with the count of pending transactions.',
+  })
+  async pendingChanges(@Request() req: { condominiumId: string }) {
+    return this.service.getPendingChanges(req.condominiumId);
+  }
+
+  @Post('apply-pending')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({
+    summary:
+      'Reapply the current active rules to every NEEDS_REVIEW + PENDING transaction in the tenant and mark every queued rule change as applied.',
+  })
+  async applyPending(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const summary = await this.classification.reapplyToPending(
+      req.condominiumId,
+      user.sub,
+    );
+    const appliedChanges = await this.service.markAllChangesApplied(
+      req.condominiumId,
+      user.sub,
+    );
+    return { ...summary, appliedChanges };
   }
 
   @Post()
@@ -76,8 +113,9 @@ export class ReconciliationRulesController {
   async remove(
     @Request() req: { condominiumId: string },
     @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
   ) {
-    await this.service.remove(req.condominiumId, id);
+    await this.service.remove(req.condominiumId, id, user.sub);
     return { success: true };
   }
 }
