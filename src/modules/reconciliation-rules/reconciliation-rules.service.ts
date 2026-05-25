@@ -330,6 +330,24 @@ export class ReconciliationRulesService {
       }),
     ]);
 
+    const userIds = [
+      ...new Set(
+        changes
+          .map((c) => c.changedByUserId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const users =
+      userIds.length > 0
+        ? await this.prisma.user.findMany({
+            where: { id: { in: userIds } },
+            select: { id: true, firstName: true, lastName: true },
+          })
+        : [];
+    const userNameMap = new Map(
+      users.map((u) => [u.id, `${u.firstName} ${u.lastName}`.trim()]),
+    );
+
     return {
       hasPending: changes.length > 0,
       pendingCount: changes.length,
@@ -341,6 +359,9 @@ export class ReconciliationRulesService {
         action: c.action,
         changedAt: c.changedAt.toISOString(),
         changedByUserId: c.changedByUserId,
+        changedByUserName: c.changedByUserId
+          ? (userNameMap.get(c.changedByUserId) ?? null)
+          : null,
       })),
     };
   }
