@@ -14,6 +14,7 @@ import { JwtPayload, UserRole } from '../../common/types';
 import {
   ListAggregateQuery,
   ListObjectsQuery,
+  ListUserAggregateQuery,
 } from './dto/list-objects.dto';
 import { StorageAdminService } from './storage-admin.service';
 
@@ -38,7 +39,7 @@ export class StorageAdminController {
 
   @Get('users')
   @ApiOperation({ summary: 'Aggregated storage usage by uploader (root only)' })
-  byUser(@Query() query: ListAggregateQuery) {
+  byUser(@Query() query: ListUserAggregateQuery) {
     return this.service.listByUser(query);
   }
 

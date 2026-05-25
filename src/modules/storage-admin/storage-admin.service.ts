@@ -12,6 +12,7 @@ import {
   AggregateSortField,
   ListAggregateQuery,
   ListObjectsQuery,
+  ListUserAggregateQuery,
   ObjectSortField,
 } from './dto/list-objects.dto';
 
@@ -198,7 +199,7 @@ export class StorageAdminService {
     return this.paginate(rows, query.page, query.limit);
   }
 
-  async listByUser(query: ListAggregateQuery) {
+  async listByUser(query: ListUserAggregateQuery) {
     const enriched = await this.loadEnrichedObjects();
     const buckets = new Map<
       string,
@@ -237,14 +238,43 @@ export class StorageAdminService {
       buckets.set(key, current);
     }
 
-    let rows = [...buckets.values()];
+    const realIds = [...buckets.keys()].filter((k) => k !== '__unknown__');
+    const userDetails =
+      realIds.length > 0
+        ? await this.prisma.user.findMany({
+            where: { id: { in: realIds } },
+            select: {
+              id: true,
+              role: true,
+              condominiumId: true,
+              condominium: { select: { name: true, slug: true } },
+            },
+          })
+        : [];
+    const userDetailMap = new Map(userDetails.map((u) => [u.id, u]));
+
+    let rows = [...buckets.values()].map((b) => {
+      const details = userDetailMap.get(b.id);
+      return {
+        ...b,
+        role: details?.role ?? null,
+        condominiumId: details?.condominiumId ?? null,
+        condominiumName: details?.condominium?.name ?? null,
+        condominiumSlug: details?.condominium?.slug ?? null,
+      };
+    });
+
     if (query.q) {
       const needle = query.q.toLowerCase();
       rows = rows.filter(
         (r) =>
           r.name.toLowerCase().includes(needle) ||
-          r.email.toLowerCase().includes(needle),
+          r.email.toLowerCase().includes(needle) ||
+          (r.condominiumName?.toLowerCase().includes(needle) ?? false),
       );
+    }
+    if (query.condominiumId) {
+      rows = rows.filter((r) => r.condominiumId === query.condominiumId);
     }
     rows = this.applyAggregateSort(
       rows,
