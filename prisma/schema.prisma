@@ -957,6 +957,8 @@ model ReconciliationRuleChangeLog {
   changedByUserId String?
   appliedAt       DateTime?
   appliedByUserId String?
+  previousState   Json?
+  newState        Json?
 
   condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
 
