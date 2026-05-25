@@ -125,3 +125,9 @@ export class ListAggregateQuery {
   @IsIn(['asc', 'desc'])
   sortDirection?: 'asc' | 'desc';
 }
+
+export class ListUserAggregateQuery extends ListAggregateQuery {
+  @IsOptional()
+  @IsString()
+  condominiumId?: string;
+}
