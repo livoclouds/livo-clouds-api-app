@@ -73,6 +73,19 @@ export class ReconciliationRulesController {
     return { ...summary, appliedChanges };
   }
 
+  @Post('discard-pending')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({
+    summary:
+      'Revert all unapplied TOGGLED rule changes, restoring each rule to its state before the pending toggles.',
+  })
+  async discardPending(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.discardPendingToggles(req.condominiumId, user.sub);
+  }
+
   @Post()
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({ summary: 'Create a reconciliation rule' })
