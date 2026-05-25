@@ -190,13 +190,33 @@ export class ReconciliationRulesService {
       where: { id },
       data: { isActive: !rule.isActive },
     });
-    await this.recordChange(
-      condominiumId,
-      updated.id,
-      updated.name,
-      RuleChangeAction.TOGGLED,
-      actorUserId,
-    );
+
+    // If an unapplied TOGGLED entry already exists for this rule, the user
+    // toggled back to the original state — cancel it out instead of stacking
+    // another entry. This prevents inflated pending counts for back-and-forth
+    // toggles.
+    const existingToggle = await this.prisma.reconciliationRuleChangeLog.findFirst({
+      where: {
+        condominiumId,
+        ruleId: id,
+        action: RuleChangeAction.TOGGLED,
+        appliedAt: null,
+      },
+    });
+    if (existingToggle) {
+      await this.prisma.reconciliationRuleChangeLog.delete({
+        where: { id: existingToggle.id },
+      });
+    } else {
+      await this.recordChange(
+        condominiumId,
+        updated.id,
+        updated.name,
+        RuleChangeAction.TOGGLED,
+        actorUserId,
+      );
+    }
+
     this.emitRuleModified(
       condominiumId,
       updated.id,
@@ -205,6 +225,38 @@ export class ReconciliationRulesService {
       actorUserId,
     );
     return updated;
+  }
+
+  /**
+   * Revert all unapplied TOGGLED changes for the tenant: for every rule with
+   * an outstanding TOGGLED log entry, toggle it back to its pre-change state.
+   * Each call to `toggleActive()` cancels the existing log entry (via the
+   * cancel-out logic above), so no orphan entries remain.
+   */
+  async discardPendingToggles(condominiumId: string, actorUserId?: string) {
+    const pendingToggles = await this.prisma.reconciliationRuleChangeLog.findMany({
+      where: {
+        condominiumId,
+        action: RuleChangeAction.TOGGLED,
+        appliedAt: null,
+        ruleId: { not: null },
+      },
+      select: { ruleId: true },
+    });
+
+    const ruleIds = [...new Set(pendingToggles.map((t) => t.ruleId as string))];
+
+    const updatedRules = [];
+    for (const ruleId of ruleIds) {
+      try {
+        const reverted = await this.toggleActive(condominiumId, ruleId, actorUserId);
+        updatedRules.push(reverted);
+      } catch (err) {
+        this.logger.warn(`discardPendingToggles: failed to revert rule ${ruleId}: ${String(err)}`);
+      }
+    }
+
+    return { discardedCount: ruleIds.length, updatedRules };
   }
 
   async remove(condominiumId: string, id: string, actorUserId?: string) {
