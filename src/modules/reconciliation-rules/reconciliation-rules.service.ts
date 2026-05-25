@@ -191,23 +191,21 @@ export class ReconciliationRulesService {
       data: { isActive: !rule.isActive },
     });
 
-    // If an unapplied TOGGLED entry already exists for this rule, the user
-    // toggled back to the original state — cancel it out instead of stacking
-    // another entry. This prevents inflated pending counts for back-and-forth
-    // toggles.
-    const existingToggle = await this.prisma.reconciliationRuleChangeLog.findFirst({
-      where: {
-        condominiumId,
-        ruleId: id,
-        action: RuleChangeAction.TOGGLED,
-        appliedAt: null,
-      },
-    });
-    if (existingToggle) {
-      await this.prisma.reconciliationRuleChangeLog.delete({
-        where: { id: existingToggle.id },
+    // Delete ALL unapplied TOGGLED entries for this rule atomically.
+    // Parity determines the net direction: even deletedCount → this toggle IS
+    // a new net change (record it); odd → it cancels a previous net change (skip).
+    // Using deleteMany instead of findFirst+delete prevents race-condition stacking
+    // when the user clicks the toggle rapidly before the first request resolves.
+    const { count: deletedCount } =
+      await this.prisma.reconciliationRuleChangeLog.deleteMany({
+        where: {
+          condominiumId,
+          ruleId: id,
+          action: RuleChangeAction.TOGGLED,
+          appliedAt: null,
+        },
       });
-    } else {
+    if (deletedCount % 2 === 0) {
       await this.recordChange(
         condominiumId,
         updated.id,
@@ -228,10 +226,11 @@ export class ReconciliationRulesService {
   }
 
   /**
-   * Revert all unapplied TOGGLED changes for the tenant: for every rule with
-   * an outstanding TOGGLED log entry, toggle it back to its pre-change state.
-   * Each call to `toggleActive()` cancels the existing log entry (via the
-   * cancel-out logic above), so no orphan entries remain.
+   * Revert all pending changes for the tenant:
+   * — TOGGLED entries are batch-deleted; rules with an odd accumulated count are
+   *   restored to their pre-toggle DB state (odd = net change from original).
+   * — All remaining unapplied entries (CREATED, UPDATED, DELETED) are stamped
+   *   with appliedAt so the pending-changes banner is fully cleared on reload.
    */
   async discardPendingToggles(condominiumId: string, actorUserId?: string) {
     const pendingToggles = await this.prisma.reconciliationRuleChangeLog.findMany({
@@ -241,22 +240,60 @@ export class ReconciliationRulesService {
         appliedAt: null,
         ruleId: { not: null },
       },
-      select: { ruleId: true },
+      select: { id: true, ruleId: true },
     });
 
-    const ruleIds = [...new Set(pendingToggles.map((t) => t.ruleId as string))];
+    // Group entry IDs by ruleId to determine net state per rule.
+    const byRuleId = new Map<string, string[]>();
+    for (const t of pendingToggles) {
+      const ruleId = t.ruleId as string;
+      if (!byRuleId.has(ruleId)) byRuleId.set(ruleId, []);
+      byRuleId.get(ruleId)!.push(t.id);
+    }
 
+    // Batch-delete ALL accumulated TOGGLED entries (handles race-condition duplicates).
+    if (pendingToggles.length > 0) {
+      await this.prisma.reconciliationRuleChangeLog.deleteMany({
+        where: { id: { in: pendingToggles.map((t) => t.id) } },
+      });
+    }
+
+    // Restore DB state for rules where the accumulated toggle count is odd
+    // (odd = net change from original; even = already back to original).
     const updatedRules = [];
-    for (const ruleId of ruleIds) {
-      try {
-        const reverted = await this.toggleActive(condominiumId, ruleId, actorUserId);
-        updatedRules.push(reverted);
-      } catch (err) {
-        this.logger.warn(`discardPendingToggles: failed to revert rule ${ruleId}: ${String(err)}`);
+    for (const [ruleId, entryIds] of byRuleId) {
+      if (entryIds.length % 2 === 1) {
+        try {
+          const rule = await this.prisma.reconciliationRule.findFirst({
+            where: { id: ruleId, condominiumId },
+          });
+          if (rule) {
+            const restored = await this.prisma.reconciliationRule.update({
+              where: { id: ruleId },
+              data: { isActive: !rule.isActive },
+            });
+            updatedRules.push(restored);
+            this.emitRuleModified(
+              condominiumId,
+              restored.id,
+              restored.name,
+              restored.isActive ? 'updated' : 'deactivated',
+              actorUserId,
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            `discardPendingToggles: failed to restore rule ${ruleId}: ${String(err)}`,
+          );
+        }
       }
     }
 
-    return { discardedCount: ruleIds.length, updatedRules };
+    // Mark every remaining unapplied entry (CREATED / UPDATED / DELETED) as
+    // applied so getPendingChanges() returns hasPending: false after a reload.
+    await this.markAllChangesApplied(condominiumId, actorUserId ?? null);
+
+    return { discardedCount: byRuleId.size, updatedRules };
   }
 
   async remove(condominiumId: string, id: string, actorUserId?: string) {
