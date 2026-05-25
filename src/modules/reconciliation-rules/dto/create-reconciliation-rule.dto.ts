@@ -1,7 +1,6 @@
 import {
   IsArray,
   IsBoolean,
-  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -39,13 +38,6 @@ export class CreateReconciliationRuleDto {
   @Max(1)
   @Type(() => Number)
   confidenceThreshold?: number;
-
-  @ApiPropertyOptional({ default: 0 })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Type(() => Number)
-  priority?: number;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()

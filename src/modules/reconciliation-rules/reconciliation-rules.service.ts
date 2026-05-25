@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, RuleChangeAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,6 +16,8 @@ import {
   type ReconciliationRuleAction,
   type ReconciliationRuleModifiedEventPayload,
 } from './events/reconciliation-notification-events';
+
+const REORDER_CHANGE_LOG_NAME = '(reorder)';
 
 @Injectable()
 export class ReconciliationRulesService {
@@ -110,6 +118,15 @@ export class ReconciliationRulesService {
     dto: CreateReconciliationRuleDto,
     actorUserId?: string,
   ) {
+    // Priority is no longer user-editable. New rules are appended at the end
+    // of the list (MAX(priority) + 1, starting from 1). Reordering happens
+    // through the dedicated reorder() endpoint.
+    const aggregate = await this.prisma.reconciliationRule.aggregate({
+      where: { condominiumId },
+      _max: { priority: true },
+    });
+    const nextPriority = (aggregate._max.priority ?? 0) + 1;
+
     const rule = await this.prisma.reconciliationRule.create({
       data: {
         condominiumId,
@@ -120,7 +137,7 @@ export class ReconciliationRulesService {
         confidenceThreshold: dto.confidenceThreshold !== undefined
           ? new Prisma.Decimal(dto.confidenceThreshold.toFixed(2))
           : new Prisma.Decimal('0.80'),
-        priority: dto.priority ?? 0,
+        priority: nextPriority,
         isActive: dto.isActive ?? true,
       },
     });
@@ -141,6 +158,61 @@ export class ReconciliationRulesService {
     return rule;
   }
 
+  /**
+   * Reorder all reconciliation rules of a condominium.
+   *
+   * `ruleIds` must contain every rule of the condominium exactly once. The
+   * priorities are rewritten as 1..N inside a single transaction, so a
+   * partial failure leaves the previous order intact. A REORDERED entry is
+   * appended to the change log so the "rules modified since last reapply"
+   * banner prompts the user to reapply rules to pending transactions —
+   * because changing rule order can change which rule wins the first-match
+   * loop during classification.
+   */
+  async reorder(
+    condominiumId: string,
+    ruleIds: string[],
+    actorUserId?: string,
+  ) {
+    const existing = await this.prisma.reconciliationRule.findMany({
+      where: { condominiumId },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((r) => r.id));
+
+    if (ruleIds.length !== existingIds.size) {
+      throw new ConflictException(
+        `Reorder payload must contain every rule of the condominium exactly once (expected ${existingIds.size}, received ${ruleIds.length}).`,
+      );
+    }
+    for (const id of ruleIds) {
+      if (!existingIds.has(id)) {
+        throw new ConflictException(
+          `Rule ${id} does not belong to this condominium.`,
+        );
+      }
+    }
+
+    const updated = await this.prisma.$transaction(
+      ruleIds.map((id, index) =>
+        this.prisma.reconciliationRule.update({
+          where: { id },
+          data: { priority: index + 1 },
+        }),
+      ),
+    );
+
+    await this.recordChange(
+      condominiumId,
+      null,
+      REORDER_CHANGE_LOG_NAME,
+      RuleChangeAction.REORDERED,
+      actorUserId,
+    );
+
+    return updated.sort((a, b) => a.priority - b.priority);
+  }
+
   async update(
     condominiumId: string,
     id: string,
@@ -156,7 +228,6 @@ export class ReconciliationRulesService {
     if (dto.conceptType !== undefined) data.conceptType = dto.conceptType;
     if (dto.confidenceThreshold !== undefined)
       data.confidenceThreshold = new Prisma.Decimal(dto.confidenceThreshold.toFixed(2));
-    if (dto.priority !== undefined) data.priority = dto.priority;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
 
     const rule = await this.prisma.reconciliationRule.update({
@@ -298,7 +369,26 @@ export class ReconciliationRulesService {
 
   async remove(condominiumId: string, id: string, actorUserId?: string) {
     const rule = await this.findOneOrFail(condominiumId, id);
-    await this.prisma.reconciliationRule.delete({ where: { id } });
+
+    // Delete + resequence the remaining rules to 1..N atomically so the
+    // displayed priority always matches its position in the list.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.reconciliationRule.delete({ where: { id } });
+      const remaining = await tx.reconciliationRule.findMany({
+        where: { condominiumId },
+        orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+        select: { id: true },
+      });
+      await Promise.all(
+        remaining.map((r, index) =>
+          tx.reconciliationRule.update({
+            where: { id: r.id },
+            data: { priority: index + 1 },
+          }),
+        ),
+      );
+    });
+
     // ruleId is intentionally null — the row is gone — but we keep the name
     // as a snapshot so the UI can still render "Cuota mensual" in the change
     // list after a delete.
@@ -364,6 +454,90 @@ export class ReconciliationRulesService {
           : null,
       })),
     };
+  }
+
+  /**
+   * Accept a single change log entry — marks it as applied without triggering
+   * re-classification. Returns the updated pending-changes snapshot so the
+   * caller can refresh the UI in one round-trip.
+   */
+  async acceptChange(
+    condominiumId: string,
+    changeId: string,
+    actorUserId?: string,
+  ) {
+    const entry = await this.prisma.reconciliationRuleChangeLog.findFirst({
+      where: { id: changeId, condominiumId, appliedAt: null },
+    });
+    if (!entry) throw new NotFoundException('Change log entry not found');
+
+    await this.prisma.reconciliationRuleChangeLog.update({
+      where: { id: changeId },
+      data: { appliedAt: new Date(), appliedByUserId: actorUserId ?? null },
+    });
+
+    return this.getPendingChanges(condominiumId);
+  }
+
+  /**
+   * Discard the pending TOGGLED change(s) for a single rule, identified by
+   * any one of its unapplied TOGGLED change log entries. Applies the same
+   * parity logic as discardPendingToggles but scoped to one rule. Returns
+   * the updated pending-changes snapshot plus the (potentially) reverted rule.
+   */
+  async discardSingleToggle(
+    condominiumId: string,
+    changeId: string,
+    actorUserId?: string,
+  ) {
+    const entry = await this.prisma.reconciliationRuleChangeLog.findFirst({
+      where: { id: changeId, condominiumId, appliedAt: null },
+    });
+    if (!entry) throw new NotFoundException('Change log entry not found');
+    if (entry.action !== 'TOGGLED') {
+      throw new BadRequestException(
+        'Only TOGGLED changes can be individually discarded',
+      );
+    }
+    if (!entry.ruleId) throw new BadRequestException('Change has no associated rule');
+
+    // Collect all unapplied TOGGLED entries for this rule.
+    const pendingToggles = await this.prisma.reconciliationRuleChangeLog.findMany({
+      where: {
+        condominiumId,
+        ruleId: entry.ruleId,
+        action: 'TOGGLED',
+        appliedAt: null,
+      },
+      select: { id: true },
+    });
+
+    await this.prisma.reconciliationRuleChangeLog.deleteMany({
+      where: { id: { in: pendingToggles.map((t) => t.id) } },
+    });
+
+    let updatedRule = null;
+    if (pendingToggles.length % 2 === 1) {
+      const rule = await this.prisma.reconciliationRule.findFirst({
+        where: { id: entry.ruleId, condominiumId },
+      });
+      if (rule) {
+        updatedRule = await this.prisma.reconciliationRule.update({
+          where: { id: entry.ruleId },
+          data: { isActive: !rule.isActive },
+        });
+        this.emitRuleModified(
+          condominiumId,
+          updatedRule.id,
+          updatedRule.name,
+          updatedRule.isActive ? 'updated' : 'deactivated',
+          actorUserId,
+        );
+      }
+    }
+
+    const pending = await this.getPendingChanges(condominiumId);
+    return { updatedRule, ...pending };
   }
 
   /** Mark every unapplied change for the tenant as applied by `userId` now. */

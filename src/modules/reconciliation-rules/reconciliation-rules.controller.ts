@@ -23,6 +23,7 @@ import { ReconciliationRulesService } from './reconciliation-rules.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
 import { ListReconciliationRulesDto } from './dto/list-reconciliation-rules.dto';
+import { ReorderReconciliationRulesDto } from './dto/reorder-reconciliation-rules.dto';
 
 @ApiTags('ReconciliationRules')
 @Controller('condominiums/:condominiumSlug/settings/reconciliation-rules')
@@ -84,6 +85,52 @@ export class ReconciliationRulesController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.discardPendingToggles(req.condominiumId, user.sub);
+  }
+
+  @Post('changes/:changeId/accept')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({
+    summary:
+      'Accept a single pending change log entry, marking it as applied without triggering re-classification.',
+  })
+  async acceptChange(
+    @Request() req: { condominiumId: string },
+    @Param('changeId') changeId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.acceptChange(req.condominiumId, changeId, user.sub);
+  }
+
+  @Post('changes/:changeId/discard')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({
+    summary:
+      'Discard the pending TOGGLED change(s) for the rule associated with the given change log entry, reverting the rule to its pre-toggle state.',
+  })
+  async discardChange(
+    @Request() req: { condominiumId: string },
+    @Param('changeId') changeId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.discardSingleToggle(
+      req.condominiumId,
+      changeId,
+      user.sub,
+    );
+  }
+
+  @Post('reorder')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({
+    summary:
+      'Reorder reconciliation rules. The body must list every rule of the condominium exactly once in the new desired order.',
+  })
+  async reorder(
+    @Request() req: { condominiumId: string },
+    @Body() dto: ReorderReconciliationRulesDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.reorder(req.condominiumId, dto.ruleIds, user.sub);
   }
 
   @Post()
