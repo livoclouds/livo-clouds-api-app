@@ -16,6 +16,7 @@ export const OBJECT_SORT_FIELDS = [
   'condominiumName',
   'uploaderName',
   'lastAccessedAt',
+  'createdAt',
 ] as const;
 export type ObjectSortField = (typeof OBJECT_SORT_FIELDS)[number];
 

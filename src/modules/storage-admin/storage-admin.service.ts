@@ -30,6 +30,7 @@ export interface EnrichedObject {
   extension: string;
   size: number;
   lastModified: string | null;
+  createdAt: string | null;
   etag: string | null;
   scope: ParsedR2Key['scope'];
   condominium: { id: string; slug: string; name: string } | null;
@@ -375,6 +376,7 @@ export class StorageAdminService {
                 id: true,
                 status: true,
                 fileName: true,
+                createdAt: true,
                 importedById: true,
                 importedBy: {
                   select: {
@@ -424,6 +426,7 @@ export class StorageAdminService {
         extension: fileExtension(p.fileName),
         size: raw.size,
         lastModified: raw.lastModified ? raw.lastModified.toISOString() : null,
+        createdAt: batch?.createdAt.toISOString() ?? raw.lastModified?.toISOString() ?? null,
         etag: raw.etag,
         scope: p.scope,
         condominium: condo
@@ -506,6 +509,8 @@ export class StorageAdminService {
             : '';
         case 'lastAccessedAt':
           return o.lastAccessedAt ?? '';
+        case 'createdAt':
+          return o.createdAt ?? '';
       }
     };
     return [...rows].sort((a, b) => {
