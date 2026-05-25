@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, RuleChangeAction } from '@prisma/client';
+import { Prisma, ReconciliationRule, RuleChangeAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -18,6 +18,40 @@ import {
 } from './events/reconciliation-notification-events';
 
 const REORDER_CHANGE_LOG_NAME = '(reorder)';
+
+/**
+ * Subset of ReconciliationRule fields snapshotted to the change log. Stored as
+ * JSON so a pending change can be individually reverted (per-row Discard) and
+ * displayed as a field-level diff in the web UI.
+ *
+ * confidenceThreshold is serialized as a string because Prisma.Decimal does not
+ * survive JSON.stringify with full precision otherwise.
+ */
+export interface ReconciliationRuleSnapshot {
+  id: string;
+  condominiumId: string;
+  name: string;
+  keywords: string[];
+  unitPatterns: string[];
+  conceptType: string | null;
+  confidenceThreshold: string;
+  isActive: boolean;
+  priority: number;
+}
+
+function serializeRuleSnapshot(rule: ReconciliationRule): ReconciliationRuleSnapshot {
+  return {
+    id: rule.id,
+    condominiumId: rule.condominiumId,
+    name: rule.name,
+    keywords: [...rule.keywords],
+    unitPatterns: [...rule.unitPatterns],
+    conceptType: rule.conceptType,
+    confidenceThreshold: rule.confidenceThreshold.toString(),
+    isActive: rule.isActive,
+    priority: rule.priority,
+  };
+}
 
 @Injectable()
 export class ReconciliationRulesService {
@@ -61,6 +95,8 @@ export class ReconciliationRulesService {
     ruleName: string,
     action: RuleChangeAction,
     actorUserId?: string,
+    previousState: ReconciliationRuleSnapshot | null = null,
+    newState: ReconciliationRuleSnapshot | null = null,
   ): Promise<void> {
     try {
       await this.prisma.reconciliationRuleChangeLog.create({
@@ -70,6 +106,14 @@ export class ReconciliationRulesService {
           ruleName,
           action,
           changedByUserId: actorUserId ?? null,
+          previousState:
+            previousState === null
+              ? Prisma.DbNull
+              : (previousState as unknown as Prisma.InputJsonValue),
+          newState:
+            newState === null
+              ? Prisma.DbNull
+              : (newState as unknown as Prisma.InputJsonValue),
         },
       });
     } catch (err) {
@@ -147,6 +191,8 @@ export class ReconciliationRulesService {
       rule.name,
       RuleChangeAction.CREATED,
       actorUserId,
+      null,
+      serializeRuleSnapshot(rule),
     );
     this.emitRuleModified(
       condominiumId,
@@ -219,7 +265,7 @@ export class ReconciliationRulesService {
     dto: UpdateReconciliationRuleDto,
     actorUserId?: string,
   ) {
-    await this.findOneOrFail(condominiumId, id);
+    const before = await this.findOneOrFail(condominiumId, id);
 
     const data: Prisma.ReconciliationRuleUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
@@ -243,6 +289,8 @@ export class ReconciliationRulesService {
         rule.name,
         RuleChangeAction.UPDATED,
         actorUserId,
+        serializeRuleSnapshot(before),
+        serializeRuleSnapshot(rule),
       );
       this.emitRuleModified(
         condominiumId,
@@ -283,6 +331,8 @@ export class ReconciliationRulesService {
         updated.name,
         RuleChangeAction.TOGGLED,
         actorUserId,
+        serializeRuleSnapshot(rule),
+        serializeRuleSnapshot(updated),
       );
     }
 
@@ -391,13 +441,16 @@ export class ReconciliationRulesService {
 
     // ruleId is intentionally null — the row is gone — but we keep the name
     // as a snapshot so the UI can still render "Cuota mensual" in the change
-    // list after a delete.
+    // list after a delete. The full pre-delete state is preserved in
+    // previousState so the rule can be restored via per-row discard.
     await this.recordChange(
       condominiumId,
       null,
       rule.name,
       RuleChangeAction.DELETED,
       actorUserId,
+      serializeRuleSnapshot(rule),
+      null,
     );
   }
 
@@ -452,6 +505,8 @@ export class ReconciliationRulesService {
         changedByUserName: c.changedByUserId
           ? (userNameMap.get(c.changedByUserId) ?? null)
           : null,
+        previousState: c.previousState as ReconciliationRuleSnapshot | null,
+        newState: c.newState as ReconciliationRuleSnapshot | null,
       })),
     };
   }
@@ -480,12 +535,28 @@ export class ReconciliationRulesService {
   }
 
   /**
-   * Discard the pending TOGGLED change(s) for a single rule, identified by
-   * any one of its unapplied TOGGLED change log entries. Applies the same
-   * parity logic as discardPendingToggles but scoped to one rule. Returns
-   * the updated pending-changes snapshot plus the (potentially) reverted rule.
+   * Discard a single pending change. The rule is reverted to the state stored
+   * in entry.previousState (the state immediately before THIS mutation) and
+   * every later unapplied entry for the same rule is also discarded — they
+   * were layered on the now-reverted state, so keeping them would leave the
+   * pending queue inconsistent. Returns the updated pending-changes snapshot
+   * plus the (potentially) reverted rule.
+   *
+   * Branching by action:
+   *  - CREATED  → delete the rule (it never should have existed for this user)
+   *  - UPDATED  → apply previousState fields to the existing rule
+   *  - TOGGLED  → set isActive back to previousState.isActive
+   *  - DELETED  → recreate the rule from previousState, reusing its UUID
+   *               (throws 409 ConflictException if a rule with that UUID already
+   *               exists — preserves historical traceability with classifications)
+   *  - REORDERED → not individually revertable (priorities only make sense as a
+   *               whole set); throws 400.
+   *
+   * Pre-migration entries (previousState === null && action !== CREATED) cannot
+   * be reverted individually — the API has no information to restore them to.
+   * Throws 400 in that case.
    */
-  async discardSingleToggle(
+  async discardSingleChange(
     condominiumId: string,
     changeId: string,
     actorUserId?: string,
@@ -494,46 +565,120 @@ export class ReconciliationRulesService {
       where: { id: changeId, condominiumId, appliedAt: null },
     });
     if (!entry) throw new NotFoundException('Change log entry not found');
-    if (entry.action !== 'TOGGLED') {
+    if (entry.action === RuleChangeAction.REORDERED) {
       throw new BadRequestException(
-        'Only TOGGLED changes can be individually discarded',
+        'Reorder changes cannot be individually discarded',
       );
     }
-    if (!entry.ruleId) throw new BadRequestException('Change has no associated rule');
 
-    // Collect all unapplied TOGGLED entries for this rule.
-    const pendingToggles = await this.prisma.reconciliationRuleChangeLog.findMany({
+    const previousState = entry.previousState as ReconciliationRuleSnapshot | null;
+    const targetRuleId = entry.ruleId ?? previousState?.id ?? null;
+    if (!targetRuleId) {
+      throw new BadRequestException(
+        'Change cannot be individually discarded (no rule reference and no snapshot)',
+      );
+    }
+    if (entry.action !== RuleChangeAction.CREATED && !previousState) {
+      throw new BadRequestException(
+        'Change cannot be individually discarded (snapshot missing — recorded before snapshots were enabled)',
+      );
+    }
+
+    // Collect every unapplied entry for this rule with changedAt >= entry.changedAt.
+    // These all get deleted in a single transaction together with the revert.
+    const cascadeEntries = await this.prisma.reconciliationRuleChangeLog.findMany({
       where: {
         condominiumId,
-        ruleId: entry.ruleId,
-        action: 'TOGGLED',
+        OR: [{ ruleId: targetRuleId }],
         appliedAt: null,
+        changedAt: { gte: entry.changedAt },
       },
-      select: { id: true },
+      select: { id: true, action: true },
     });
+    const cascadeIds = cascadeEntries.map((c) => c.id);
+    if (!cascadeIds.includes(entry.id)) cascadeIds.push(entry.id);
 
-    await this.prisma.reconciliationRuleChangeLog.deleteMany({
-      where: { id: { in: pendingToggles.map((t) => t.id) } },
-    });
+    const updatedRule = await this.prisma.$transaction(
+      async (tx): Promise<ReconciliationRule | null> => {
+        let result: ReconciliationRule | null = null;
+        switch (entry.action) {
+          case RuleChangeAction.CREATED: {
+            // The rule never should have existed — delete it (cascades to any
+            // dependent rows; pending TOGGLED/UPDATED entries for this rule are
+            // cleared via the cascadeIds deleteMany below).
+            await tx.reconciliationRule
+              .delete({ where: { id: targetRuleId } })
+              .catch(() => undefined);
+            break;
+          }
+          case RuleChangeAction.UPDATED:
+          case RuleChangeAction.TOGGLED: {
+            // Re-apply the previousState fields. The rule must still exist
+            // (since neither UPDATED nor TOGGLED removes it).
+            if (!previousState) throw new BadRequestException('Missing snapshot');
+            result = await tx.reconciliationRule.update({
+              where: { id: targetRuleId },
+              data: {
+                name: previousState.name,
+                keywords: previousState.keywords,
+                unitPatterns: previousState.unitPatterns,
+                conceptType: previousState.conceptType,
+                confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
+                isActive: previousState.isActive,
+                priority: previousState.priority,
+              },
+            });
+            break;
+          }
+          case RuleChangeAction.DELETED: {
+            if (!previousState) throw new BadRequestException('Missing snapshot');
+            const collision = await tx.reconciliationRule.findUnique({
+              where: { id: targetRuleId },
+              select: { id: true },
+            });
+            if (collision) {
+              throw new ConflictException(
+                `Cannot restore rule: a rule with id ${targetRuleId} already exists`,
+              );
+            }
+            result = await tx.reconciliationRule.create({
+              data: {
+                id: previousState.id,
+                condominiumId: previousState.condominiumId,
+                name: previousState.name,
+                keywords: previousState.keywords,
+                unitPatterns: previousState.unitPatterns,
+                conceptType: previousState.conceptType,
+                confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
+                isActive: previousState.isActive,
+                priority: previousState.priority,
+              },
+            });
+            break;
+          }
+          default:
+            throw new BadRequestException(`Unsupported action ${entry.action}`);
+        }
 
-    let updatedRule = null;
-    if (pendingToggles.length % 2 === 1) {
-      const rule = await this.prisma.reconciliationRule.findFirst({
-        where: { id: entry.ruleId, condominiumId },
-      });
-      if (rule) {
-        updatedRule = await this.prisma.reconciliationRule.update({
-          where: { id: entry.ruleId },
-          data: { isActive: !rule.isActive },
+        await tx.reconciliationRuleChangeLog.deleteMany({
+          where: { id: { in: cascadeIds } },
         });
-        this.emitRuleModified(
-          condominiumId,
-          updatedRule.id,
-          updatedRule.name,
-          updatedRule.isActive ? 'updated' : 'deactivated',
-          actorUserId,
-        );
-      }
+        return result;
+      },
+    );
+
+    if (updatedRule) {
+      this.emitRuleModified(
+        condominiumId,
+        updatedRule.id,
+        updatedRule.name,
+        entry.action === RuleChangeAction.DELETED
+          ? 'created'
+          : updatedRule.isActive
+            ? 'updated'
+            : 'deactivated',
+        actorUserId,
+      );
     }
 
     const pending = await this.getPendingChanges(condominiumId);

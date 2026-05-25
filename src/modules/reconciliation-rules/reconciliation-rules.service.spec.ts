@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma, RuleChangeAction } from '@prisma/client';
 import { ReconciliationRulesService } from './reconciliation-rules.service';
 
@@ -9,6 +9,7 @@ interface PrismaMock {
   reconciliationRule: {
     findMany: jest.Mock;
     findFirst: jest.Mock;
+    findUnique: jest.Mock;
     aggregate: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
@@ -16,9 +17,11 @@ interface PrismaMock {
   };
   reconciliationRuleChangeLog: {
     create: jest.Mock;
+    findFirst: jest.Mock;
     findMany: jest.Mock;
     deleteMany: jest.Mock;
     updateMany: jest.Mock;
+    update: jest.Mock;
   };
   transaction: { count: jest.Mock };
   user: { findMany: jest.Mock };
@@ -34,16 +37,19 @@ function makePrismaMock(): PrismaMock {
     reconciliationRule: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
       aggregate: jest.fn().mockResolvedValue({ _max: { priority: null } }),
       create: jest.fn(),
       update: jest.fn(),
-      delete: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
     },
     reconciliationRuleChangeLog: {
       create: jest.fn().mockResolvedValue(undefined),
+      findFirst: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      update: jest.fn(),
     },
     transaction: { count: jest.fn().mockResolvedValue(0) },
     user: { findMany: jest.fn().mockResolvedValue([]) },
@@ -219,6 +225,245 @@ describe('ReconciliationRulesService', () => {
         service.reorder(CONDOMINIUM_ID, ['a', 'foreign'], USER_ID),
       ).rejects.toThrow(ConflictException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('discardSingleChange', () => {
+    function makeSnapshot(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'rule-1',
+        condominiumId: CONDOMINIUM_ID,
+        name: 'Original name',
+        keywords: ['kw'],
+        unitPatterns: [],
+        conceptType: null,
+        confidenceThreshold: '0.80',
+        isActive: true,
+        priority: 1,
+        ...overrides,
+      };
+    }
+
+    it('throws NotFoundException when entry does not exist or is already applied', async () => {
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue(null);
+      await expect(
+        service.discardSingleChange(CONDOMINIUM_ID, 'missing', USER_ID),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws BadRequestException for REORDERED action', async () => {
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-1',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: null,
+        action: RuleChangeAction.REORDERED,
+        changedAt: new Date(),
+        previousState: null,
+        newState: null,
+      });
+      await expect(
+        service.discardSingleChange(CONDOMINIUM_ID, 'change-1', USER_ID),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException when snapshot missing for non-CREATED entry', async () => {
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-1',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: 'rule-1',
+        action: RuleChangeAction.UPDATED,
+        changedAt: new Date(),
+        previousState: null,
+        newState: null,
+      });
+      await expect(
+        service.discardSingleChange(CONDOMINIUM_ID, 'change-1', USER_ID),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('CREATED → deletes the rule and removes cascade entries', async () => {
+      const changedAt = new Date('2026-05-25T10:00:00Z');
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-created',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: 'rule-new',
+        action: RuleChangeAction.CREATED,
+        changedAt,
+        previousState: null,
+        newState: makeSnapshot({ id: 'rule-new' }),
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-created', action: RuleChangeAction.CREATED },
+        { id: 'change-toggle-after', action: RuleChangeAction.TOGGLED },
+      ]);
+
+      const result = await service.discardSingleChange(
+        CONDOMINIUM_ID,
+        'change-created',
+        USER_ID,
+      );
+
+      expect(prisma.reconciliationRule.delete).toHaveBeenCalledWith({
+        where: { id: 'rule-new' },
+      });
+      expect(prisma.reconciliationRuleChangeLog.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['change-created', 'change-toggle-after'] } },
+      });
+      expect(result.updatedRule).toBeNull();
+    });
+
+    it('UPDATED → applies previousState fields back to the rule', async () => {
+      const changedAt = new Date('2026-05-25T10:00:00Z');
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-update',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: 'rule-1',
+        action: RuleChangeAction.UPDATED,
+        changedAt,
+        previousState: makeSnapshot({
+          name: 'Old name',
+          keywords: ['old'],
+          confidenceThreshold: '0.75',
+        }),
+        newState: makeSnapshot({ name: 'New name', keywords: ['new'] }),
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-update', action: RuleChangeAction.UPDATED },
+      ]);
+      prisma.reconciliationRule.update.mockResolvedValue(
+        makeRule({ id: 'rule-1', name: 'Old name', keywords: ['old'] }),
+      );
+
+      const result = await service.discardSingleChange(
+        CONDOMINIUM_ID,
+        'change-update',
+        USER_ID,
+      );
+
+      expect(prisma.reconciliationRule.update).toHaveBeenCalledWith({
+        where: { id: 'rule-1' },
+        data: expect.objectContaining({
+          name: 'Old name',
+          keywords: ['old'],
+          isActive: true,
+        }),
+      });
+      const updateCall = prisma.reconciliationRule.update.mock.calls[0][0] as {
+        data: { confidenceThreshold: Prisma.Decimal };
+      };
+      expect(updateCall.data.confidenceThreshold.toString()).toBe('0.75');
+      expect(result.updatedRule).not.toBeNull();
+      expect(events.emit).toHaveBeenCalled();
+    });
+
+    it('TOGGLED → restores isActive from previousState', async () => {
+      const changedAt = new Date('2026-05-25T10:00:00Z');
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-toggle',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: 'rule-1',
+        action: RuleChangeAction.TOGGLED,
+        changedAt,
+        previousState: makeSnapshot({ isActive: true }),
+        newState: makeSnapshot({ isActive: false }),
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-toggle', action: RuleChangeAction.TOGGLED },
+      ]);
+      prisma.reconciliationRule.update.mockResolvedValue(
+        makeRule({ id: 'rule-1', isActive: true }),
+      );
+
+      await service.discardSingleChange(CONDOMINIUM_ID, 'change-toggle', USER_ID);
+
+      expect(prisma.reconciliationRule.update).toHaveBeenCalledWith({
+        where: { id: 'rule-1' },
+        data: expect.objectContaining({ isActive: true }),
+      });
+    });
+
+    it('DELETED → restores the rule with the original UUID', async () => {
+      const changedAt = new Date('2026-05-25T10:00:00Z');
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-deleted',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: null,
+        action: RuleChangeAction.DELETED,
+        changedAt,
+        previousState: makeSnapshot({ id: 'rule-original-uuid', name: 'Gone but back' }),
+        newState: null,
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-deleted', action: RuleChangeAction.DELETED },
+      ]);
+      prisma.reconciliationRule.findUnique.mockResolvedValue(null);
+      prisma.reconciliationRule.create.mockResolvedValue(
+        makeRule({ id: 'rule-original-uuid', name: 'Gone but back' }),
+      );
+
+      const result = await service.discardSingleChange(
+        CONDOMINIUM_ID,
+        'change-deleted',
+        USER_ID,
+      );
+
+      expect(prisma.reconciliationRule.findUnique).toHaveBeenCalledWith({
+        where: { id: 'rule-original-uuid' },
+        select: { id: true },
+      });
+      expect(prisma.reconciliationRule.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          id: 'rule-original-uuid',
+          name: 'Gone but back',
+        }),
+      });
+      expect(result.updatedRule).not.toBeNull();
+    });
+
+    it('DELETED → throws ConflictException when UUID is already taken', async () => {
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-deleted',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: null,
+        action: RuleChangeAction.DELETED,
+        changedAt: new Date(),
+        previousState: makeSnapshot({ id: 'rule-x' }),
+        newState: null,
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-deleted', action: RuleChangeAction.DELETED },
+      ]);
+      prisma.reconciliationRule.findUnique.mockResolvedValue({ id: 'rule-x' });
+
+      await expect(
+        service.discardSingleChange(CONDOMINIUM_ID, 'change-deleted', USER_ID),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.reconciliationRule.create).not.toHaveBeenCalled();
+    });
+
+    it('cascade-deletes every later unapplied entry for the same rule', async () => {
+      const changedAt = new Date('2026-05-25T10:00:00Z');
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-A',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: 'rule-1',
+        action: RuleChangeAction.UPDATED,
+        changedAt,
+        previousState: makeSnapshot(),
+        newState: makeSnapshot({ name: 'After A' }),
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-A', action: RuleChangeAction.UPDATED },
+        { id: 'change-B', action: RuleChangeAction.TOGGLED },
+        { id: 'change-C', action: RuleChangeAction.UPDATED },
+      ]);
+      prisma.reconciliationRule.update.mockResolvedValue(makeRule());
+
+      await service.discardSingleChange(CONDOMINIUM_ID, 'change-A', USER_ID);
+
+      expect(prisma.reconciliationRuleChangeLog.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['change-A', 'change-B', 'change-C'] } },
+      });
     });
   });
 

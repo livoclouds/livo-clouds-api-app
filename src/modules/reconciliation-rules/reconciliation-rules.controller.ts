@@ -105,14 +105,14 @@ export class ReconciliationRulesController {
   @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
   @ApiOperation({
     summary:
-      'Discard the pending TOGGLED change(s) for the rule associated with the given change log entry, reverting the rule to its pre-toggle state.',
+      'Discard a single pending rule change. Reverts the rule to its pre-mutation state (recreates for DELETED, deletes for CREATED, restores fields for UPDATED/TOGGLED) and cascades to any later unapplied entries for the same rule.',
   })
   async discardChange(
     @Request() req: { condominiumId: string },
     @Param('changeId') changeId: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.discardSingleToggle(
+    return this.service.discardSingleChange(
       req.condominiumId,
       changeId,
       user.sub,
