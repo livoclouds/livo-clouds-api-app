@@ -2,7 +2,6 @@ import {
   Controller,
   Delete,
   Get,
-  Param,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -49,21 +48,21 @@ export class StorageAdminController {
     return this.service.listObjects(query);
   }
 
-  @Get('objects/:key/presigned-url')
+  @Get('objects/presigned-url')
   @ApiOperation({ summary: 'Generate temporary GET URL for an R2 object (root only)' })
-  presignedUrl(@Param('key') key: string, @CurrentUser() user: JwtPayload) {
-    return this.service.createPresignedUrl(decodeURIComponent(key), user);
+  presignedUrl(@Query('key') key: string, @CurrentUser() user: JwtPayload) {
+    return this.service.createPresignedUrl(key, user);
   }
 
-  @Get('objects/:key')
+  @Get('objects/detail')
   @ApiOperation({ summary: 'Detail + access history of an R2 object (root only)' })
-  detail(@Param('key') key: string) {
-    return this.service.getObjectDetail(decodeURIComponent(key));
+  detail(@Query('key') key: string) {
+    return this.service.getObjectDetail(key);
   }
 
-  @Delete('objects/:key')
+  @Delete('objects')
   @ApiOperation({ summary: 'Delete an R2 object (root only)' })
-  remove(@Param('key') key: string, @CurrentUser() user: JwtPayload) {
-    return this.service.deleteObject(decodeURIComponent(key), user);
+  remove(@Query('key') key: string, @CurrentUser() user: JwtPayload) {
+    return this.service.deleteObject(key, user);
   }
 }
