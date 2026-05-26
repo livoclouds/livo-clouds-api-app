@@ -14,34 +14,24 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
   });
 
   it('maps each notification type to its documented role list', () => {
+    // ROOT excluded from condominium-level operational types (imports,
+    // classification, reconciliation, calendar, finance). ROOT retains
+    // INCIDENTS and SYSTEM types only.
     const expected: Record<string, UserRole[]> = {
-      IMPORT_COMPLETED: [
-        UserRole.ROOT,
-        UserRole.TENANT_ADMIN,
-        UserRole.READ_ONLY,
-      ],
-      IMPORT_FAILED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-      IMPORT_WITH_WARNINGS: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-      IMPORT_DUPLICATE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-      CLASSIFICATION_REVIEW: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-      RECONCILIATION_RULE_MODIFIED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-      CALENDAR_EVENT_CREATED: [
-        UserRole.ROOT,
-        UserRole.TENANT_ADMIN,
-        UserRole.READ_ONLY,
-      ],
-      CALENDAR_EVENT_CANCELLED: [
-        UserRole.ROOT,
-        UserRole.TENANT_ADMIN,
-        UserRole.READ_ONLY,
-      ],
+      IMPORT_COMPLETED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
+      IMPORT_FAILED: [UserRole.TENANT_ADMIN],
+      IMPORT_WITH_WARNINGS: [UserRole.TENANT_ADMIN],
+      IMPORT_DUPLICATE: [UserRole.TENANT_ADMIN],
+      CLASSIFICATION_REVIEW: [UserRole.TENANT_ADMIN],
+      RECONCILIATION_RULE_MODIFIED: [UserRole.TENANT_ADMIN],
+      CALENDAR_EVENT_CREATED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
+      CALENDAR_EVENT_CANCELLED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
       CALENDAR_BOOKING_CONFIRMED: [
-        UserRole.ROOT,
         UserRole.TENANT_ADMIN,
         UserRole.READ_ONLY,
         UserRole.NEIGHBOR,
       ],
-      NEGATIVE_BALANCE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+      NEGATIVE_BALANCE: [UserRole.TENANT_ADMIN],
       NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       USER_ADDED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       PERMISSIONS_CHANGED: [
@@ -75,9 +65,12 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
         .sort();
 
     const allTypes = [...NOTIFICATION_R1_TYPES].sort();
-    // ROOT and TENANT_ADMIN receive every r1 type.
-    expect(typesForRole(UserRole.ROOT)).toEqual(allTypes);
+    // TENANT_ADMIN receives every r1 type.
     expect(typesForRole(UserRole.TENANT_ADMIN)).toEqual(allTypes);
+    // ROOT receives only INCIDENTS and SYSTEM (platform-admin scope).
+    expect(typesForRole(UserRole.ROOT)).toEqual(
+      ['NEW_INCIDENT', 'USER_ADDED', 'PERMISSIONS_CHANGED', 'SESSION_EXPIRING'].sort(),
+    );
     expect(typesForRole(UserRole.READ_ONLY)).toEqual(
       [
         'IMPORT_COMPLETED',

@@ -32,42 +32,29 @@ export type R1NotificationType = Exclude<
  * build. The literal type is preserved for callers that index it directly.
  */
 export const NOTIFICATION_ROLE_ACCESS = {
-  // Imports
-  IMPORT_COMPLETED: [
-    UserRole.ROOT,
-    UserRole.TENANT_ADMIN,
-    UserRole.READ_ONLY,
-  ],
-  IMPORT_FAILED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-  IMPORT_WITH_WARNINGS: [UserRole.ROOT, UserRole.TENANT_ADMIN],
-  IMPORT_DUPLICATE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+  // Imports — ROOT excluded: condominium-level operational events
+  IMPORT_COMPLETED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
+  IMPORT_FAILED: [UserRole.TENANT_ADMIN],
+  IMPORT_WITH_WARNINGS: [UserRole.TENANT_ADMIN],
+  IMPORT_DUPLICATE: [UserRole.TENANT_ADMIN],
 
-  // Classification
-  CLASSIFICATION_REVIEW: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+  // Classification — ROOT excluded: condominium-level operational events
+  CLASSIFICATION_REVIEW: [UserRole.TENANT_ADMIN],
 
-  // Reconciliation
-  RECONCILIATION_RULE_MODIFIED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+  // Reconciliation — ROOT excluded: condominium-level operational events
+  RECONCILIATION_RULE_MODIFIED: [UserRole.TENANT_ADMIN],
 
-  // Calendar
-  CALENDAR_EVENT_CREATED: [
-    UserRole.ROOT,
-    UserRole.TENANT_ADMIN,
-    UserRole.READ_ONLY,
-  ],
-  CALENDAR_EVENT_CANCELLED: [
-    UserRole.ROOT,
-    UserRole.TENANT_ADMIN,
-    UserRole.READ_ONLY,
-  ],
+  // Calendar — ROOT excluded: condominium-level operational events
+  CALENDAR_EVENT_CREATED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
+  CALENDAR_EVENT_CANCELLED: [UserRole.TENANT_ADMIN, UserRole.READ_ONLY],
   CALENDAR_BOOKING_CONFIRMED: [
-    UserRole.ROOT,
     UserRole.TENANT_ADMIN,
     UserRole.READ_ONLY,
     UserRole.NEIGHBOR,
   ],
 
-  // Finance
-  NEGATIVE_BALANCE: [UserRole.ROOT, UserRole.TENANT_ADMIN],
+  // Finance — ROOT excluded: condominium-level operational events
+  NEGATIVE_BALANCE: [UserRole.TENANT_ADMIN],
 
   // Incidents
   NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],

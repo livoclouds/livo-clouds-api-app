@@ -310,16 +310,39 @@ describe('NotificationsService.dismiss', () => {
 });
 
 describe('NotificationsService.getPreferences', () => {
-  it('returns missing preferences as enabled by default', async () => {
+  it('returns missing preferences as enabled by default (TENANT_ADMIN sees all types)', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationPreference.findMany.mockResolvedValueOnce([]);
+    const service = makeService(prisma);
+
+    const { preferences } = await service.getPreferences(USER_ID, UserRole.TENANT_ADMIN);
+
+    for (const type of NOTIFICATION_R1_TYPES) {
+      expect(preferences[type]).toBe(true);
+    }
+  });
+
+  it('ROOT sees only INCIDENTS and SYSTEM types (not condominium-level operational events)', async () => {
     const prisma = makePrismaMock();
     prisma.userNotificationPreference.findMany.mockResolvedValueOnce([]);
     const service = makeService(prisma);
 
     const { preferences } = await service.getPreferences(USER_ID, UserRole.ROOT);
 
-    for (const type of NOTIFICATION_R1_TYPES) {
-      expect(preferences[type]).toBe(true);
+    // ROOT receives only these 4 types
+    expect(Object.keys(preferences).sort()).toEqual([
+      'NEW_INCIDENT',
+      'PERMISSIONS_CHANGED',
+      'SESSION_EXPIRING',
+      'USER_ADDED',
+    ]);
+    for (const key of Object.keys(preferences)) {
+      expect(preferences[key]).toBe(true);
     }
+    // Condominium-level types must not appear
+    expect(preferences[NotificationType.IMPORT_COMPLETED]).toBeUndefined();
+    expect(preferences[NotificationType.CALENDAR_EVENT_CREATED]).toBeUndefined();
+    expect(preferences[NotificationType.NEGATIVE_BALANCE]).toBeUndefined();
   });
 
   it('reflects a stored disabled override', async () => {
@@ -329,7 +352,8 @@ describe('NotificationsService.getPreferences', () => {
     ]);
     const service = makeService(prisma);
 
-    const { preferences } = await service.getPreferences(USER_ID, UserRole.ROOT);
+    // TENANT_ADMIN can access IMPORT_WITH_WARNINGS; ROOT cannot
+    const { preferences } = await service.getPreferences(USER_ID, UserRole.TENANT_ADMIN);
 
     expect(preferences[NotificationType.IMPORT_WITH_WARNINGS]).toBe(false);
     expect(preferences[NotificationType.IMPORT_COMPLETED]).toBe(true);
@@ -545,6 +569,8 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     prisma.user.findMany.mockResolvedValueOnce([]);
     const service = makeService(prisma);
 
+    // IMPORT_FAILED is a condominium-level operational event — ROOT was removed
+    // from its matrix entry, so only TENANT_ADMIN is queried.
     await service.resolveRecipientsForType(
       NotificationType.IMPORT_FAILED,
       CONDOMINIUM_ID,
@@ -553,7 +579,7 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     expect(prisma.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          role: { in: [UserRole.ROOT, UserRole.TENANT_ADMIN] },
+          role: { in: [UserRole.TENANT_ADMIN] },
         }),
       }),
     );
