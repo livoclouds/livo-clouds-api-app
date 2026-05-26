@@ -5,6 +5,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
+import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import { UpdateNotificationScopeDto } from './dto/update-notification-scope.dto';
 import { NotificationsService } from './notifications.service';
 
@@ -53,5 +54,24 @@ export class MeNotificationsController {
     @Body() dto: UpdateNotificationScopeDto,
   ) {
     return this.notificationsService.updateRootScope(user.sub, dto);
+  }
+
+  @Get('notification-preferences')
+  @ApiOperation({ summary: 'Get notification preferences for the current ROOT user' })
+  getPreferences(@CurrentUser() user: JwtPayload) {
+    return this.notificationsService.getPreferences(user.sub, user.role);
+  }
+
+  @Patch('notification-preferences')
+  @ApiOperation({ summary: 'Update notification preferences for the current ROOT user' })
+  updatePreferences(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateNotificationPreferencesDto,
+  ) {
+    return this.notificationsService.updatePreferences(
+      user.sub,
+      user.role,
+      dto.preferences,
+    );
   }
 }
