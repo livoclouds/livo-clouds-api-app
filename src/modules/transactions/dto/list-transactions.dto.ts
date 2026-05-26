@@ -63,4 +63,38 @@ export class ListTransactionsDto {
   @MaxLength(100)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   q?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  concept?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  unitNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  residentName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-(?:0[1-9]|1[0-2])$/, { message: 'period must be in YYYY-MM format' })
+  period?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['HIGH', 'MEDIUM', 'LOW'])
+  confidenceLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
 }

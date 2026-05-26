@@ -75,7 +75,7 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findAll(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId } = dto;
+    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = { condominiumId };
@@ -88,6 +88,8 @@ export class TransactionsService {
       if (dateFrom) where.transactionDate.gte = new Date(dateFrom);
       if (dateTo) where.transactionDate.lte = new Date(dateTo);
     }
+    if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
+    if (description) where.description = { contains: description, mode: 'insensitive' };
 
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
@@ -125,7 +127,7 @@ export class TransactionsService {
   }
 
   async findUnmatched(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, dateFrom, dateTo, residentId, importBatchId } = dto;
+    const { page = 1, limit = 50, flowType, dateFrom, dateTo, residentId, importBatchId, concept, description } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = {
@@ -141,6 +143,8 @@ export class TransactionsService {
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
       if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
     }
+    if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
+    if (description) where.description = { contains: description, mode: 'insensitive' };
 
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
@@ -176,7 +180,11 @@ export class TransactionsService {
   }
 
   async findClassified(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId } = dto;
+    const {
+      page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo,
+      residentId, importBatchId, concept, description, unitNumber, residentName,
+      period, confidenceLevel,
+    } = dto;
     const skip = (page - 1) * limit;
 
     if (
@@ -203,6 +211,27 @@ export class TransactionsService {
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
       if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
     }
+    if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
+    if (description) where.description = { contains: description, mode: 'insensitive' };
+    if (unitNumber || residentName) {
+      where.resident = {
+        ...(unitNumber && { unitNumber: { contains: unitNumber, mode: 'insensitive' } }),
+        ...(residentName && {
+          OR: [
+            { firstName: { contains: residentName, mode: 'insensitive' } },
+            { lastName: { contains: residentName, mode: 'insensitive' } },
+          ],
+        }),
+      };
+    }
+    if (period) {
+      const [year, month] = period.split('-').map(Number);
+      if (year) where.paymentPeriodYear = year;
+      if (month) where.paymentPeriodMonth = month;
+    }
+    if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
+    else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
+    else if (confidenceLevel === 'LOW') where.confidenceScore = { lt: 0.5 };
 
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
@@ -304,7 +333,10 @@ export class TransactionsService {
   }
 
   exportClassifiedCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
-    const { flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, columns } = dto;
+    const {
+      flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, columns,
+      concept, description, unitNumber, residentName, period, confidenceLevel,
+    } = dto;
 
     if (
       classificationStatus !== undefined &&
@@ -330,6 +362,27 @@ export class TransactionsService {
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
       if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
     }
+    if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
+    if (description) where.description = { contains: description, mode: 'insensitive' };
+    if (unitNumber || residentName) {
+      where.resident = {
+        ...(unitNumber && { unitNumber: { contains: unitNumber, mode: 'insensitive' } }),
+        ...(residentName && {
+          OR: [
+            { firstName: { contains: residentName, mode: 'insensitive' } },
+            { lastName: { contains: residentName, mode: 'insensitive' } },
+          ],
+        }),
+      };
+    }
+    if (period) {
+      const [year, month] = period.split('-').map(Number);
+      if (year) where.paymentPeriodYear = year;
+      if (month) where.paymentPeriodMonth = month;
+    }
+    if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
+    else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
+    else if (confidenceLevel === 'LOW') where.confidenceScore = { lt: 0.5 };
 
     const resolvedColumns = this.resolveExportColumns(columns);
 
