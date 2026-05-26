@@ -276,13 +276,42 @@ export class ReconciliationRulesService {
       data.confidenceThreshold = new Prisma.Decimal(dto.confidenceThreshold.toFixed(2));
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
 
-    const rule = await this.prisma.reconciliationRule.update({
-      where: { id },
-      data,
-    });
-    // Skip the log + notification for a no-op PATCH (empty DTO) — only a real
-    // change is worth surfacing.
-    if (Object.keys(data).length > 0) {
+    const priorityChanged =
+      dto.priority !== undefined && dto.priority !== before.priority;
+    let rule: ReconciliationRule;
+
+    if (priorityChanged) {
+      const allRules = await this.prisma.reconciliationRule.findMany({
+        where: { condominiumId },
+        orderBy: { priority: 'asc' },
+        select: { id: true },
+      });
+      if (dto.priority! < 1 || dto.priority! > allRules.length) {
+        throw new BadRequestException(
+          `Priority must be between 1 and ${allRules.length}.`,
+        );
+      }
+      // Move target to the requested position, renumber all rules in one transaction.
+      const ordered = allRules.filter((r) => r.id !== id);
+      ordered.splice(dto.priority! - 1, 0, { id });
+      const results = await this.prisma.$transaction(
+        ordered.map((r, idx) =>
+          this.prisma.reconciliationRule.update({
+            where: { id: r.id },
+            data: r.id === id ? { ...data, priority: idx + 1 } : { priority: idx + 1 },
+          }),
+        ),
+      );
+      rule = results.find((r) => r.id === id)!;
+    } else {
+      rule = await this.prisma.reconciliationRule.update({
+        where: { id },
+        data,
+      });
+    }
+
+    // Skip the log + notification for a no-op PATCH (empty DTO and no priority change).
+    if (Object.keys(data).length > 0 || priorityChanged) {
       await this.recordChange(
         condominiumId,
         rule.id,
