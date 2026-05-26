@@ -290,7 +290,12 @@ export class ImportsService {
   ) {}
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
-    const { page = 1, limit = 15, fileName, fileType, status, dateFrom, dateTo } = dto;
+    const {
+      page = 1, limit = 15, fileName, fileType, status, dateFrom, dateTo,
+      transactionCountMin, transactionCountMax,
+      incomeMin, incomeMax,
+      expensesMin, expensesMax,
+    } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.ImportBatchWhereInput = { condominiumId };
@@ -301,6 +306,24 @@ export class ImportsService {
       where.createdAt = {};
       if (dateFrom) where.createdAt.gte = new Date(dateFrom);
       if (dateTo) where.createdAt.lte = new Date(dateTo);
+    }
+    if (transactionCountMin !== undefined || transactionCountMax !== undefined) {
+      where.transactionCount = {
+        ...(transactionCountMin !== undefined && { gte: transactionCountMin }),
+        ...(transactionCountMax !== undefined && { lte: transactionCountMax }),
+      };
+    }
+    if (incomeMin !== undefined || incomeMax !== undefined) {
+      where.totalIncome = {
+        ...(incomeMin !== undefined && { gte: incomeMin }),
+        ...(incomeMax !== undefined && { lte: incomeMax }),
+      };
+    }
+    if (expensesMin !== undefined || expensesMax !== undefined) {
+      where.totalExpenses = {
+        ...(expensesMin !== undefined && { gte: expensesMin }),
+        ...(expensesMax !== undefined && { lte: expensesMax }),
+      };
     }
 
     const [data, total] = await Promise.all([
