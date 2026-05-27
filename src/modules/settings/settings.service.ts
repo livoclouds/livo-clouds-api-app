@@ -143,7 +143,7 @@ export class SettingsService {
     });
   }
 
-  async uploadLogo(condominiumId: string, file: LogoUploadFile) {
+  async uploadLogo(condominiumId: string, file: LogoUploadFile, userId: string) {
     if (!file || !file.buffer || file.size === 0) {
       throw new BadRequestException({
         code: 'LOGO_FILE_REQUIRED',
@@ -193,10 +193,19 @@ export class SettingsService {
       byteSize: file.size,
     });
 
+    // Resolve the uploader's display name for the audit trail.
+    const uploader = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true, lastName: true },
+    });
+    const logoUpdatedByName = uploader
+      ? `${uploader.firstName} ${uploader.lastName}`.trim()
+      : null;
+
     await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
-      create: { condominiumId, logoUrl: key },
-      update: { logoUrl: key },
+      create: { condominiumId, logoUrl: key, logoUpdatedAt: new Date(), logoUpdatedByName },
+      update: { logoUrl: key, logoUpdatedAt: new Date(), logoUpdatedByName },
     });
 
     // Best-effort cleanup of the prior R2 object — never blocks the response.
@@ -219,7 +228,7 @@ export class SettingsService {
       { condominiumId },
     );
 
-    return { logoUrl };
+    return { logoUrl, logoUpdatedAt: new Date().toISOString(), logoUpdatedByName };
   }
 
   async deleteLogo(condominiumId: string) {
@@ -246,10 +255,10 @@ export class SettingsService {
 
     await this.prisma.condominiumSettings.update({
       where: { condominiumId },
-      data: { logoUrl: null },
+      data: { logoUrl: null, logoUpdatedAt: null, logoUpdatedByName: null },
     });
 
-    return { logoUrl: null };
+    return { logoUrl: null, logoUpdatedAt: null, logoUpdatedByName: null };
   }
 
   private isAbsoluteUrl(value: string): boolean {

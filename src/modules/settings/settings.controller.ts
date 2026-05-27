@@ -2,10 +2,11 @@ import { BadRequestException, Body, Controller, Delete, Get, Patch, Post, Reques
 import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { FastifyRequest } from 'fastify';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
+import { JwtPayload, UserRole } from '../../common/types';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -87,6 +88,7 @@ export class SettingsController {
   @ApiOperation({ summary: 'Upload condominium logo (max 2 MB — PNG, JPEG, WebP)' })
   async uploadLogo(
     @Request() req: FastifyRequest & { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
   ) {
     if (!req.isMultipart()) {
       throw new BadRequestException({
@@ -137,7 +139,7 @@ export class SettingsController {
       });
     }
 
-    return this.settingsService.uploadLogo(req.condominiumId, picked);
+    return this.settingsService.uploadLogo(req.condominiumId, picked, user.sub);
   }
 
   @Delete('logo')
