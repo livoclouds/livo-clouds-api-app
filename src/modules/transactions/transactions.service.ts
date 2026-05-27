@@ -250,10 +250,13 @@ export class TransactionsService {
       }
       where.resident = residentFilter;
     }
-    if (period) {
+    if (period && !dateFrom && !dateTo) {
       const [year, month] = period.split('-').map(Number);
-      if (year) where.paymentPeriodYear = year;
-      if (month) where.paymentPeriodMonth = month;
+      if (year && month) {
+        const periodStart = new Date(Date.UTC(year, month - 1, 1));
+        const periodEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+        where.transactionDate = { gte: periodStart, lte: periodEnd };
+      }
     }
     if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
     else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
@@ -423,10 +426,13 @@ export class TransactionsService {
       }
       where.resident = residentFilter;
     }
-    if (period) {
+    if (period && !dateFrom && !dateTo) {
       const [year, month] = period.split('-').map(Number);
-      if (year) where.paymentPeriodYear = year;
-      if (month) where.paymentPeriodMonth = month;
+      if (year && month) {
+        const periodStart = new Date(Date.UTC(year, month - 1, 1));
+        const periodEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+        where.transactionDate = { gte: periodStart, lte: periodEnd };
+      }
     }
     if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
     else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
