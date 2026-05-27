@@ -291,7 +291,7 @@ export class ImportsService {
 
   async findAll(condominiumId: string, dto: ListImportBatchesDto) {
     const {
-      page = 1, limit = 15, fileName, fileType, status, dateFrom, dateTo,
+      page = 1, limit = 15, fileName, fileType, importedByName, status, dateFrom, dateTo,
       transactionCountMin, transactionCountMax,
       incomeMin, incomeMax,
       expensesMin, expensesMax,
@@ -301,6 +301,16 @@ export class ImportsService {
     const where: Prisma.ImportBatchWhereInput = { condominiumId };
     if (fileName) where.fileName = { contains: fileName, mode: 'insensitive' };
     if (fileType) where.fileType = fileType;
+    if (importedByName) {
+      where.importedBy = {
+        is: {
+          OR: [
+            { firstName: { contains: importedByName, mode: 'insensitive' } },
+            { lastName: { contains: importedByName, mode: 'insensitive' } },
+          ],
+        },
+      };
+    }
     if (status) where.status = status;
     if (dateFrom || dateTo) {
       where.createdAt = {};

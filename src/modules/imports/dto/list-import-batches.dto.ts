@@ -25,6 +25,10 @@ export class ListImportBatchesDto {
   fileType?: string;
 
   @IsOptional()
+  @IsString()
+  importedByName?: string;
+
+  @IsOptional()
   @IsEnum(ImportStatus)
   status?: ImportStatus;
 
