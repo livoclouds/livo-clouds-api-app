@@ -84,7 +84,19 @@ export class SettingsService {
     }
 
     const { condominium, ...rest } = settings;
-    return { ...rest, name: condominium.name, primaryColor: condominium.primaryColor, slug: condominium.slug };
+
+    // Sign the stored R2 key so GET /settings returns a usable presigned URL,
+    // not a raw storage path that the <img> tag cannot load.
+    let logoUrl: string | null = rest.logoUrl ?? null;
+    if (logoUrl && !this.isAbsoluteUrl(logoUrl)) {
+      logoUrl = await this.storageService.getPresignedUrl(
+        logoUrl,
+        LOGO_PRESIGN_TTL_SECONDS,
+        { condominiumId },
+      );
+    }
+
+    return { ...rest, logoUrl, name: condominium.name, primaryColor: condominium.primaryColor, slug: condominium.slug };
   }
 
   async updateProfile(condominiumId: string, dto: UpdateProfileDto) {
