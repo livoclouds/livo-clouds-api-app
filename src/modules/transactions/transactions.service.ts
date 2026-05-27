@@ -214,15 +214,29 @@ export class TransactionsService {
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
     if (unitNumber || residentName) {
-      where.resident = {
-        ...(unitNumber && { unitNumber: { contains: unitNumber, mode: 'insensitive' } }),
-        ...(residentName && {
-          OR: [
-            { firstName: { contains: residentName, mode: 'insensitive' } },
-            { lastName: { contains: residentName, mode: 'insensitive' } },
-          ],
-        }),
-      };
+      const residentFilter: Prisma.ResidentWhereInput = {};
+      if (unitNumber) {
+        residentFilter.unitNumber = { contains: unitNumber, mode: 'insensitive' };
+      }
+      if (residentName) {
+        const parts = residentName.trim().split(/\s+/).filter(Boolean);
+        if (parts.length <= 1) {
+          residentFilter.OR = [
+            { firstName: { contains: residentName.trim(), mode: 'insensitive' } },
+            { lastName: { contains: residentName.trim(), mode: 'insensitive' } },
+          ];
+        } else {
+          // Multi-word query: each word must appear in either firstName or lastName.
+          // e.g. "Veronica Citlalli Ramirez Ortiz" → firstName="Veronica Citlalli", lastName="Ramirez Ortiz"
+          residentFilter.AND = parts.map((part) => ({
+            OR: [
+              { firstName: { contains: part, mode: 'insensitive' as const } },
+              { lastName: { contains: part, mode: 'insensitive' as const } },
+            ],
+          }));
+        }
+      }
+      where.resident = residentFilter;
     }
     if (period) {
       const [year, month] = period.split('-').map(Number);
@@ -365,15 +379,29 @@ export class TransactionsService {
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
     if (unitNumber || residentName) {
-      where.resident = {
-        ...(unitNumber && { unitNumber: { contains: unitNumber, mode: 'insensitive' } }),
-        ...(residentName && {
-          OR: [
-            { firstName: { contains: residentName, mode: 'insensitive' } },
-            { lastName: { contains: residentName, mode: 'insensitive' } },
-          ],
-        }),
-      };
+      const residentFilter: Prisma.ResidentWhereInput = {};
+      if (unitNumber) {
+        residentFilter.unitNumber = { contains: unitNumber, mode: 'insensitive' };
+      }
+      if (residentName) {
+        const parts = residentName.trim().split(/\s+/).filter(Boolean);
+        if (parts.length <= 1) {
+          residentFilter.OR = [
+            { firstName: { contains: residentName.trim(), mode: 'insensitive' } },
+            { lastName: { contains: residentName.trim(), mode: 'insensitive' } },
+          ];
+        } else {
+          // Multi-word query: each word must appear in either firstName or lastName.
+          // e.g. "Veronica Citlalli Ramirez Ortiz" → firstName="Veronica Citlalli", lastName="Ramirez Ortiz"
+          residentFilter.AND = parts.map((part) => ({
+            OR: [
+              { firstName: { contains: part, mode: 'insensitive' as const } },
+              { lastName: { contains: part, mode: 'insensitive' as const } },
+            ],
+          }));
+        }
+      }
+      where.resident = residentFilter;
     }
     if (period) {
       const [year, month] = period.split('-').map(Number);
