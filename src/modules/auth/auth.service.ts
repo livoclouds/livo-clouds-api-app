@@ -3,7 +3,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  PayloadTooLargeException,
   UnauthorizedException,
+  UnsupportedMediaTypeException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -13,6 +15,7 @@ import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../email/email.service';
+import { StorageService } from '../storage/storage.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -22,6 +25,58 @@ interface AuthContext {
   ipAddress?: string;
   userAgent?: string;
   requestId?: string;
+}
+
+export interface AvatarUploadFile {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+}
+
+const AVATAR_ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp'] as const;
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_PRESIGN_TTL_SECONDS = 3600;
+const MIME_TO_EXTENSION: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+};
+
+// Magic-byte signatures — defense in depth, mirrors the imports pipeline.
+function isPngBytes(buf: Buffer): boolean {
+  return (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  );
+}
+
+function isJpegBytes(buf: Buffer): boolean {
+  return (
+    buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
+  );
+}
+
+function isWebpBytes(buf: Buffer): boolean {
+  return (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP'
+  );
+}
+
+function matchesDeclaredMime(buf: Buffer, mime: string): boolean {
+  if (mime === 'image/png') return isPngBytes(buf);
+  if (mime === 'image/jpeg') return isJpegBytes(buf);
+  if (mime === 'image/webp') return isWebpBytes(buf);
+  return false;
 }
 
 @Injectable()
@@ -39,6 +94,7 @@ export class AuthService {
     private configService: ConfigService,
     private auditService: AuditService,
     private emailService: EmailService,
+    private storageService: StorageService,
   ) {}
 
   async login(dto: LoginDto, ctx?: AuthContext) {
@@ -173,7 +229,11 @@ export class AuthService {
         role: user.role,
         condominiumId: user.condominiumId,
         condominiumSlug: user.condominium?.slug ?? null,
-        avatarUrl: user.avatarUrl,
+        avatarUrl: await this.resolveAvatarUrl(
+          user.avatarUrl,
+          user.id,
+          user.condominiumId,
+        ),
       },
     };
   }
@@ -453,10 +513,176 @@ export class AuthService {
       firstName: user.firstName,
       lastName: user.lastName,
       role: user.role,
-      avatarUrl: user.avatarUrl,
+      avatarUrl: await this.resolveAvatarUrl(
+        user.avatarUrl,
+        user.id,
+        user.condominiumId,
+      ),
       phone: user.phone,
       condominium: user.condominium ?? null,
     };
+  }
+
+  async uploadAvatar(userId: string, file: AvatarUploadFile) {
+    if (!file || !file.buffer || file.size === 0) {
+      throw new BadRequestException({
+        code: 'AVATAR_FILE_REQUIRED',
+        reason: 'A single image file is required',
+      });
+    }
+
+    if (!AVATAR_ALLOWED_MIME.includes(file.mimetype as (typeof AVATAR_ALLOWED_MIME)[number])) {
+      throw new UnsupportedMediaTypeException({
+        code: 'AVATAR_INVALID_TYPE',
+        reason: 'Only PNG, JPEG, or WebP images are accepted',
+      });
+    }
+
+    if (file.size > AVATAR_MAX_BYTES) {
+      throw new PayloadTooLargeException({
+        code: 'AVATAR_TOO_LARGE',
+        reason: 'Avatar must be 2 MB or smaller',
+      });
+    }
+
+    if (!matchesDeclaredMime(file.buffer, file.mimetype)) {
+      throw new BadRequestException({
+        code: 'AVATAR_MAGIC_BYTE_MISMATCH',
+        reason: 'File contents do not match the declared image type',
+      });
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true, deletedAt: null },
+      select: {
+        id: true,
+        condominiumId: true,
+        avatarUrl: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!this.storageService.isConfigured()) {
+      throw new BadRequestException({
+        code: 'STORAGE_NOT_CONFIGURED',
+        reason: 'Object storage is not configured on this environment',
+      });
+    }
+
+    const extension = MIME_TO_EXTENSION[file.mimetype] ?? 'bin';
+    const filename = `avatar-${Date.now()}.${extension}`;
+    const key = user.condominiumId
+      ? `condominiums/${user.condominiumId}/users/${user.id}/${filename}`
+      : `platform/users/${user.id}/${filename}`;
+
+    await this.storageService.uploadFile(key, file.buffer, file.mimetype, {
+      userId: user.id,
+      condominiumId: user.condominiumId,
+      byteSize: file.size,
+    });
+
+    const previousKey = user.avatarUrl;
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { avatarUrl: key },
+    });
+
+    // Best-effort cleanup of the prior R2 object — never blocks the response.
+    if (previousKey && !this.isAbsoluteUrl(previousKey) && previousKey !== key) {
+      this.storageService
+        .deleteFile(previousKey, {
+          userId: user.id,
+          condominiumId: user.condominiumId,
+        })
+        .catch((err) => {
+          this.logger.warn(
+            `[avatar] failed to delete previous object ${previousKey}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+    }
+
+    const avatarUrl = await this.storageService.getPresignedUrl(
+      key,
+      AVATAR_PRESIGN_TTL_SECONDS,
+      { userId: user.id, condominiumId: user.condominiumId },
+    );
+
+    return { avatarUrl };
+  }
+
+  async deleteAvatar(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true, deletedAt: null },
+      select: { id: true, condominiumId: true, avatarUrl: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.avatarUrl) {
+      return { avatarUrl: null };
+    }
+
+    if (!this.isAbsoluteUrl(user.avatarUrl) && this.storageService.isConfigured()) {
+      try {
+        await this.storageService.deleteFile(user.avatarUrl, {
+          userId: user.id,
+          condominiumId: user.condominiumId,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `[avatar] failed to delete object ${user.avatarUrl}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { avatarUrl: null },
+    });
+
+    return { avatarUrl: null };
+  }
+
+  private isAbsoluteUrl(value: string): boolean {
+    return /^https?:\/\//i.test(value);
+  }
+
+  // The DB stores either an R2 object key or, for legacy seed data, an absolute
+  // URL. Resolve to a fresh presigned URL when the value is a key, pass through
+  // when it is already a URL, return null when nothing is set or storage is
+  // unconfigured (so the UI falls back to initials).
+  private async resolveAvatarUrl(
+    value: string | null,
+    userId: string,
+    condominiumId: string | null,
+  ): Promise<string | null> {
+    if (!value) return null;
+    if (this.isAbsoluteUrl(value)) return value;
+    if (!this.storageService.isConfigured()) return null;
+    try {
+      return await this.storageService.getPresignedUrl(
+        value,
+        AVATAR_PRESIGN_TTL_SECONDS,
+        { userId, condominiumId },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[avatar] failed to presign ${value}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
   }
 
   async getOnboarding(userId: string) {

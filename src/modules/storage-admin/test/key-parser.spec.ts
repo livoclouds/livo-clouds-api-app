@@ -34,6 +34,24 @@ describe('parseR2Key', () => {
     expect(result.batchId).toBe('batch-2');
     expect(result.fileName).toBe('x.pdf');
   });
+
+  it('parses a tenant-scoped user avatar key', () => {
+    const result = parseR2Key(
+      'condominiums/cond-abc/users/user-7/avatar-1700000000000.png',
+    );
+    expect(result.scope).toBe('users');
+    expect(result.condominiumId).toBe('cond-abc');
+    expect(result.userId).toBe('user-7');
+    expect(result.fileName).toBe('avatar-1700000000000.png');
+  });
+
+  it('parses a platform user avatar key (ROOT users without condominium)', () => {
+    const result = parseR2Key('platform/users/user-root/avatar-1.webp');
+    expect(result.scope).toBe('users');
+    expect(result.condominiumId).toBeNull();
+    expect(result.userId).toBe('user-root');
+    expect(result.fileName).toBe('avatar-1.webp');
+  });
 });
 
 describe('fileExtension', () => {
