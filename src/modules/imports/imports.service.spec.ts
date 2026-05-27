@@ -115,12 +115,10 @@ describe('ImportsService.findAll filters', () => {
     expect(call.where).toMatchObject({
       condominiumId: CONDOMINIUM_ID,
       importedBy: {
-        is: {
-          OR: [
-            { firstName: { contains: 'mario', mode: 'insensitive' } },
-            { lastName: { contains: 'mario', mode: 'insensitive' } },
-          ],
-        },
+        OR: [
+          { firstName: { contains: 'mario', mode: 'insensitive' } },
+          { lastName: { contains: 'mario', mode: 'insensitive' } },
+        ],
       },
     });
   });

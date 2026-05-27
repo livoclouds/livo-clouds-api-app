@@ -303,19 +303,21 @@ export class ImportsService {
     if (fileType) where.fileType = fileType;
     if (importedByName) {
       where.importedBy = {
-        is: {
-          OR: [
-            { firstName: { contains: importedByName, mode: 'insensitive' } },
-            { lastName: { contains: importedByName, mode: 'insensitive' } },
-          ],
-        },
+        OR: [
+          { firstName: { contains: importedByName, mode: 'insensitive' } },
+          { lastName: { contains: importedByName, mode: 'insensitive' } },
+        ],
       };
     }
     if (status) where.status = status;
     if (dateFrom || dateTo) {
       where.createdAt = {};
       if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-      if (dateTo) where.createdAt.lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
     }
     if (transactionCountMin !== undefined || transactionCountMax !== undefined) {
       where.transactionCount = {
