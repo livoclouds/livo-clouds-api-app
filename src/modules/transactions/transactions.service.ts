@@ -145,7 +145,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
@@ -213,7 +217,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
@@ -301,7 +309,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
     }
     // ILIKE scan on unindexed columns — acceptable at current dataset size
     if (dto.q && dto.q.trim().length > 0) {
@@ -378,7 +390,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
@@ -567,7 +583,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) (where.transactionDate as Prisma.DateTimeFilter).lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
     }
     // ILIKE scan on unindexed columns — acceptable at current dataset size
     if (dto.q && dto.q.trim().length > 0) {
