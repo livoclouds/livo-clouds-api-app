@@ -500,12 +500,27 @@ export class AuthService {
   async getMe(userId: string) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, isActive: true, deletedAt: null },
-      include: { condominium: { select: { id: true, slug: true, name: true } } },
+      include: {
+        condominium: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            settings: { select: { logoUrl: true } },
+          },
+        },
+      },
     });
 
     if (!user) {
       throw new NotFoundException('User not found');
     }
+
+    const rawLogoKey =
+      user.condominium?.settings?.logoUrl ?? null;
+    const condominiumLogoUrl = rawLogoKey
+      ? await this.resolveLogoUrl(rawLogoKey, user.condominiumId)
+      : null;
 
     return {
       id: user.id,
@@ -519,7 +534,14 @@ export class AuthService {
         user.condominiumId,
       ),
       phone: user.phone,
-      condominium: user.condominium ?? null,
+      condominium: user.condominium
+        ? {
+            id: user.condominium.id,
+            slug: user.condominium.slug,
+            name: user.condominium.name,
+            logoUrl: condominiumLogoUrl,
+          }
+        : null,
     };
   }
 
@@ -678,6 +700,31 @@ export class AuthService {
     } catch (err) {
       this.logger.warn(
         `[avatar] failed to presign ${value}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  // Resolve a condominium logo R2 key to a fresh presigned URL.
+  // Mirrors resolveAvatarUrl but scoped to condominiumId only.
+  private async resolveLogoUrl(
+    value: string | null,
+    condominiumId: string | null,
+  ): Promise<string | null> {
+    if (!value) return null;
+    if (this.isAbsoluteUrl(value)) return value;
+    if (!this.storageService.isConfigured()) return null;
+    try {
+      return await this.storageService.getPresignedUrl(
+        value,
+        AVATAR_PRESIGN_TTL_SECONDS,
+        { condominiumId },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[logo] failed to presign ${value}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
