@@ -8,6 +8,7 @@ const HASH_C = 'c'.repeat(64);
 interface PrismaMock {
   importBatch: {
     findMany: jest.Mock;
+    count?: jest.Mock;
   };
 }
 
@@ -15,6 +16,7 @@ function makePrismaMock(): PrismaMock {
   return {
     importBatch: {
       findMany: jest.fn(),
+      count: jest.fn(),
     },
   };
 }
@@ -92,5 +94,47 @@ describe('ImportsService.checkHashesForCondominium', () => {
       duplicateHashes: [HASH_A],
       duplicateFiles: [{ hash: HASH_A, fileName: 'file_a.xlsx' }],
     });
+  });
+});
+
+describe('ImportsService.findAll filters', () => {
+  it('applies importedByName as case-insensitive contains on firstName or lastName', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.importBatch.findMany.mockResolvedValueOnce([]);
+    prisma.importBatch.count!.mockResolvedValueOnce(0);
+
+    await service.findAll(CONDOMINIUM_ID, {
+      page: 1,
+      limit: 15,
+      importedByName: 'mario',
+    } as never);
+
+    const call = prisma.importBatch.findMany.mock.calls[0][0];
+    expect(call.where).toMatchObject({
+      condominiumId: CONDOMINIUM_ID,
+      importedBy: {
+        is: {
+          OR: [
+            { firstName: { contains: 'mario', mode: 'insensitive' } },
+            { lastName: { contains: 'mario', mode: 'insensitive' } },
+          ],
+        },
+      },
+    });
+  });
+
+  it('omits the importedBy clause when importedByName is not provided', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.importBatch.findMany.mockResolvedValueOnce([]);
+    prisma.importBatch.count!.mockResolvedValueOnce(0);
+
+    await service.findAll(CONDOMINIUM_ID, { page: 1, limit: 15 } as never);
+
+    const call = prisma.importBatch.findMany.mock.calls[0][0];
+    expect(call.where.importedBy).toBeUndefined();
   });
 });
