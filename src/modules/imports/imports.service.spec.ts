@@ -123,6 +123,37 @@ describe('ImportsService.findAll filters', () => {
     });
   });
 
+  it('applies importedByName full-name search with AND on firstName + lastName', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    prisma.importBatch.findMany.mockResolvedValueOnce([]);
+    prisma.importBatch.count!.mockResolvedValueOnce(0);
+
+    await service.findAll(CONDOMINIUM_ID, {
+      page: 1,
+      limit: 15,
+      importedByName: 'carlos mendoza',
+    } as never);
+
+    const call = prisma.importBatch.findMany.mock.calls[0][0];
+    expect(call.where).toMatchObject({
+      condominiumId: CONDOMINIUM_ID,
+      importedBy: {
+        OR: expect.arrayContaining([
+          { firstName: { contains: 'carlos mendoza', mode: 'insensitive' } },
+          { lastName: { contains: 'carlos mendoza', mode: 'insensitive' } },
+          {
+            AND: [
+              { firstName: { contains: 'carlos', mode: 'insensitive' } },
+              { lastName: { contains: 'mendoza', mode: 'insensitive' } },
+            ],
+          },
+        ]),
+      },
+    });
+  });
+
   it('omits the importedBy clause when importedByName is not provided', async () => {
     const prisma = makePrismaMock();
     const service = makeService(prisma);
