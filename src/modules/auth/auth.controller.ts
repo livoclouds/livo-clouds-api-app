@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -8,13 +10,15 @@ import {
   Ip,
   Patch,
   Post,
+  Request,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtPayload } from '../../common/types';
-import { AuthService } from './auth.service';
+import { AuthService, AvatarUploadFile } from './auth.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -112,5 +116,72 @@ export class AuthController {
     @Body() dto: UpdateOnboardingDto,
   ) {
     return this.authService.updateOnboarding(user.sub, dto);
+  }
+
+  @Post('me/avatar')
+  @Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 60_000 } })
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload current user profile photo (max 2 MB)' })
+  async uploadAvatar(
+    @Request() req: FastifyRequest,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    if (!req.isMultipart()) {
+      throw new BadRequestException({
+        code: 'AVATAR_FILE_REQUIRED',
+        reason: 'Request must be multipart/form-data',
+      });
+    }
+
+    let picked: AvatarUploadFile | null = null;
+    let extraFiles = 0;
+
+    const parts = req.parts();
+    for await (const part of parts) {
+      if (part.type === 'file') {
+        if (picked) {
+          // Drain extra files so the stream completes cleanly.
+          extraFiles += 1;
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          for await (const _chunk of part.file) {
+            // discard
+          }
+          continue;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) {
+          chunks.push(chunk as Buffer);
+        }
+        const buffer = Buffer.concat(chunks);
+        picked = {
+          buffer,
+          originalname: part.filename ?? 'avatar',
+          mimetype: part.mimetype,
+          size: buffer.length,
+        };
+      }
+    }
+
+    if (extraFiles > 0) {
+      throw new BadRequestException({
+        code: 'AVATAR_SINGLE_FILE_ONLY',
+        reason: 'Only one image file may be uploaded per request',
+      });
+    }
+
+    if (!picked) {
+      throw new BadRequestException({
+        code: 'AVATAR_FILE_REQUIRED',
+        reason: 'A single image file is required',
+      });
+    }
+
+    return this.authService.uploadAvatar(user.sub, picked);
+  }
+
+  @Delete('me/avatar')
+  @ApiOperation({ summary: 'Remove current user profile photo' })
+  deleteAvatar(@CurrentUser() user: JwtPayload) {
+    return this.authService.deleteAvatar(user.sub);
   }
 }

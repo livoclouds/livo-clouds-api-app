@@ -50,6 +50,13 @@ interface ConfigMock {
   get: jest.Mock;
 }
 
+interface StorageMock {
+  isConfigured: jest.Mock;
+  getPresignedUrl: jest.Mock;
+  uploadFile: jest.Mock;
+  deleteFile: jest.Mock;
+}
+
 function makePrismaMock(): PrismaMock {
   const mock: PrismaMock = {
     user: {
@@ -97,12 +104,22 @@ function makeConfigMock(): ConfigMock {
   };
 }
 
+function makeStorageMock(): StorageMock {
+  return {
+    isConfigured: jest.fn().mockReturnValue(false),
+    getPresignedUrl: jest.fn().mockResolvedValue('https://r2.example.test/avatar'),
+    uploadFile: jest.fn().mockResolvedValue(undefined),
+    deleteFile: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 function makeService(
   prisma: PrismaMock,
   audit: AuditMock,
   jwt: JwtMock = makeJwtMock(),
   config: ConfigMock = makeConfigMock(),
   email: EmailMock = makeEmailMock(),
+  storage: StorageMock = makeStorageMock(),
 ): AuthService {
   return new AuthService(
     prisma as never,
@@ -110,6 +127,7 @@ function makeService(
     config as never,
     audit as never,
     email as never,
+    storage as never,
   );
 }
 
