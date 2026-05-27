@@ -337,7 +337,9 @@ model CondominiumSettings {
   updatedAt     DateTime @updatedAt
 
   // General
-  logoUrl       String?
+  logoUrl           String?
+  logoUpdatedAt     DateTime?
+  logoUpdatedByName String?
   timezone      String  @default("America/Monterrey")
   country       String  @default("MX")
   currency      String  @default("MXN")
