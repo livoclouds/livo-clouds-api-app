@@ -302,10 +302,33 @@ export class ImportsService {
     if (fileName) where.fileName = { contains: fileName, mode: 'insensitive' };
     if (fileType) where.fileType = fileType;
     if (importedByName) {
+      const nameParts = importedByName.trim().split(/\s+/);
       where.importedBy = {
         OR: [
           { firstName: { contains: importedByName, mode: 'insensitive' } },
           { lastName: { contains: importedByName, mode: 'insensitive' } },
+          // Handle "First Last" full-name searches: match first token against
+          // firstName and remaining tokens against lastName
+          ...(nameParts.length > 1
+            ? [
+                {
+                  AND: [
+                    {
+                      firstName: {
+                        contains: nameParts[0],
+                        mode: 'insensitive' as const,
+                      },
+                    },
+                    {
+                      lastName: {
+                        contains: nameParts.slice(1).join(' '),
+                        mode: 'insensitive' as const,
+                      },
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       };
     }
