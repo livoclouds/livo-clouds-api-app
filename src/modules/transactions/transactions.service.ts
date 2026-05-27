@@ -86,7 +86,11 @@ export class TransactionsService {
     if (dateFrom || dateTo) {
       where.transactionDate = {};
       if (dateFrom) where.transactionDate.gte = new Date(dateFrom);
-      if (dateTo) where.transactionDate.lte = new Date(dateTo);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        where.transactionDate.lte = end;
+      }
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
