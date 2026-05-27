@@ -66,13 +66,13 @@ export class ListTransactionsDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(500)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   concept?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(500)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   description?: string;
 
@@ -84,7 +84,7 @@ export class ListTransactionsDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(500)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   residentName?: string;
 
