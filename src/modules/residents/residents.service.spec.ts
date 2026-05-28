@@ -273,6 +273,53 @@ describe('ResidentsService — Phase 1 API safety net', () => {
       );
     });
 
+    it('soft-deletes every found resident and logs one RESIDENT_DELETED each on removeMany', async () => {
+      const a = makeResident({ id: 'res-a' });
+      const b = makeResident({ id: 'res-b' });
+      prisma.resident.findMany.mockResolvedValue([a, b]);
+      prisma.resident.update.mockResolvedValue(makeResident({ deletedAt: new Date() }));
+
+      const result = await service.removeMany(CONDOMINIUM_ID, USER_ID, [
+        'res-a',
+        'res-b',
+      ]);
+
+      expect(result).toEqual({ deleted: 2, requested: 2 });
+      expect(prisma.resident.update).toHaveBeenCalledTimes(2);
+      expect(audit.log).toHaveBeenCalledTimes(2);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'RESIDENT_DELETED', entityId: 'res-a' }),
+        prisma,
+      );
+    });
+
+    it('skips not-found ids without aborting the batch on removeMany', async () => {
+      // Only one of the two requested ids exists / is not yet deleted.
+      prisma.resident.findMany.mockResolvedValue([makeResident({ id: 'res-a' })]);
+      prisma.resident.update.mockResolvedValue(makeResident({ deletedAt: new Date() }));
+
+      const result = await service.removeMany(CONDOMINIUM_ID, USER_ID, [
+        'res-a',
+        'res-missing',
+      ]);
+
+      expect(result).toEqual({ deleted: 1, requested: 2 });
+      expect(prisma.resident.update).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledTimes(1);
+    });
+
+    it('de-duplicates ids before counting requested on removeMany', async () => {
+      prisma.resident.findMany.mockResolvedValue([makeResident({ id: 'res-a' })]);
+      prisma.resident.update.mockResolvedValue(makeResident({ deletedAt: new Date() }));
+
+      const result = await service.removeMany(CONDOMINIUM_ID, USER_ID, [
+        'res-a',
+        'res-a',
+      ]);
+
+      expect(result).toEqual({ deleted: 1, requested: 1 });
+    });
+
     it('logs RESIDENT_VEHICLE_ADDED on addVehicle', async () => {
       prisma.resident.findFirst.mockResolvedValue({ id: RESIDENT_ID });
       prisma.vehicle.create.mockResolvedValue(makeVehicle());

@@ -15,6 +15,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload, UserRole } from '../../common/types';
+import { BulkDeleteResidentsDto } from './dto/bulk-delete-residents.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
@@ -72,6 +73,23 @@ export class ResidentsController {
   @ApiOperation({ summary: 'Soft delete resident' })
   remove(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.residentsService.remove(req.condominiumId, req.user.sub, id);
+  }
+
+  // POST (not DELETE) because the id list travels in the request body, which is
+  // awkward for DELETE in Nest/Swagger. The static 'bulk-delete' segment does
+  // not collide with the dynamic ':id' routes above.
+  @Post('bulk-delete')
+  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @ApiOperation({ summary: 'Soft delete several residents' })
+  bulkRemove(
+    @Request() req: AuthedRequest,
+    @Body() dto: BulkDeleteResidentsDto,
+  ) {
+    return this.residentsService.removeMany(
+      req.condominiumId,
+      req.user.sub,
+      dto.ids,
+    );
   }
 
   @Post(':id/vehicles')
