@@ -340,6 +340,7 @@ export class ClassificationService {
 
   classifyTransaction(
     description: string,
+    transactionDate: Date,
     residents: ResidentData[],
     rules: DbRule[] = [],
     terraceContext?: {
@@ -353,6 +354,15 @@ export class ClassificationService {
     },
   ): ClassificationResult {
     const extraction = extractFromText(description);
+
+    // Default the payment period to the transaction date's month/year when the
+    // description does not carry an explicit period. The bank rarely writes
+    // "abril 2026" inside SPEI descriptions, so without this fallback the
+    // column shows "—" on almost every row.
+    if (extraction.paymentPeriodMonth == null || extraction.paymentPeriodYear == null) {
+      extraction.paymentPeriodMonth = transactionDate.getUTCMonth() + 1;
+      extraction.paymentPeriodYear = transactionDate.getUTCFullYear();
+    }
 
     // Pass 0: DB-driven rules (priority order, first match wins)
     const ruleMatch = applyDbRules(description, rules);
@@ -487,7 +497,13 @@ export class ClassificationService {
             }
           : undefined;
 
-        const result = this.classifyTransaction(tx.description, residents, activeRules, terraceContext);
+        const result = this.classifyTransaction(
+          tx.description,
+          new Date(tx.transactionDate),
+          residents,
+          activeRules,
+          terraceContext,
+        );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
           unitNumberDetected: result.unitNumberDetected,
@@ -717,6 +733,7 @@ export class ClassificationService {
 
         const result = this.classifyTransaction(
           tx.description,
+          new Date(tx.transactionDate),
           residents,
           activeRules,
           terraceContext,
