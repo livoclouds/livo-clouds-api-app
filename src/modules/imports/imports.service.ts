@@ -785,8 +785,10 @@ export class ImportsService {
 
       const fileType: 'xlsx' | 'pdf' = isXlsx ? 'xlsx' : 'pdf';
 
+      let profileContext: Awaited<ReturnType<typeof this.bankProfiles.resolveFieldsForBatch>> | undefined;
+
       try {
-        const profileContext = await this.bankProfiles.resolveFieldsForBatch({
+        profileContext = await this.bankProfiles.resolveFieldsForBatch({
           condominiumId,
           bankProfileId,
           fileType,
@@ -849,7 +851,7 @@ export class ImportsService {
             missingFields: err.missingFields,
             actualHeaders: err.actualHeaders,
             bankProfileId: bankProfileId ?? null,
-            profileName: profileContext.profileName,
+            profileName: profileContext?.profileName ?? null,
           });
         }
         results.push({
