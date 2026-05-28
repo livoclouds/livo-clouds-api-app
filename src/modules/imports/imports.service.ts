@@ -849,6 +849,7 @@ export class ImportsService {
             missingFields: err.missingFields,
             actualHeaders: err.actualHeaders,
             bankProfileId: bankProfileId ?? null,
+            profileName: profileContext.profileName,
           });
         }
         results.push({
