@@ -79,8 +79,10 @@ export class ResidentsService {
       this.prisma.resident.count({ where }),
     ]);
 
+    const enriched = await this.attachLastModifiedBy(data);
+
     return {
-      data,
+      data: enriched,
       meta: {
         total,
         page,
@@ -88,6 +90,45 @@ export class ResidentsService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  // Adds `lastModifiedByName` (display name of the last actor) to each resident,
+  // derived from the audit trail — the single source of truth, since Resident
+  // has no `updatedBy` column. One query for the whole page; the most recent
+  // RESIDENT_CREATED/UPDATED row per resident wins, so a never-edited resident
+  // still shows its creator. Null when no audit row exists (e.g. legacy data).
+  private async attachLastModifiedBy<T extends { id: string }>(
+    residents: T[],
+  ): Promise<(T & { lastModifiedByName: string | null })[]> {
+    if (residents.length === 0) return [];
+
+    const ids = residents.map((r) => r.id);
+    const audits = await this.prisma.auditLog.findMany({
+      where: {
+        entityType: 'Resident',
+        entityId: { in: ids },
+        action: {
+          in: [AUDIT_ACTION.RESIDENT_CREATED, AUDIT_ACTION.RESIDENT_UPDATED],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        entityId: true,
+        user: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    // orderBy desc → the first row seen per entityId is the most recent.
+    const byId = new Map<string, string>();
+    for (const a of audits) {
+      if (!a.entityId || byId.has(a.entityId)) continue;
+      byId.set(a.entityId, `${a.user.firstName} ${a.user.lastName}`.trim());
+    }
+
+    return residents.map((r) => ({
+      ...r,
+      lastModifiedByName: byId.get(r.id) ?? null,
+    }));
   }
 
   async findOne(condominiumId: string, id: string) {
@@ -763,20 +804,32 @@ function isUniqueConstraintError(err: unknown): boolean {
 // condition — no row is ever loaded into memory to be filtered out. Tenant
 // isolation (condominiumId + deletedAt) is always applied and never derived
 // from request input.
+// Splits a free-text search into non-empty, whitespace-delimited tokens.
+function tokenize(value: string): string[] {
+  return value.trim().split(/\s+/).filter(Boolean);
+}
+
 function buildResidentWhere(
   condominiumId: string,
   dto: ListResidentsDto,
 ): Prisma.ResidentWhereInput {
   const and: Prisma.ResidentWhereInput[] = [];
 
+  // Tokenize multi-word input: each whitespace-separated word must match (AND),
+  // and a word matches when it is a substring of any searchable column (OR).
+  // This is what makes "Jose Omar Barron Elias" match firstName="Jose Omar" +
+  // lastName="Barron Elias" — a single `contains` on the whole string never
+  // matches because no one column holds every word.
   if (dto.q) {
-    and.push({
-      OR: [
-        { unitNumber: { contains: dto.q, mode: 'insensitive' } },
-        { firstName: { contains: dto.q, mode: 'insensitive' } },
-        { lastName: { contains: dto.q, mode: 'insensitive' } },
-      ],
-    });
+    for (const tok of tokenize(dto.q)) {
+      and.push({
+        OR: [
+          { unitNumber: { contains: tok, mode: 'insensitive' } },
+          { firstName: { contains: tok, mode: 'insensitive' } },
+          { lastName: { contains: tok, mode: 'insensitive' } },
+        ],
+      });
+    }
   }
 
   if (dto.unitNumber) {
@@ -788,12 +841,14 @@ function buildResidentWhere(
   }
 
   if (dto.name) {
-    and.push({
-      OR: [
-        { firstName: { contains: dto.name, mode: 'insensitive' } },
-        { lastName: { contains: dto.name, mode: 'insensitive' } },
-      ],
-    });
+    for (const tok of tokenize(dto.name)) {
+      and.push({
+        OR: [
+          { firstName: { contains: tok, mode: 'insensitive' } },
+          { lastName: { contains: tok, mode: 'insensitive' } },
+        ],
+      });
+    }
   }
 
   if (dto.phone) {
