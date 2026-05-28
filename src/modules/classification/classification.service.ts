@@ -118,7 +118,7 @@ function levenshteinSimilarity(a: string, b: string): number {
   return 1 - dp[m][n] / Math.max(m, n);
 }
 
-function extractFromText(description: string): TextExtraction {
+export function extractFromText(description: string): TextExtraction {
   const normalized = normalizeText(description);
 
   let unitNumberDetected: string | null = null;
@@ -142,16 +142,22 @@ function extractFromText(description: string): TextExtraction {
 
   let paymentPeriodMonth: number | null = null;
   let paymentPeriodYear: number | null = null;
-  for (const [name, num] of Object.entries(MONTH_MAP)) {
-    const key = name === 'may_' ? 'may' : name;
-    if (normalized.includes(key)) {
-      paymentPeriodMonth = num;
-      break;
+  const monthNames = Object.keys(MONTH_MAP)
+    .map((k) => (k === 'may_' ? 'may' : k))
+    .sort((a, b) => b.length - a.length);
+  const namedPeriod = normalized.match(
+    new RegExp(`\\b(${monthNames.join('|')})\\b[\\s/\\-]+(20\\d{2})\\b`),
+  );
+  if (namedPeriod) {
+    const monthKey = namedPeriod[1] === 'may' ? 'may_' : namedPeriod[1];
+    paymentPeriodMonth = MONTH_MAP[monthKey] ?? MONTH_MAP[namedPeriod[1]] ?? null;
+    paymentPeriodYear = parseInt(namedPeriod[2], 10);
+  } else {
+    const numericPeriod = normalized.match(/\b(0?[1-9]|1[0-2])[/\-](20\d{2})\b/);
+    if (numericPeriod) {
+      paymentPeriodMonth = parseInt(numericPeriod[1], 10);
+      paymentPeriodYear = parseInt(numericPeriod[2], 10);
     }
-  }
-  const yearMatch = normalized.match(/20(\d{2})/);
-  if (yearMatch) {
-    paymentPeriodYear = parseInt(`20${yearMatch[1]}`, 10);
   }
 
   let payerNameDetected: string | null = null;

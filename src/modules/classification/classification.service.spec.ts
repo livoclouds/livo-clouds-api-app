@@ -1,5 +1,5 @@
 import { ClassificationStatus, RequiresReviewReason } from '@prisma/client';
-import { ClassificationService } from './classification.service';
+import { ClassificationService, extractFromText } from './classification.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -860,5 +860,73 @@ describe('ClassificationService.classifyBatch — REV-017 chunk atomicity', () =
       'forced chunk-2 failure',
     );
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('extractFromText — payment period extraction', () => {
+  it('extracts month + year from full Spanish month name followed by year', () => {
+    const r = extractFromText('Pago mantenimiento abril 2026 casa 12');
+    expect(r.paymentPeriodMonth).toBe(4);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('extracts month + year from English month name followed by year', () => {
+    const r = extractFromText('Maintenance fee may 2026');
+    expect(r.paymentPeriodMonth).toBe(5);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('extracts month + year from Spanish month abbreviation with slash', () => {
+    const r = extractFromText('Cuota mantenimiento abr/2026');
+    expect(r.paymentPeriodMonth).toBe(4);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('extracts month + year from numeric MM/YYYY pattern', () => {
+    const r = extractFromText('Pago 04/2026 casa 12');
+    expect(r.paymentPeriodMonth).toBe(4);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('extracts month + year from numeric M/YYYY pattern', () => {
+    const r = extractFromText('mensualidad 5/2026');
+    expect(r.paymentPeriodMonth).toBe(5);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('returns null for both fields when no period is present (SPEI with no period info)', () => {
+    const r = extractFromText(
+      'SPEI Recibido: | Institucion contraparte: BBVA MEXICO Ordenante: MAYRA GUTIERREZ | Cuenta: 012180001234567890',
+    );
+    expect(r.paymentPeriodMonth).toBeNull();
+    expect(r.paymentPeriodYear).toBeNull();
+  });
+
+  it('does not extract month from a name containing a month abbreviation (Marquez, Mayra, Abrego, Sepulveda)', () => {
+    const r = extractFromText(
+      'SPEI Enviado: | Beneficiario: MARQUEZ MAYRA ABREGO SEPULVEDA | Concepto: pago',
+    );
+    expect(r.paymentPeriodMonth).toBeNull();
+    expect(r.paymentPeriodYear).toBeNull();
+  });
+
+  it('does not extract year from an account number that happens to contain 20XX', () => {
+    const r = extractFromText(
+      'SPEI Recibido: | Cuenta: 002014567890123456 | Clave de rastreo: 20019988',
+    );
+    expect(r.paymentPeriodMonth).toBeNull();
+    expect(r.paymentPeriodYear).toBeNull();
+  });
+
+  it('rejects an isolated month name without a year nearby', () => {
+    const r = extractFromText('Pago de abril sin año');
+    expect(r.paymentPeriodMonth).toBeNull();
+    expect(r.paymentPeriodYear).toBeNull();
+  });
+
+  it('rejects an isolated year without a month nearby', () => {
+    const r = extractFromText('Referencia 2026 sin mes');
+    expect(r.paymentPeriodMonth).toBeNull();
+    expect(r.paymentPeriodYear).toBeNull();
   });
 });
