@@ -40,6 +40,9 @@ interface PrismaMock {
     update: jest.Mock;
     delete: jest.Mock;
   };
+  auditLog: {
+    findMany: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -73,6 +76,9 @@ function makePrismaMock(): PrismaMock {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+    },
+    auditLog: {
+      findMany: jest.fn().mockResolvedValue([]),
     },
   } as Omit<PrismaMock, '$transaction'>;
 
@@ -782,6 +788,68 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
       const findWhere = prisma.resident.findMany.mock.calls[0][0].where;
       const countWhere = prisma.resident.count.mock.calls[0][0].where;
       expect(countWhere).toEqual(findWhere);
+    });
+
+    it('tokenizes a multi-word name into one AND clause per word', async () => {
+      await service.findAll(CONDOMINIUM_ID, { name: 'Jose Omar Barron Elias' });
+
+      const where = prisma.resident.findMany.mock.calls[0][0].where;
+      // Each word becomes its own OR(firstName|lastName) clause, AND-ed together,
+      // so "Jose Omar" (firstName) + "Barron Elias" (lastName) all match.
+      expect(where.AND).toEqual([
+        { OR: [
+          { firstName: { contains: 'Jose', mode: 'insensitive' } },
+          { lastName: { contains: 'Jose', mode: 'insensitive' } },
+        ] },
+        { OR: [
+          { firstName: { contains: 'Omar', mode: 'insensitive' } },
+          { lastName: { contains: 'Omar', mode: 'insensitive' } },
+        ] },
+        { OR: [
+          { firstName: { contains: 'Barron', mode: 'insensitive' } },
+          { lastName: { contains: 'Barron', mode: 'insensitive' } },
+        ] },
+        { OR: [
+          { firstName: { contains: 'Elias', mode: 'insensitive' } },
+          { lastName: { contains: 'Elias', mode: 'insensitive' } },
+        ] },
+      ]);
+    });
+
+    it('attaches lastModifiedByName from the latest resident audit row', async () => {
+      prisma.resident.findMany.mockResolvedValue([
+        makeResident({ id: 'res-a' }),
+        makeResident({ id: 'res-b' }),
+      ]);
+      prisma.resident.count.mockResolvedValue(2);
+      prisma.auditLog.findMany.mockResolvedValue([
+        // orderBy createdAt desc: the first row per entityId is the latest.
+        { entityId: 'res-a', user: { firstName: 'Carlos', lastName: 'Mendoza' } },
+        { entityId: 'res-a', user: { firstName: 'Older', lastName: 'Actor' } },
+        { entityId: 'res-b', user: { firstName: 'Ana', lastName: 'Lopez' } },
+      ]);
+
+      const result = await service.findAll(CONDOMINIUM_ID);
+
+      const auditArg = prisma.auditLog.findMany.mock.calls[0][0];
+      expect(auditArg.where).toMatchObject({
+        entityType: 'Resident',
+        entityId: { in: ['res-a', 'res-b'] },
+      });
+      const rows = result.data as Array<{ id: string; lastModifiedByName: string | null }>;
+      expect(rows.find((r) => r.id === 'res-a')?.lastModifiedByName).toBe('Carlos Mendoza');
+      expect(rows.find((r) => r.id === 'res-b')?.lastModifiedByName).toBe('Ana Lopez');
+    });
+
+    it('sets lastModifiedByName to null when a resident has no audit row', async () => {
+      prisma.resident.findMany.mockResolvedValue([makeResident({ id: 'res-x' })]);
+      prisma.resident.count.mockResolvedValue(1);
+      prisma.auditLog.findMany.mockResolvedValue([]);
+
+      const result = await service.findAll(CONDOMINIUM_ID);
+
+      const rows = result.data as Array<{ lastModifiedByName: string | null }>;
+      expect(rows[0].lastModifiedByName).toBeNull();
     });
   });
 
