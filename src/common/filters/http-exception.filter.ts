@@ -21,20 +21,25 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let code = 'INTERNAL_SERVER_ERROR';
     let reason = 'An unexpected error occurred';
 
+    let extra: Record<string, unknown> = {};
+
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const response = exception.getResponse();
 
       if (typeof response === 'object' && response !== null) {
         const resp = response as Record<string, unknown>;
-        code = (resp.code as string) || this.statusToCode(status);
-        reason =
-          (resp.message as string) ||
-          (Array.isArray(resp.message)
-            ? (resp.message as string[]).join(', ')
-            : reason);
-        if (Array.isArray(resp.message)) {
+        code = (typeof resp.code === 'string' ? resp.code : null) || this.statusToCode(status);
+        if (typeof resp.reason === 'string') {
+          reason = resp.reason;
+        } else if (typeof resp.message === 'string') {
+          reason = resp.message;
+        } else if (Array.isArray(resp.message)) {
           reason = (resp.message as string[]).join(', ');
+        }
+        const STRIP_KEYS = new Set(['statusCode', 'code', 'message', 'reason', 'error']);
+        for (const [k, v] of Object.entries(resp)) {
+          if (!STRIP_KEYS.has(k)) extra[k] = v;
         }
       } else if (typeof response === 'string') {
         reason = response;
@@ -49,6 +54,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         {
           code,
           reason,
+          ...extra,
           datetime: new Date().toISOString(),
           path: request.url,
         },
