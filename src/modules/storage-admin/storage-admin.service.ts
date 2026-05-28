@@ -42,6 +42,7 @@ export interface EnrichedObject {
     email: string;
   } | null;
   batch: { id: string; status: string; fileName: string } | null;
+  recordCount: number;
   isOrphan: boolean;
   lastAccessedAt: string | null;
   lastAccessType: string | null;
@@ -407,6 +408,7 @@ export class StorageAdminService {
                 status: true,
                 fileName: true,
                 createdAt: true,
+                transactionCount: true,
                 importedById: true,
                 importedBy: {
                   select: {
@@ -466,6 +468,7 @@ export class StorageAdminService {
         batch: batch
           ? { id: batch.id, status: batch.status, fileName: batch.fileName }
           : null,
+        recordCount: batch?.transactionCount ?? 0,
         isOrphan,
         lastAccessedAt: latest ? latest.accessedAt.toISOString() : null,
         lastAccessType: latest ? latest.accessType : null,
