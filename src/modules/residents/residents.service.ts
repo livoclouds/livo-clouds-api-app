@@ -245,6 +245,47 @@ export class ResidentsService {
     });
   }
 
+  // Soft-deletes several residents in a single transaction, writing one
+  // RESIDENT_DELETED audit row per resident (same shape as `remove`). IDs that
+  // are not found / already deleted in this condominium are skipped rather than
+  // aborting the batch, so a stale selection never fails the whole request.
+  // Returns how many were actually deleted vs. requested.
+  async removeMany(condominiumId: string, userId: string, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+
+    return this.prisma.$transaction(async (tx) => {
+      const targets = await tx.resident.findMany({
+        where: { id: { in: uniqueIds }, condominiumId, deletedAt: null },
+        include: RESIDENT_INCLUDE,
+      });
+
+      const now = new Date();
+      for (const before of targets) {
+        await tx.resident.update({
+          where: { id: before.id },
+          data: { deletedAt: now },
+        });
+
+        await this.audit.log(
+          {
+            condominiumId,
+            userId,
+            action: AUDIT_ACTION.RESIDENT_DELETED,
+            actionCategory: 'DELETE',
+            module: RESIDENTS_MODULE,
+            entityType: 'Resident',
+            entityId: before.id,
+            beforeState: before,
+            result: 'SUCCESS',
+          },
+          tx,
+        );
+      }
+
+      return { deleted: targets.length, requested: uniqueIds.length };
+    });
+  }
+
   async addVehicle(
     condominiumId: string,
     userId: string,
