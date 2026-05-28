@@ -930,3 +930,51 @@ describe('extractFromText — payment period extraction', () => {
     expect(r.paymentPeriodYear).toBeNull();
   });
 });
+
+describe('ClassificationService.classifyTransaction — payment period date fallback', () => {
+  const service = makeService(makePrismaMock());
+
+  it('defaults to transactionDate month/year when description carries no period (31 mar 2026 → 3/2026)', () => {
+    const r = service.classifyTransaction(
+      'SPEI Recibido: | Institucion contraparte: BBVA MEXICO Ordenante: KARLA SOTO | Cuenta: 012180001234567890',
+      new Date('2026-03-31T00:00:00Z'),
+      [],
+      [],
+    );
+    expect(r.paymentPeriodMonth).toBe(3);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('defaults to transactionDate month/year for an April transaction with no period in description (4 abr 2026 → 4/2026)', () => {
+    const r = service.classifyTransaction(
+      'SPEI Enviado: | Beneficiario: MARIA RAMIREZ | Ref: 99887766',
+      new Date('2026-04-04T00:00:00Z'),
+      [],
+      [],
+    );
+    expect(r.paymentPeriodMonth).toBe(4);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('lets an explicit description period override the date fallback ("abril 2026" wins over 31 mar 2026 → 4/2026)', () => {
+    const r = service.classifyTransaction(
+      'Pago mantenimiento abril 2026',
+      new Date('2026-03-31T00:00:00Z'),
+      [],
+      [],
+    );
+    expect(r.paymentPeriodMonth).toBe(4);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+
+  it('falls back to date when description has an isolated 20XX in account/reference numbers (no parasitic year)', () => {
+    const r = service.classifyTransaction(
+      'SPEI Recibido: | Cuenta: 002014567890123456 | Clave de rastreo: 20019988',
+      new Date('2026-03-31T00:00:00Z'),
+      [],
+      [],
+    );
+    expect(r.paymentPeriodMonth).toBe(3);
+    expect(r.paymentPeriodYear).toBe(2026);
+  });
+});
