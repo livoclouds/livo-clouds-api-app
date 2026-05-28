@@ -95,12 +95,28 @@ export class TransactionsService {
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
 
+    const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
+    const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput | Prisma.TransactionOrderByWithRelationInput[]> = {
+      transactionDate: { transactionDate: safeSortDir },
+      paymentPeriodYear: [
+        { paymentPeriodYear: { sort: safeSortDir, nulls: 'last' } },
+        { paymentPeriodMonth: { sort: safeSortDir, nulls: 'last' } },
+      ],
+      amount: [
+        { credits: { sort: safeSortDir, nulls: 'last' } },
+        { charges: { sort: safeSortDir, nulls: 'last' } },
+      ],
+    };
+    const orderBy = dto.sortBy && sortAllowlist[dto.sortBy]
+      ? sortAllowlist[dto.sortBy]
+      : { transactionDate: 'desc' as const };
+
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { transactionDate: 'desc' },
+        orderBy,
         include: {
           resident: {
             select: { id: true, unitNumber: true, firstName: true, lastName: true },
@@ -262,12 +278,30 @@ export class TransactionsService {
     else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
     else if (confidenceLevel === 'LOW') where.confidenceScore = { lt: 0.5 };
 
+    const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
+    const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput | Prisma.TransactionOrderByWithRelationInput[]> = {
+      transactionDate: { transactionDate: safeSortDir },
+      paymentPeriodYear: [
+        { paymentPeriodYear: { sort: safeSortDir, nulls: 'last' } },
+        { paymentPeriodMonth: { sort: safeSortDir, nulls: 'last' } },
+      ],
+      amount: [
+        { credits: { sort: safeSortDir, nulls: 'last' } },
+        { charges: { sort: safeSortDir, nulls: 'last' } },
+      ],
+      unit: { resident: { unitNumber: safeSortDir } },
+      confidenceScore: { confidenceScore: { sort: safeSortDir, nulls: 'last' } },
+    };
+    const orderBy = dto.sortBy && sortAllowlist[dto.sortBy]
+      ? sortAllowlist[dto.sortBy]
+      : { transactionDate: 'desc' as const };
+
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { transactionDate: 'desc' },
+        orderBy,
         include: {
           resident: { select: { id: true, unitNumber: true, firstName: true, lastName: true } },
           matchedRule: { select: { id: true, name: true } },

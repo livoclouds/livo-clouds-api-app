@@ -50,7 +50,7 @@ export class ListTransactionsDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['reconciledAt', 'transactionDate', 'paymentConcept', 'unit'])
+  @IsIn(['reconciledAt', 'transactionDate', 'paymentConcept', 'unit', 'paymentPeriodYear', 'amount', 'confidenceScore'])
   sortBy?: string;
 
   @IsOptional()
