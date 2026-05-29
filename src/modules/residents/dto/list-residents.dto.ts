@@ -22,7 +22,6 @@ export const RESIDENT_SORT_FIELDS = [
   'paymentStatus',
   'debt',
   'parkingSpots',
-  'monthlyFee',
   'lastModified',
 ] as const;
 export type ResidentSortField = (typeof RESIDENT_SORT_FIELDS)[number];
