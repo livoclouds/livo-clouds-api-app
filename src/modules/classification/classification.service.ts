@@ -9,6 +9,16 @@ import {
 } from './events/classification-notification-events';
 import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-matcher';
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
+import { SettingsCacheService } from '../settings/settings-cache.service';
+
+/**
+ * Phase 6 (A4): page size for cursor-batched loading of classification
+ * candidate sets (residents, terrace bookings). The matcher needs the complete
+ * set in memory, so this bounds the per-query result/driver buffer — not the
+ * working set. A small condominium returns a single page (< pageSize) and stops
+ * after one round, so behavior is unchanged for the common case.
+ */
+const CANDIDATE_PAGE_SIZE = 500;
 
 interface ResidentData {
   id: string;
@@ -336,7 +346,93 @@ export class ClassificationService {
     @Inject(forwardRef(() => ReconciliationRulesService))
     private readonly rulesService: ReconciliationRulesService,
     private readonly events: EventEmitter2,
+    private readonly settingsCache: SettingsCacheService,
   ) {}
+
+  /**
+   * Phase 6 (A4): loads a full result set in id-ordered cursor pages, bounding
+   * the per-query result size. Stops as soon as a short page is returned. The
+   * stable `id` ordering does not change classification output — both the
+   * resident matcher (unique unit-number / single-best-name) and the terrace
+   * matcher (ambiguous ties null out the match) are order-independent for the
+   * persisted result.
+   */
+  private async loadAllByCursor<T extends { id: string }>(
+    fetchPage: (cursor: string | undefined, take: number) => Promise<T[]>,
+    pageSize: number = CANDIDATE_PAGE_SIZE,
+  ): Promise<T[]> {
+    const all: T[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await fetchPage(cursor, pageSize);
+      all.push(...page);
+      if (page.length < pageSize) break;
+      cursor = page[page.length - 1].id;
+    }
+    return all;
+  }
+
+  /**
+   * Phase 6 (A4 + A5): loads the classification candidate sets shared by
+   * {@link classifyBatch} and {@link reapplyToPending}. Residents and terrace
+   * bookings are read in cursor pages; tenant terrace keywords come from the
+   * settings cache (A5).
+   */
+  private async loadCandidates(condominiumId: string): Promise<{
+    residents: ResidentData[];
+    activeRules: DbRule[];
+    terraceEvents: TerraceCandidate[];
+    terraceGlobalKeywords: string[];
+  }> {
+    const [residents, activeRules, rawTerraceEvents, settings] = await Promise.all([
+      this.loadAllByCursor<ResidentData>((cursor, take) =>
+        this.prisma.resident.findMany({
+          where: { condominiumId, deletedAt: null },
+          select: { id: true, unitNumber: true, firstName: true, lastName: true },
+          orderBy: { id: 'asc' },
+          take,
+          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        }),
+      ),
+      this.rulesService.findActive(condominiumId),
+      this.loadAllByCursor((cursor, take) =>
+        // Load active, non-cancelled TERRACE_BOOKING events; PENDING-payment
+        // filtering happens below against the parsed metadata.
+        this.prisma.calendarEvent.findMany({
+          where: {
+            condominiumId,
+            eventType: 'TERRACE_BOOKING',
+            status: { not: 'CANCELLED' },
+            deletedAt: null,
+          },
+          select: { id: true, residentId: true, unitNumber: true, startDate: true, metadata: true },
+          orderBy: { id: 'asc' },
+          take,
+          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        }),
+      ),
+      // Phase 6 (A5): tenant terrace keywords from the settings cache.
+      this.settingsCache.getSettings(condominiumId),
+    ]);
+
+    const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
+
+    // Parse terrace metadata and filter to events with PENDING payment.
+    const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
+      const validation = validateTerraceMetadata(ev.metadata);
+      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
+      return [{
+        id: ev.id,
+        residentId: ev.residentId,
+        unitNumber: ev.unitNumber,
+        startDate: new Date(ev.startDate),
+        terraceRentalAmount: validation.data.terraceRentalAmount,
+        customKeywords: validation.data.customKeywords,
+      }];
+    });
+
+    return { residents, activeRules, terraceEvents, terraceGlobalKeywords };
+  }
 
   classifyTransaction(
     description: string,
@@ -430,47 +526,17 @@ export class ClassificationService {
     batchId: string,
     actorUserId?: string,
   ): Promise<ClassificationSummary> {
-    const [residents, transactions, activeRules, rawTerraceEvents, settings] = await Promise.all([
-      this.prisma.resident.findMany({
-        where: { condominiumId, deletedAt: null },
-        select: { id: true, unitNumber: true, firstName: true, lastName: true },
-      }),
-      this.prisma.transaction.findMany({
-        where: { condominiumId, importBatchId: batchId },
-        select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
-      }),
-      this.rulesService.findActive(condominiumId),
-      // Load active, non-cancelled TERRACE_BOOKING events with PENDING payment status.
-      this.prisma.calendarEvent.findMany({
-        where: {
-          condominiumId,
-          eventType: 'TERRACE_BOOKING',
-          status: { not: 'CANCELLED' },
-          deletedAt: null,
-        },
-        select: { id: true, residentId: true, unitNumber: true, startDate: true, metadata: true },
-      }),
-      // Phase 5F (KI-004): tenant-level terrace keywords merged into Pass 0.5.
-      this.prisma.condominiumSettings.findUnique({
-        where: { condominiumId },
-        select: { terraceGlobalKeywords: true },
-      }),
-    ]);
-    const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
-
-    // Parse terrace metadata and filter to events with PENDING payment.
-    const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
-      const validation = validateTerraceMetadata(ev.metadata);
-      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
-      return [{
-        id: ev.id,
-        residentId: ev.residentId,
-        unitNumber: ev.unitNumber,
-        startDate: new Date(ev.startDate),
-        terraceRentalAmount: validation.data.terraceRentalAmount,
-        customKeywords: validation.data.customKeywords,
-      }];
-    });
+    // Phase 6 (A4 + A5): candidate sets (residents, terrace bookings) are
+    // cursor-batched and terrace keywords come from the settings cache; the
+    // batch's own transactions are bounded by the import file.
+    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords }, transactions] =
+      await Promise.all([
+        this.loadCandidates(condominiumId),
+        this.prisma.transaction.findMany({
+          where: { condominiumId, importBatchId: batchId },
+          select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
+        }),
+      ]);
 
     let classified = 0;
     let needsReview = 0;
@@ -645,12 +711,12 @@ export class ClassificationService {
     condominiumId: string,
     actorUserId: string | null,
   ): Promise<ClassificationSummary> {
-    const [residents, transactions, activeRules, rawTerraceEvents, settings] =
+    // Phase 6 (A4 + A5): shared cursor-batched candidate loading + cached
+    // terrace keywords; only the PENDING-review transactions query is specific
+    // to this re-apply path.
+    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords }, transactions] =
       await Promise.all([
-        this.prisma.resident.findMany({
-          where: { condominiumId, deletedAt: null },
-          select: { id: true, unitNumber: true, firstName: true, lastName: true },
-        }),
+        this.loadCandidates(condominiumId),
         this.prisma.transaction.findMany({
           where: {
             condominiumId,
@@ -666,43 +732,7 @@ export class ClassificationService {
             flowType: true,
           },
         }),
-        this.rulesService.findActive(condominiumId),
-        this.prisma.calendarEvent.findMany({
-          where: {
-            condominiumId,
-            eventType: 'TERRACE_BOOKING',
-            status: { not: 'CANCELLED' },
-            deletedAt: null,
-          },
-          select: {
-            id: true,
-            residentId: true,
-            unitNumber: true,
-            startDate: true,
-            metadata: true,
-          },
-        }),
-        this.prisma.condominiumSettings.findUnique({
-          where: { condominiumId },
-          select: { terraceGlobalKeywords: true },
-        }),
       ]);
-
-    const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
-    const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
-      const validation = validateTerraceMetadata(ev.metadata);
-      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
-      return [
-        {
-          id: ev.id,
-          residentId: ev.residentId,
-          unitNumber: ev.unitNumber,
-          startDate: new Date(ev.startDate),
-          terraceRentalAmount: validation.data.terraceRentalAmount,
-          customKeywords: validation.data.customKeywords,
-        },
-      ];
-    });
 
     let classified = 0;
     let needsReview = 0;

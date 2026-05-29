@@ -1,12 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SettingsCacheService } from '../settings/settings-cache.service';
 
 const PAID_STATUSES = ['PAID_ON_TIME', 'PAID_LATE', 'PARTIAL'] as const;
 
 @Injectable()
 export class DashboardService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsCache: SettingsCacheService,
+  ) {}
 
   async getKpis(condominiumId: string, year: number, month: number) {
     const [incomeAgg, expenseAgg, residentStats, recentTransactions, settings] =
@@ -48,10 +52,9 @@ export class DashboardService {
             resident: { select: { unitNumber: true, firstName: true, lastName: true } },
           },
         }),
-        this.prisma.condominiumSettings.findUnique({
-          where: { condominiumId },
-          select: { currency: true },
-        }),
+        // Phase 6 (A5): currency comes from the tenant-scoped settings cache
+        // instead of a dedicated findUnique on every KPI load.
+        this.settingsCache.getSettings(condominiumId),
       ]);
 
     const totalIncome = Number(incomeAgg._sum.credits ?? 0);

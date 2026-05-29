@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { SettingsCacheService } from './settings-cache.service';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -69,15 +70,13 @@ export class SettingsService {
   constructor(
     private prisma: PrismaService,
     private storageService: StorageService,
+    private settingsCache: SettingsCacheService,
   ) {}
 
   async findOne(condominiumId: string) {
-    const settings = await this.prisma.condominiumSettings.findUnique({
-      where: { condominiumId },
-      include: {
-        condominium: { select: { name: true, primaryColor: true, slug: true } },
-      },
-    });
+    // Phase 6 (A5): served from the tenant-scoped TTL cache. The raw row is
+    // cached; the presigned logo URL below is always signed fresh on read.
+    const settings = await this.settingsCache.getSettings(condominiumId);
 
     if (!settings) {
       throw new NotFoundException('Settings not found for this condominium');
@@ -100,38 +99,48 @@ export class SettingsService {
   }
 
   async updateProfile(condominiumId: string, dto: UpdateProfileDto) {
-    return this.prisma.condominium.update({
+    // updateProfile writes the `condominium` row that findOne returns
+    // (name/primaryColor/slug), so the cached settings entry must be dropped.
+    const result = await this.prisma.condominium.update({
       where: { id: condominiumId },
       data: dto,
       select: { name: true, primaryColor: true, slug: true },
     });
+    this.settingsCache.invalidate(condominiumId);
+    return result;
   }
 
   async updateGeneral(condominiumId: string, dto: UpdateGeneralSettingsDto) {
-    return this.prisma.condominiumSettings.upsert({
+    const result = await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
       create: { condominiumId, ...dto },
       update: dto,
     });
+    this.settingsCache.invalidate(condominiumId);
+    return result;
   }
 
   async updateFees(condominiumId: string, dto: UpdateFeesSettingsDto) {
-    return this.prisma.condominiumSettings.upsert({
+    const result = await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
       create: { condominiumId, ...dto },
       update: dto,
     });
+    this.settingsCache.invalidate(condominiumId);
+    return result;
   }
 
   async updateFinancial(
     condominiumId: string,
     dto: { maxFilesPerImport?: number; allowedFilePdf?: boolean; allowedFileExcel?: boolean },
   ) {
-    return this.prisma.condominiumSettings.upsert({
+    const result = await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
       create: { condominiumId, ...dto },
       update: dto,
     });
+    this.settingsCache.invalidate(condominiumId);
+    return result;
   }
 
   async validateFeesConfigured(
@@ -148,11 +157,13 @@ export class SettingsService {
   }
 
   async updateTerrace(condominiumId: string, dto: UpdateTerraceSettingsDto) {
-    return this.prisma.condominiumSettings.upsert({
+    const result = await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
       create: { condominiumId, ...dto },
       update: dto,
     });
+    this.settingsCache.invalidate(condominiumId);
+    return result;
   }
 
   async uploadLogo(condominiumId: string, file: LogoUploadFile, userId: string) {
@@ -219,6 +230,7 @@ export class SettingsService {
       create: { condominiumId, logoUrl: key, logoUpdatedAt: new Date(), logoUpdatedByName },
       update: { logoUrl: key, logoUpdatedAt: new Date(), logoUpdatedByName },
     });
+    this.settingsCache.invalidate(condominiumId);
 
     // Best-effort cleanup of the prior R2 object — never blocks the response.
     const previousKey = existing?.logoUrl ?? null;
@@ -269,6 +281,7 @@ export class SettingsService {
       where: { condominiumId },
       data: { logoUrl: null, logoUpdatedAt: null, logoUpdatedByName: null },
     });
+    this.settingsCache.invalidate(condominiumId);
 
     return { logoUrl: null, logoUpdatedAt: null, logoUpdatedByName: null };
   }

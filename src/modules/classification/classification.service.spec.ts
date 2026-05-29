@@ -73,10 +73,20 @@ function makePrismaMock(): PrismaMock {
 function makeService(prisma: PrismaMock): ClassificationService {
   const rulesService = { findActive: jest.fn().mockResolvedValue([]) };
   const events = { emit: jest.fn() };
+  // Phase 6 (A5): the service now reads terrace keywords via SettingsCacheService.
+  // The mock forwards to the existing condominiumSettings.findUnique mock so the
+  // terrace-keyword tests keep configuring behavior the same way.
+  const settingsCache = {
+    getSettings: jest.fn((condominiumId: string) =>
+      prisma.condominiumSettings.findUnique({ where: { condominiumId } }),
+    ),
+    invalidate: jest.fn(),
+  };
   return new ClassificationService(
     prisma as never,
     rulesService as never,
     events as never,
+    settingsCache as never,
   );
 }
 
