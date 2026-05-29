@@ -6,6 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types';
 import { CollectionService } from './collection.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
+import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
 
 @ApiTags('Collection')
@@ -24,12 +25,17 @@ export class CollectionController {
   }
 
   @Get('residents/:residentId')
-  @ApiOperation({ summary: 'Get collection history for a resident' })
+  @ApiOperation({ summary: 'Get collection history for a resident (paginated)' })
   findByResident(
     @Request() req: { condominiumId: string },
     @Param('residentId') residentId: string,
+    @Query() dto: ListByResidentDto,
   ) {
-    return this.collectionService.findByResident(req.condominiumId, residentId);
+    return this.collectionService.findByResident(
+      req.condominiumId,
+      residentId,
+      dto,
+    );
   }
 
   @Get('residents/:residentId/account-statement')

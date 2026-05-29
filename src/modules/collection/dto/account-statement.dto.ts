@@ -53,4 +53,25 @@ export class AccountStatementDto {
   @Min(1)
   @Max(200)
   txLimit?: number = 200;
+
+  @ApiPropertyOptional({ minimum: 1, default: 1, description: 'Collection records page number.' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  crPage?: number = 1;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 600,
+    default: 24,
+    description:
+      'Collection records per page. Default of 24 bounds the returned list to a recent two-year window; the summary counts are computed over the full filtered set regardless of this limit.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(600)
+  crLimit?: number = 24;
 }
