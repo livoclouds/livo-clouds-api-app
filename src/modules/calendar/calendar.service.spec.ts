@@ -1,6 +1,7 @@
 import { CalendarEventVisibility, EventStatus, EventType } from '@prisma/client';
 import { CalendarService } from './calendar.service';
 import { UserRole } from '../../common/types';
+import { MAX_TOTAL_OCCURRENCES } from './recurrence';
 
 const CONDOMINIUM_ID = 'cond-1';
 const EVENT_ID = 'evt-1';
@@ -311,6 +312,90 @@ describe('CalendarService — Phase 5A recurrence', () => {
     await expect(
       service.findAll(CONDOMINIUM_ID, yearQuery as never),
     ).rejects.toThrow('recurrenceTooMany');
+  });
+
+  // A1 (Phase 4): the single-event read is bounded with `take` so it can never run unbounded.
+  it('bounds the single-event query with take = MAX_TOTAL_OCCURRENCES + 1 (Phase 4 · A1)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([baseEvent({ startDate: PARENT_START, endDate: PARENT_END })])
+      .mockResolvedValueOnce([]);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+
+    const calls = prisma.calendarEvent.findMany.mock.calls;
+    expect((calls[0][0] as { take?: number }).take).toBe(MAX_TOTAL_OCCURRENCES + 1);
+    // recurring parents must stay unbounded — a `take` there could drop live series.
+    expect((calls[1][0] as { take?: number }).take).toBeUndefined();
+  });
+
+  // A1 (Phase 4): single events alone can exceed the ceiling even with zero recurring events
+  // (the recurrence guard never runs in that case). Fail loudly instead of returning an
+  // unbounded result or silently truncating (which would skew meta.total).
+  it('throws calendarTooMany when single events alone exceed the cap (Phase 4 · A1)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    const tooManySingles = Array.from({ length: MAX_TOTAL_OCCURRENCES + 1 }, (_, i) =>
+      baseEvent({ id: `evt-${i}`, startDate: PARENT_START, endDate: PARENT_END }),
+    );
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce(tooManySingles)
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      service.findAll(CONDOMINIUM_ID, listQuery() as never),
+    ).rejects.toThrow('calendarTooMany');
+  });
+
+  // Boundary: exactly the cap must succeed and never be truncated (meta.total stays exact).
+  it('returns all single events at exactly the cap without truncating (Phase 4 · A1)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    const atCap = Array.from({ length: MAX_TOTAL_OCCURRENCES }, (_, i) =>
+      baseEvent({ id: `evt-${i}`, startDate: PARENT_START, endDate: PARENT_END }),
+    );
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce(atCap)
+      .mockResolvedValueOnce([]);
+
+    const result = await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+    expect(result.meta.total).toBe(MAX_TOTAL_OCCURRENCES);
+  });
+
+  // Regression: mixed single + recurring events stay merged and sorted by startDate ascending.
+  it('merges single and recurring events sorted by startDate ascending (Phase 4 · A1)', async () => {
+    const prisma = makePrismaMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, audit);
+
+    const lateSingle = baseEvent({
+      id: 'late-single',
+      startDate: new Date('2026-06-20T10:00:00.000Z'),
+      endDate: new Date('2026-06-20T11:00:00.000Z'),
+    });
+    const recurringParent = baseEvent({
+      id: 'rec-1',
+      recurrenceRule: 'FREQ=WEEKLY;COUNT=2',
+      startDate: PARENT_START,
+      endDate: PARENT_END,
+    });
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([lateSingle])
+      .mockResolvedValueOnce([recurringParent]);
+
+    const result = await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+    const data = result.data as Array<{ id: string; startDate: Date }>;
+    const starts = data.map((e) => e.startDate.getTime());
+    const sorted = [...starts].sort((a, b) => a - b);
+    expect(starts).toEqual(sorted);
+    expect(data.at(-1)?.id).toBe('late-single');
   });
 
   it('persists recurrenceRule and updatedById on update (regression for Phase 3 audit)', async () => {
