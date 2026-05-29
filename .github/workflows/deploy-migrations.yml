@@ -1,0 +1,65 @@
+name: Deploy migrations (production)
+
+# Gated production migration apply (Phase 3 — DB-004).
+#
+# Runs ONLY on a published release or an explicit manual dispatch, behind the protected
+# `production` GitHub Environment (configure required reviewers under
+# Settings → Environments → production). It NEVER runs on pull requests.
+#
+# Uses `prisma migrate deploy` — the deploy-only verb that applies pending migrations in
+# order and never generates, edits, resets, or seeds (unlike `migrate dev`).
+#
+# Required secrets (scoped to the `production` Environment — values never appear here):
+#   - PROD_DATABASE_URL  (Neon pooled URL,  runtime)
+#   - PROD_DIRECT_URL    (Neon direct URL,  migrations / DDL + advisory locks)
+#
+# Scope note: the first-time baseline cutover (fresh DB `migrate deploy` vs
+# `migrate resolve --applied <baseline>` for an existing DB) is Phase 4, not this workflow.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: prod-migrate-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: migrate-deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply pending migrations (production)
+        run: pnpm prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
+
+      - name: Confirm migration status
+        run: pnpm prisma migrate status
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PROD_DIRECT_URL }}
