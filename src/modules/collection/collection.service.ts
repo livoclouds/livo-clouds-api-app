@@ -3,6 +3,7 @@ import { CollectionStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
 import { AccountStatementDto } from './dto/account-statement.dto';
+import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
 
 @Injectable()
@@ -46,11 +47,39 @@ export class CollectionService {
     };
   }
 
-  async findByResident(condominiumId: string, residentId: string) {
-    return this.prisma.collectionRecord.findMany({
-      where: { condominiumId, residentId },
-      orderBy: [{ year: 'desc' }, { month: 'desc' }],
-    });
+  async findByResident(
+    condominiumId: string,
+    residentId: string,
+    dto: ListByResidentDto = {},
+  ): Promise<PaginatedResult<unknown>> {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 24;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.CollectionRecordWhereInput = {
+      condominiumId,
+      residentId,
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.collectionRecord.findMany({
+        where,
+        orderBy: [{ year: 'desc' }, { month: 'desc' }],
+        skip,
+        take: limit,
+      }),
+      this.prisma.collectionRecord.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async getAccountStatement(
@@ -99,7 +128,11 @@ export class CollectionService {
     const txLimit = dto.txLimit ?? 200;
     const txSkip = (txPage - 1) * txLimit;
 
-    const [transactions, txTotal, incomeAgg, collectionRecords] = await Promise.all([
+    const crPage = dto.crPage ?? 1;
+    const crLimit = dto.crLimit ?? 24;
+    const crSkip = (crPage - 1) * crLimit;
+
+    const [transactions, txTotal, incomeAgg, collectionRecords, crStatusGroups] = await Promise.all([
       this.prisma.transaction.findMany({
         where: txWhere,
         orderBy: { transactionDate: 'desc' },
@@ -130,20 +163,31 @@ export class CollectionService {
       this.prisma.collectionRecord.findMany({
         where: crWhere,
         orderBy: [{ year: 'desc' }, { month: 'desc' }],
+        skip: crSkip,
+        take: crLimit,
+      }),
+      // Status counts and expected-amount sum are computed at the DB level over
+      // the FULL filtered set (independent of the bounded list above), so the
+      // summary stays exact regardless of crPage/crLimit.
+      this.prisma.collectionRecord.groupBy({
+        by: ['status'],
+        where: crWhere,
+        _count: { _all: true },
+        _sum: { amountExpected: true },
       }),
     ]);
 
     const totalPaid = Number(incomeAgg._sum.credits ?? 0);
-    const totalExpected = collectionRecords.reduce(
-      (sum, r) => sum + Number(r.amountExpected),
+    const totalExpected = crStatusGroups.reduce(
+      (sum, g) => sum + Number(g._sum.amountExpected ?? 0),
       0,
     );
-    const monthsPaid = collectionRecords.filter(
-      (r) => r.status === 'PAID_ON_TIME' || r.status === 'PAID_LATE',
-    ).length;
-    const monthsUnpaid = collectionRecords.filter(
-      (r) => r.status === 'UNPAID' || r.status === 'PENDING',
-    ).length;
+    const monthsPaid = crStatusGroups
+      .filter((g) => g.status === 'PAID_ON_TIME' || g.status === 'PAID_LATE')
+      .reduce((sum, g) => sum + g._count._all, 0);
+    const monthsUnpaid = crStatusGroups
+      .filter((g) => g.status === 'UNPAID' || g.status === 'PENDING')
+      .reduce((sum, g) => sum + g._count._all, 0);
 
     return {
       resident,
