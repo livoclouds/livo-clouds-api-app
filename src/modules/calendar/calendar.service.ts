@@ -138,6 +138,14 @@ export class CalendarService {
       AND: [{ startDate: { lt: toDate } }, { endDate: { gt: fromDate } }],
     };
 
+    // A1 (Phase 4): the recurring-parent read is intentionally left unbounded.
+    // A series' end lives inside the RRULE string (UNTIL/COUNT), not in a queryable
+    // column, so it has only an upper bound on startDate. Applying `take` (ordered by
+    // startDate asc) could silently drop a still-active series whose first occurrence
+    // is old but which recurs into the requested range — producing missing occurrences.
+    // A lower bound on startDate is unsafe for the same reason. Bounding this at the DB
+    // level requires a denormalized, indexed recurrence-end column (deferred; tracked
+    // as a follow-up). The in-memory MAX_TOTAL_OCCURRENCES guard below caps the blow-up.
     const recurringWhere: Record<string, unknown> = {
       ...baseFilter,
       recurrenceRule: { not: null },
@@ -159,6 +167,11 @@ export class CalendarService {
         where: singleWhere,
         include,
         orderBy: { startDate: 'asc' },
+        // A1 (Phase 4): bound the single-event read. Each single row maps 1:1 to an
+        // output item, so capping at the occurrence ceiling is safe. The `+ 1` lets us
+        // detect overflow below without silently truncating (which would make meta.total
+        // inaccurate). The existing overlap filter already bounds singles to the range.
+        take: MAX_TOTAL_OCCURRENCES + 1,
       }),
       this.prisma.calendarEvent.findMany({
         where: recurringWhere,
@@ -166,6 +179,14 @@ export class CalendarService {
         orderBy: { startDate: 'asc' },
       }),
     ]);
+
+    // A1 (Phase 4): fail loudly when single events alone exceed the ceiling. The
+    // recurrence guard below only runs while expanding recurring parents, so a
+    // condominium with no recurring events previously had an effectively unbounded
+    // single-event read. Throwing here (rather than truncating) keeps meta.total exact.
+    if (singles.length > MAX_TOTAL_OCCURRENCES) {
+      throw new BadRequestException('calendarTooMany');
+    }
 
     const expandedOccurrences: Record<string, unknown>[] = [];
     for (const parent of recurringParents) {
