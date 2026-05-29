@@ -191,6 +191,7 @@ export class StorageAdminService {
           r.slug.toLowerCase().includes(needle),
       );
     }
+    rows = this.applyAggregateFilters(rows, query);
     rows = this.applyAggregateSort(
       rows,
       query.sortBy ?? 'totalSize',
@@ -198,6 +199,37 @@ export class StorageAdminService {
     );
 
     return this.paginate(rows, query.page, query.limit);
+  }
+
+  /**
+   * Range filters shared by the aggregate views: total size (bytes), file
+   * count, and last-upload date (YYYY-MM-DD, inclusive). Rows without an upload
+   * date are excluded once any date bound is set.
+   */
+  private applyAggregateFilters<
+    T extends { fileCount: number; totalSize: number; lastUploadAt: string | null },
+  >(rows: T[], query: ListAggregateQuery): T[] {
+    const { sizeMin, sizeMax, fileCountMin, fileCountMax, uploadFrom, uploadTo } =
+      query;
+    // Compare on date only; treat `uploadTo` as the end of its day.
+    const fromTs =
+      uploadFrom != null ? new Date(`${uploadFrom}T00:00:00.000Z`).getTime() : null;
+    const toTs =
+      uploadTo != null ? new Date(`${uploadTo}T23:59:59.999Z`).getTime() : null;
+
+    return rows.filter((r) => {
+      if (sizeMin != null && r.totalSize < sizeMin) return false;
+      if (sizeMax != null && r.totalSize > sizeMax) return false;
+      if (fileCountMin != null && r.fileCount < fileCountMin) return false;
+      if (fileCountMax != null && r.fileCount > fileCountMax) return false;
+      if (fromTs != null || toTs != null) {
+        if (!r.lastUploadAt) return false;
+        const ts = new Date(r.lastUploadAt).getTime();
+        if (fromTs != null && ts < fromTs) return false;
+        if (toTs != null && ts > toTs) return false;
+      }
+      return true;
+    });
   }
 
   async listByUser(query: ListUserAggregateQuery) {
@@ -276,6 +308,21 @@ export class StorageAdminService {
     }
     if (query.condominiumId) {
       rows = rows.filter((r) => r.condominiumId === query.condominiumId);
+    }
+    if (query.role) {
+      rows = rows.filter((r) => r.role === query.role);
+    }
+    if (typeof query.fileCountMin === 'number') {
+      rows = rows.filter((r) => r.fileCount >= query.fileCountMin!);
+    }
+    if (typeof query.fileCountMax === 'number') {
+      rows = rows.filter((r) => r.fileCount <= query.fileCountMax!);
+    }
+    if (typeof query.sizeMin === 'number') {
+      rows = rows.filter((r) => r.totalSize >= query.sizeMin!);
+    }
+    if (typeof query.sizeMax === 'number') {
+      rows = rows.filter((r) => r.totalSize <= query.sizeMax!);
     }
     rows = this.applyAggregateSort(
       rows,
