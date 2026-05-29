@@ -384,6 +384,7 @@ async function main() {
   await prisma.refreshToken.deleteMany();
   await prisma.inventoryItem.deleteMany();
   await prisma.commonArea.deleteMany();
+  await prisma.calendarEvent.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.pet.deleteMany();
   await prisma.additionalResident.deleteMany();
