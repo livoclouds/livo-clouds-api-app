@@ -68,7 +68,13 @@ export class ResidentsService {
     const where = buildResidentWhere(condominiumId, dto);
     const orderBy = buildResidentOrderBy(dto);
 
-    const [data, total] = await Promise.all([
+    // Fetch the condominium's fee/currency settings alongside the page so the
+    // residents list response carries them inline (meta.condominium). This lets
+    // the web client load the residents page with a single authenticated call
+    // instead of a second sequential /settings fetch — see the web getResidents
+    // comment. Defaults mirror the web fallbacks (0 / 0 / MXN) when no settings
+    // row exists yet, so the list still renders for a freshly-created tenant.
+    const [data, total, settings] = await Promise.all([
       this.prisma.resident.findMany({
         where,
         include: RESIDENT_INCLUDE,
@@ -77,6 +83,10 @@ export class ResidentsService {
         take: limit,
       }),
       this.prisma.resident.count({ where }),
+      this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { ordinaryFeeAmount: true, lateFeeAmount: true, currency: true },
+      }),
     ]);
 
     const enriched = await this.attachLastModifiedBy(data);
@@ -88,6 +98,11 @@ export class ResidentsService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        condominium: {
+          ordinaryFeeAmount: (settings?.ordinaryFeeAmount ?? 0).toString(),
+          lateFeeAmount: (settings?.lateFeeAmount ?? 0).toString(),
+          currency: settings?.currency ?? 'MXN',
+        },
       },
     };
   }

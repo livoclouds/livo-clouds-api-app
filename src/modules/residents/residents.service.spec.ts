@@ -43,6 +43,9 @@ interface PrismaMock {
   auditLog: {
     findMany: jest.Mock;
   };
+  condominiumSettings: {
+    findUnique: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -79,6 +82,9 @@ function makePrismaMock(): PrismaMock {
     },
     auditLog: {
       findMany: jest.fn().mockResolvedValue([]),
+    },
+    condominiumSettings: {
+      findUnique: jest.fn().mockResolvedValue(null),
     },
   } as Omit<PrismaMock, '$transaction'>;
 
@@ -784,11 +790,45 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
 
       const result = await service.findAll(CONDOMINIUM_ID, { page: 2, limit: 25 });
 
-      expect(result.meta).toEqual({
+      expect(result.meta).toMatchObject({
         total: 57,
         page: 2,
         limit: 25,
         totalPages: 3,
+      });
+    });
+
+    it('folds the condominium fee/currency settings into meta.condominium as strings', async () => {
+      prisma.resident.findMany.mockResolvedValue([]);
+      prisma.resident.count.mockResolvedValue(0);
+      prisma.condominiumSettings.findUnique.mockResolvedValue({
+        ordinaryFeeAmount: new Prisma.Decimal('1500.50'),
+        lateFeeAmount: new Prisma.Decimal('250'),
+        currency: 'USD',
+      });
+
+      const result = await service.findAll(CONDOMINIUM_ID);
+
+      const settingsArg = prisma.condominiumSettings.findUnique.mock.calls[0][0];
+      expect(settingsArg.where).toEqual({ condominiumId: CONDOMINIUM_ID });
+      expect(result.meta.condominium).toEqual({
+        ordinaryFeeAmount: '1500.5',
+        lateFeeAmount: '250',
+        currency: 'USD',
+      });
+    });
+
+    it('defaults meta.condominium to 0/0/MXN when no settings row exists', async () => {
+      prisma.resident.findMany.mockResolvedValue([]);
+      prisma.resident.count.mockResolvedValue(0);
+      prisma.condominiumSettings.findUnique.mockResolvedValue(null);
+
+      const result = await service.findAll(CONDOMINIUM_ID);
+
+      expect(result.meta.condominium).toEqual({
+        ordinaryFeeAmount: '0',
+        lateFeeAmount: '0',
+        currency: 'MXN',
       });
     });
 
@@ -1018,7 +1058,7 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
       const findArg = prisma.resident.findMany.mock.calls[0][0];
       expect(findArg.skip).toBe(500);
       expect(findArg.take).toBe(500);
-      expect(result.meta).toEqual({
+      expect(result.meta).toMatchObject({
         total: 1200,
         page: 2,
         limit: 500,

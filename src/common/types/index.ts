@@ -39,5 +39,14 @@ export interface PaginatedResult<T> {
     page: number;
     limit: number;
     totalPages: number;
+    // Optional condominium-scoped fee/currency context. Populated by endpoints
+    // (e.g. residents list) whose consumers need these values inline, so the
+    // client avoids a second authenticated call to /settings. Decimal amounts
+    // are serialized as strings; absent on endpoints that don't provide it.
+    condominium?: {
+      ordinaryFeeAmount: string;
+      lateFeeAmount: string;
+      currency: string;
+    };
   };
 }
