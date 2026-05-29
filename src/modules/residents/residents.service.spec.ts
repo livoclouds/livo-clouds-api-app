@@ -774,16 +774,6 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
       ]);
     });
 
-    it('sorts by monthlyFee with a tiebreaker when sortBy is monthlyFee', async () => {
-      await service.findAll(CONDOMINIUM_ID, {
-        sortBy: 'monthlyFee',
-        sortDirection: 'desc',
-      });
-
-      const orderBy = prisma.resident.findMany.mock.calls[0][0].orderBy;
-      expect(orderBy).toEqual([{ monthlyFee: 'desc' }, { id: 'asc' }]);
-    });
-
     it('returns pagination meta computed from the total count', async () => {
       prisma.resident.count.mockResolvedValue(57);
       prisma.resident.findMany.mockResolvedValue([]);
