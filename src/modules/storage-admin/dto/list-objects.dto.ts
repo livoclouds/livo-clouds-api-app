@@ -118,6 +118,38 @@ export class ListAggregateQuery {
   q?: string;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sizeMin?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sizeMax?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  fileCountMin?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  fileCountMax?: number;
+
+  @IsOptional()
+  @IsString()
+  uploadFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  uploadTo?: string;
+
+  @IsOptional()
   @IsIn(AGGREGATE_SORT_FIELDS as unknown as string[])
   sortBy?: AggregateSortField;
 
@@ -130,4 +162,8 @@ export class ListUserAggregateQuery extends ListAggregateQuery {
   @IsOptional()
   @IsString()
   condominiumId?: string;
+
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
