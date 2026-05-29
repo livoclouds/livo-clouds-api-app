@@ -53,6 +53,11 @@ async function bootstrap() {
     }),
   );
 
+  // Listen for termination signals (SIGTERM/SIGINT) so NestJS lifecycle hooks
+  // run on shutdown — in particular PrismaService.onModuleDestroy → $disconnect,
+  // closing the database connection cleanly (Phase 5 / DB-008).
+  app.enableShutdownHooks();
+
   if (process.env.NODE_ENV !== 'production') {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('LivoClouds API')

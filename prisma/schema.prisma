@@ -1,3 +1,7 @@
+// Client generator (DB-011). `output` is intentionally left at the Prisma
+// default (`node_modules/.prisma/client`): pinning it would change the
+// `@prisma/client` import path and force a repo-wide import refactor for no
+// functional gain at the current scale. No preview features are in use.
 generator client {
   provider = "prisma-client-js"
 }
