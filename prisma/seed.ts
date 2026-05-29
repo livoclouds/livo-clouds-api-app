@@ -350,6 +350,24 @@ function csvResidentType(perfil: string): ResidentType {
 }
 
 async function main() {
+  // ─── Safety guard: refuse to wipe a production-like database ─────────────────
+  // This seed is destructive (deleteMany across 20 models below) and is
+  // DEVELOPMENT-ONLY. Production never runs the seed — it uses `migrate deploy`
+  // only. See docs/database/.../reset-and-baseline-runbook.md (web repo).
+  // Triggers on NODE_ENV=production or a prod-like DATABASE_URL; override with
+  // ALLOW_DESTRUCTIVE_SEED=1 for the rare deliberate non-dev reseed.
+  const databaseUrl = process.env.DATABASE_URL ?? '';
+  const isProdLike =
+    process.env.NODE_ENV === 'production' ||
+    /\b(prod|production)\b/i.test(databaseUrl);
+  if (isProdLike && process.env.ALLOW_DESTRUCTIVE_SEED !== '1') {
+    // Note: intentionally does not echo DATABASE_URL (no secret leakage).
+    throw new Error(
+      'Refusing to run the destructive seed against a production-like environment. ' +
+        'Set ALLOW_DESTRUCTIVE_SEED=1 to override (development only).',
+    );
+  }
+
   console.log('🌱 Seeding database...');
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
@@ -377,6 +395,9 @@ async function main() {
   console.log('✅ Cleanup complete');
 
   // ─── Hash passwords ────────────────────────────────────────────────────────
+  // DEV-ONLY demo credentials. These fixed passwords exist purely for local/demo
+  // seed data. The production guard at the top of main() prevents this seed from
+  // running in production, so they never become valid production credentials.
   const [hashRoot, hashAdmin, hashView, hashGuard] = await Promise.all([
     bcrypt.hash('Root1234!', SALT_ROUNDS),
     bcrypt.hash('Admin1234!', SALT_ROUNDS),
@@ -891,6 +912,8 @@ async function main() {
 
   // ─── Summary ───────────────────────────────────────────────────────────────
   console.log('\n✨ Seed completed successfully!');
+  // DEV-ONLY: prints demo login credentials for the local development seed.
+  // Safe because the guard at the top of main() blocks this seed in production.
   console.log('\n📋 Test accounts:');
   console.log('   root@demo.com                / Root1234!   (ROOT)');
   console.log('   admin@cotoalameda.com        / Admin1234!  (TENANT_ADMIN)');
