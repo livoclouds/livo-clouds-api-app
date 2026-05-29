@@ -39,6 +39,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { BankProfilesModule } from './modules/bank-profiles/bank-profiles.module';
+import { SystemStatusModule } from './modules/system-status/system-status.module';
 
 @Module({
   controllers: [HealthController],
@@ -88,6 +89,7 @@ import { BankProfilesModule } from './modules/bank-profiles/bank-profiles.module
     WhatsAppModule,
     BankProfilesModule,
     StorageAdminModule,
+    SystemStatusModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
