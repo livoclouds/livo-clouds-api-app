@@ -51,3 +51,66 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # Migration gating (Phase 3 — DB-002/DB-003 naming, DB-007 drift). Runs on PRs/pushes,
+  # independent of the `ci` job. Provisions an ephemeral Postgres shadow database because
+  # `prisma migrate diff --from-migrations` requires `--shadow-database-url`.
+  migration-gate:
+    name: migration-gate
+    runs-on: ubuntu-latest
+
+    services:
+      shadow-db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: prisma
+          POSTGRES_PASSWORD: prisma
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Migration naming convention
+        # DB-002 / DB-003 — reject any migration directory that is not
+        # `^\d{14}_[a-z0-9_]+$`; `migration_lock.toml` is the only allowed non-migration entry.
+        run: |
+          bad=$(ls prisma/migrations | grep -vE '^(migration_lock\.toml|[0-9]{14}_[a-z0-9_]+)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Non-conforming migration directory names (expected ^[0-9]{14}_[a-z0-9_]+$):"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK — all migration names match ^[0-9]{14}_[a-z0-9_]+$"
+
+      - name: Migration drift check
+        # DB-007 — fail (exit code 2) if the committed migrations do not reproduce schema.prisma.
+        env:
+          SHADOW_DATABASE_URL: postgresql://prisma:prisma@localhost:5432/shadow
+        run: >
+          pnpm prisma migrate diff
+          --from-migrations prisma/migrations
+          --to-schema-datamodel prisma/schema.prisma
+          --shadow-database-url "$SHADOW_DATABASE_URL"
+          --exit-code
