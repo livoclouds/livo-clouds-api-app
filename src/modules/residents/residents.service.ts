@@ -934,6 +934,8 @@ function buildResidentOrderBy(
       return [{ debt: dir }, tiebreaker];
     case 'parkingSpots':
       return [{ parkingSpots: dir }, tiebreaker];
+    case 'monthlyFee':
+      return [{ monthlyFee: dir }, tiebreaker];
     case 'lastModified':
       return [{ updatedAt: dir }, tiebreaker];
     case 'unitNumber':
