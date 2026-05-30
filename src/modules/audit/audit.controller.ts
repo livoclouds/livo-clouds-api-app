@@ -1,20 +1,18 @@
 import { Controller, Get, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { AuditQuery, AuditService } from './audit.service';
 
 @ApiTags('Audit')
-@UseGuards(RolesGuard)
 @Controller()
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 
   @Get('audit')
-  @Roles(UserRole.ROOT)
+  @RequirePermission('platform.audit.read')
   @ApiOperation({ summary: 'Platform-wide audit logs (root only)' })
   platformLogs(@CurrentUser() user: JwtPayload, @Query() query: AuditQuery) {
     return this.auditService.findPlatformLogs(user, query);

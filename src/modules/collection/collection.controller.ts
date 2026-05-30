@@ -1,9 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
 import { CollectionService } from './collection.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
@@ -11,7 +9,7 @@ import { ListCollectionDto } from './dto/list-collection.dto';
 
 @ApiTags('Collection')
 @Controller('condominiums/:condominiumSlug/collection')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class CollectionController {
   constructor(private readonly collectionService: CollectionService) {}
 
@@ -49,7 +47,7 @@ export class CollectionController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @ApiOperation({ summary: 'Manual override collection record' })
   update(
     @Request() req: { condominiumId: string },

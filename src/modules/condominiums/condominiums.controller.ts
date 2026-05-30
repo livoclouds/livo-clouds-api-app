@@ -6,20 +6,17 @@ import {
   Param,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { JwtPayload } from '../../common/types';
 import { CondominiumsService } from './condominiums.service';
 import { CreateCondominiumDto } from './dto/create-condominium.dto';
 import { UpdateCondominiumDto } from './dto/update-condominium.dto';
 
 @ApiTags('Condominiums')
 @Controller('condominiums')
-@UseGuards(RolesGuard)
 export class CondominiumsController {
   constructor(private readonly condominiumsService: CondominiumsService) {}
 
@@ -36,14 +33,14 @@ export class CondominiumsController {
   }
 
   @Post()
-  @Roles(UserRole.ROOT)
+  @RequirePermission('platform.condominiums.manage')
   @ApiOperation({ summary: 'Create condominium (root only)' })
   create(@Body() dto: CreateCondominiumDto) {
     return this.condominiumsService.create(dto);
   }
 
   @Patch(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update condominium' })
   update(
     @Param('id') id: string,
@@ -54,7 +51,7 @@ export class CondominiumsController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ROOT)
+  @RequirePermission('platform.condominiums.manage')
   @ApiOperation({ summary: 'Deactivate condominium (root only)' })
   remove(@Param('id') id: string) {
     return this.condominiumsService.remove(id);

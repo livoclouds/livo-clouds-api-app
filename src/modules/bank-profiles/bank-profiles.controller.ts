@@ -11,17 +11,16 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { BankProfilesService } from './bank-profiles.service';
 import { CreateBankProfileDto } from './dto/create-bank-profile.dto';
 import { UpdateBankProfileDto } from './dto/update-bank-profile.dto';
 
 @ApiTags('BankProfiles')
 @Controller('condominiums/:condominiumSlug/bank-profiles')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class BankProfilesController {
   constructor(private readonly service: BankProfilesService) {}
 
@@ -48,7 +47,7 @@ export class BankProfilesController {
   }
 
   @Post()
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Create a bank profile' })
   async create(
     @Request() req: { condominiumId: string },
@@ -59,7 +58,7 @@ export class BankProfilesController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update a bank profile' })
   async update(
     @Request() req: { condominiumId: string },
@@ -71,7 +70,7 @@ export class BankProfilesController {
   }
 
   @Post(':id/set-default')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Mark a bank profile as the default for the condominium' })
   async setDefault(
     @Request() req: { condominiumId: string },
@@ -82,7 +81,7 @@ export class BankProfilesController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Delete a bank profile (soft delete if referenced by batches)' })
   async remove(
     @Request() req: { condominiumId: string },

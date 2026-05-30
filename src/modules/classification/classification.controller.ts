@@ -10,10 +10,9 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole, JwtPayload } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from './classification.service';
 import { ManualMatchDto } from './dto/manual-match.dto';
@@ -23,7 +22,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('Classification')
 @Controller('condominiums/:condominiumSlug')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class ClassificationController {
   constructor(
     private readonly classificationService: ClassificationService,
@@ -31,7 +30,7 @@ export class ClassificationController {
   ) {}
 
   @Post('imports/:batchId/classify')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @ApiOperation({ summary: 'Re-run classification for an import batch' })
   async reclassifyBatch(
     @Request() req: { condominiumId: string },
@@ -52,7 +51,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/match')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Manually match a transaction to a resident' })
   async manualMatch(
@@ -76,7 +75,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/classify')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Manually classify a transaction with custom fields' })
   async manualClassify(
@@ -100,7 +99,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/unmatch')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Remove resident match from a transaction' })
   async unmatch(
@@ -122,7 +121,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/approve')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Approve a transaction so it affects official financial data' })
   async approveTransaction(
@@ -135,7 +134,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/ignore')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Ignore a transaction so it is excluded from financial data' })
   async ignoreTransaction(
@@ -148,7 +147,7 @@ export class ClassificationController {
   }
 
   @Patch('transactions/:id/reopen')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Reopen a transaction back to PENDING reconciliation status' })
   async reopenTransaction(
@@ -161,7 +160,7 @@ export class ClassificationController {
   }
 
   @Post('transactions/bulk-reconcile')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('transactions.override')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Bulk approve, ignore, or reopen multiple transactions' })
   async bulkReconcile(

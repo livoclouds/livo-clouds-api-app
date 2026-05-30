@@ -11,10 +11,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { CalendarService } from './calendar.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
 import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
@@ -22,7 +21,7 @@ import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 
 @ApiTags('Calendar')
 @Controller('condominiums/:condominiumSlug/calendar/events')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class CalendarController {
   constructor(private readonly calendarService: CalendarService) {}
 
@@ -45,7 +44,7 @@ export class CalendarController {
   }
 
   @Post()
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('calendar.manage')
   @ApiOperation({ summary: 'Create calendar event' })
   create(
     @Request() req: { condominiumId: string; user: JwtPayload },
@@ -55,7 +54,7 @@ export class CalendarController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('calendar.manage')
   @ApiOperation({ summary: 'Update calendar event' })
   update(
     @Request() req: { condominiumId: string; user: JwtPayload },
@@ -66,7 +65,7 @@ export class CalendarController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('calendar.manage')
   @ApiOperation({ summary: 'Soft delete calendar event' })
   remove(
     @Request() req: { condominiumId: string; user: JwtPayload },

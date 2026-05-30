@@ -11,10 +11,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { BulkDeleteResidentsDto } from './dto/bulk-delete-residents.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
@@ -34,7 +33,7 @@ type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Residents')
 @Controller('condominiums/:condominiumSlug/residents')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class ResidentsController {
   constructor(private readonly residentsService: ResidentsService) {}
 
@@ -51,14 +50,14 @@ export class ResidentsController {
   }
 
   @Post()
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Create resident' })
   create(@Request() req: AuthedRequest, @Body() dto: CreateResidentDto) {
     return this.residentsService.create(req.condominiumId, req.user.sub, dto);
   }
 
   @Patch(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Update resident' })
   update(
     @Request() req: AuthedRequest,
@@ -69,7 +68,7 @@ export class ResidentsController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Soft delete resident' })
   remove(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.residentsService.remove(req.condominiumId, req.user.sub, id);
@@ -79,7 +78,7 @@ export class ResidentsController {
   // awkward for DELETE in Nest/Swagger. The static 'bulk-delete' segment does
   // not collide with the dynamic ':id' routes above.
   @Post('bulk-delete')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Soft delete several residents' })
   bulkRemove(
     @Request() req: AuthedRequest,
@@ -93,7 +92,7 @@ export class ResidentsController {
   }
 
   @Post(':id/vehicles')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Add vehicle to resident' })
   addVehicle(
     @Request() req: AuthedRequest,
@@ -109,7 +108,7 @@ export class ResidentsController {
   }
 
   @Patch(':id/vehicles/:vehicleId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Update vehicle' })
   updateVehicle(
     @Request() req: AuthedRequest,
@@ -127,7 +126,7 @@ export class ResidentsController {
   }
 
   @Delete(':id/vehicles/:vehicleId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Remove vehicle' })
   removeVehicle(
     @Request() req: AuthedRequest,
@@ -143,7 +142,7 @@ export class ResidentsController {
   }
 
   @Post(':id/pets')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Add pet to resident' })
   addPet(
     @Request() req: AuthedRequest,
@@ -159,7 +158,7 @@ export class ResidentsController {
   }
 
   @Patch(':id/pets/:petId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Update pet' })
   updatePet(
     @Request() req: AuthedRequest,
@@ -177,7 +176,7 @@ export class ResidentsController {
   }
 
   @Delete(':id/pets/:petId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Remove pet' })
   removePet(
     @Request() req: AuthedRequest,
@@ -193,7 +192,7 @@ export class ResidentsController {
   }
 
   @Post(':id/additional-residents')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Add additional resident' })
   addAdditionalResident(
     @Request() req: AuthedRequest,
@@ -209,7 +208,7 @@ export class ResidentsController {
   }
 
   @Patch(':id/additional-residents/:additionalResidentId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Update additional resident' })
   updateAdditionalResident(
     @Request() req: AuthedRequest,
@@ -227,7 +226,7 @@ export class ResidentsController {
   }
 
   @Delete(':id/additional-residents/:additionalResidentId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Remove additional resident' })
   removeAdditionalResident(
     @Request() req: AuthedRequest,

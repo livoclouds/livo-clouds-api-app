@@ -10,17 +10,16 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { CreateMovementDto } from './dto/create-movement.dto';
 import { ListPettyCashDto } from './dto/list-petty-cash.dto';
 import { PettyCashService } from './petty-cash.service';
 
 @ApiTags('Petty Cash')
 @Controller('condominiums/:condominiumSlug/petty-cash')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class PettyCashController {
   constructor(private readonly pettyCashService: PettyCashService) {}
 
@@ -43,7 +42,7 @@ export class PettyCashController {
   }
 
   @Post()
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('pettyCash.manage')
   @ApiOperation({ summary: 'Create petty cash movement' })
   create(
     @Request() req: { condominiumId: string },
@@ -54,7 +53,7 @@ export class PettyCashController {
   }
 
   @Post(':id/approve')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('pettyCash.manage')
   @ApiOperation({ summary: 'Approve movement' })
   approve(
     @Request() req: { condominiumId: string },
@@ -65,7 +64,7 @@ export class PettyCashController {
   }
 
   @Post(':id/reject')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('pettyCash.manage')
   @ApiOperation({ summary: 'Reject movement' })
   reject(
     @Request() req: { condominiumId: string },

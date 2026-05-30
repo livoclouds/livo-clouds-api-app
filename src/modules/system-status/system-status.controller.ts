@@ -1,13 +1,10 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { UserRole } from '../../common/types';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { SystemStatusService } from './system-status.service';
 
 @ApiTags('System Status')
-@UseGuards(RolesGuard)
-@Roles(UserRole.ROOT)
+@RequirePermission('platform.systemStatus.read')
 @Controller('system-status')
 export class SystemStatusController {
   constructor(private readonly service: SystemStatusService) {}

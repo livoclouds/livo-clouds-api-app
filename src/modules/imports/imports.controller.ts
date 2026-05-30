@@ -17,10 +17,9 @@ import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { ImportsService } from './imports.service';
 import { CheckHashesDto } from './dto/check-hashes.dto';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
@@ -77,7 +76,7 @@ const confirmValidationPipe = new ValidationPipe({
 
 @ApiTags('Imports')
 @Controller('condominiums/:condominiumSlug/imports')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class ImportsController {
   constructor(private readonly importsService: ImportsService) {}
 
@@ -100,7 +99,7 @@ export class ImportsController {
   }
 
   @Post('upload')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('imports.create')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload bank statement files (PDF or XLSX, max 5)' })
@@ -133,7 +132,7 @@ export class ImportsController {
   }
 
   @Post('check-hashes')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('imports.create')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @ApiOperation({
     summary:
@@ -150,7 +149,7 @@ export class ImportsController {
   }
 
   @Post('preview')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('imports.create')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Parse bank statement files for preview (no storage)' })
@@ -206,7 +205,7 @@ export class ImportsController {
   }
 
   @Post('confirm')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('imports.create')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
   @UsePipes(confirmValidationPipe)
   @ApiOperation({ summary: 'Persist parsed bank statement transactions' })
@@ -219,7 +218,7 @@ export class ImportsController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('imports.create')
   @ApiOperation({ summary: 'Cancel/delete import batch' })
   remove(
     @Request() req: { condominiumId: string },
