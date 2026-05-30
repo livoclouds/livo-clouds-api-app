@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { UsersService } from './users.service';
 
@@ -217,5 +217,42 @@ describe('RBAC-002: role assignment security gates', () => {
         rootUser,
       ),
     ).resolves.not.toThrow();
+  });
+});
+
+// RBAC-011: cross-tenant isolation — the service must scope every read/write to
+// the condominiumId passed in the call. An actor from condo-a cannot see or
+// mutate condo-b resources even when it knows their IDs.
+describe('cross-tenant isolation (users)', () => {
+  let deps: ReturnType<typeof makeDeps>;
+  let service: UsersService;
+
+  const tenantAdminA = { sub: 'ta-a', role: 'TENANT_ADMIN' } as never;
+
+  beforeEach(() => {
+    deps = makeDeps();
+    service = new UsersService(
+      deps.prisma as never,
+      deps.events as never,
+      deps.rbac as never,
+    );
+    // Simulate the condominiumId-scoped WHERE clause returning nothing.
+    deps.prisma.user.findFirst.mockResolvedValue(null);
+    deps.prisma.user.updateMany.mockResolvedValue({ count: 0 });
+  });
+
+  it('findOne: 404 when user does not belong to the requested condominium', async () => {
+    await expect(service.findOne('condo-a', 'u-from-condo-b')).rejects.toThrow(NotFoundException);
+  });
+
+  it('update: 404 when user does not belong to the requested condominium', async () => {
+    await expect(
+      service.update('condo-a', 'u-from-condo-b', { firstName: 'Hacked' } as never, tenantAdminA),
+    ).rejects.toThrow(NotFoundException);
+    expect(deps.prisma.user.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('remove: 404 when user does not belong to the requested condominium', async () => {
+    await expect(service.remove('condo-a', 'u-from-condo-b')).rejects.toThrow(NotFoundException);
   });
 });
