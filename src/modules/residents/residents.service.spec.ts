@@ -675,17 +675,34 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
   });
 
   describe('RES-009 — server-side pagination, filtering & sorting', () => {
-    it('applies database-level skip/take and a deterministic default order', async () => {
-      await service.findAll(CONDOMINIUM_ID, { page: 3, limit: 25 });
+    it('fetches all IDs for natural-sort pagination and applies skip/take in-memory for unitNumber sort', async () => {
+      // Simulate 30 residents; page 3 with limit 10 should pick IDs 20–29.
+      const fakeItems = Array.from({ length: 30 }, (_, i) => ({
+        id: `res-${i + 1}`,
+        unitNumber: String(i + 1),
+      }));
+      prisma.resident.findMany
+        .mockResolvedValueOnce(fakeItems) // lightweight select call
+        .mockResolvedValueOnce([]);       // full-records call
 
-      const findArg = prisma.resident.findMany.mock.calls[0][0];
-      expect(findArg.skip).toBe(50);
-      expect(findArg.take).toBe(25);
-      expect(findArg.orderBy).toEqual([{ unitNumber: 'asc' }, { id: 'asc' }]);
-      expect(findArg.where).toEqual({
-        condominiumId: CONDOMINIUM_ID,
-        deletedAt: null,
-      });
+      const result = await service.findAll(CONDOMINIUM_ID, { page: 3, limit: 10 });
+
+      // First call is the lightweight select — no DB-level skip/take/orderBy.
+      const selectCall = prisma.resident.findMany.mock.calls[0][0];
+      expect(selectCall.select).toEqual({ id: true, unitNumber: true });
+      expect(selectCall.skip).toBeUndefined();
+      expect(selectCall.take).toBeUndefined();
+      expect(selectCall.orderBy).toBeUndefined();
+      expect(selectCall.where).toEqual({ condominiumId: CONDOMINIUM_ID, deletedAt: null });
+
+      // Second call fetches the page slice (IDs 20–29 after numeric sort).
+      const pageCall = prisma.resident.findMany.mock.calls[1][0];
+      expect(pageCall.where.id.in).toHaveLength(10);
+      expect(pageCall.where.id.in[0]).toBe('res-21');
+      expect(pageCall.where.id.in[9]).toBe('res-30');
+
+      // Meta reflects in-memory pagination.
+      expect(result.meta).toMatchObject({ total: 30, page: 3, limit: 10, totalPages: 3 });
     });
 
     it('always scopes the query to the tenant and excludes soft-deleted rows', async () => {
@@ -774,9 +791,14 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
       ]);
     });
 
-    it('returns pagination meta computed from the total count', async () => {
-      prisma.resident.count.mockResolvedValue(57);
-      prisma.resident.findMany.mockResolvedValue([]);
+    it('returns pagination meta with total derived from the full id-set for unitNumber sort', async () => {
+      const fakeItems = Array.from({ length: 57 }, (_, i) => ({
+        id: `res-${i + 1}`,
+        unitNumber: String(i + 1),
+      }));
+      prisma.resident.findMany
+        .mockResolvedValueOnce(fakeItems) // lightweight select call
+        .mockResolvedValueOnce([]);       // full-records call
 
       const result = await service.findAll(CONDOMINIUM_ID, { page: 2, limit: 25 });
 
@@ -786,6 +808,38 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
         limit: 25,
         totalPages: 3,
       });
+    });
+
+    it('sorts unitNumber values numerically so 2 comes before 10', async () => {
+      const fakeItems = [
+        { id: 'id-10', unitNumber: '10' },
+        { id: 'id-2', unitNumber: '2' },
+        { id: 'id-1', unitNumber: '1' },
+      ];
+      prisma.resident.findMany
+        .mockResolvedValueOnce(fakeItems)
+        .mockResolvedValueOnce([]);
+
+      await service.findAll(CONDOMINIUM_ID, { page: 1, limit: 10 });
+
+      const pageCall = prisma.resident.findMany.mock.calls[1][0];
+      expect(pageCall.where.id.in).toEqual(['id-1', 'id-2', 'id-10']);
+    });
+
+    it('reverses numeric sort order when sortDirection is desc', async () => {
+      const fakeItems = [
+        { id: 'id-10', unitNumber: '10' },
+        { id: 'id-2', unitNumber: '2' },
+        { id: 'id-1', unitNumber: '1' },
+      ];
+      prisma.resident.findMany
+        .mockResolvedValueOnce(fakeItems)
+        .mockResolvedValueOnce([]);
+
+      await service.findAll(CONDOMINIUM_ID, { sortDirection: 'desc', page: 1, limit: 10 });
+
+      const pageCall = prisma.resident.findMany.mock.calls[1][0];
+      expect(pageCall.where.id.in).toEqual(['id-10', 'id-2', 'id-1']);
     });
 
     it('folds the condominium fee/currency settings into meta.condominium as strings', async () => {
@@ -822,8 +876,8 @@ describe('ResidentsService — Phase 5 scale & consistency', () => {
       });
     });
 
-    it('counts with the same where clause it queries with', async () => {
-      await service.findAll(CONDOMINIUM_ID, { q: 'Lopez' });
+    it('counts with the same where clause it queries with (non-unitNumber sort)', async () => {
+      await service.findAll(CONDOMINIUM_ID, { q: 'Lopez', sortBy: 'name' });
 
       const findWhere = prisma.resident.findMany.mock.calls[0][0].where;
       const countWhere = prisma.resident.count.mock.calls[0][0].where;
@@ -961,8 +1015,8 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
     it('scopes findAll to non-deleted rows so soft-deleted residents never surface', async () => {
       await service.findAll(CONDOMINIUM_ID);
 
+      // The first findMany is the lightweight select used for in-memory sorting.
       expect(prisma.resident.findMany.mock.calls[0][0].where.deletedAt).toBeNull();
-      expect(prisma.resident.count.mock.calls[0][0].where.deletedAt).toBeNull();
     });
 
     it('throws NotFoundException when deleting an already soft-deleted resident', async () => {
@@ -1036,18 +1090,22 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
   });
 
   describe('RES-009 — residents past the former 500-row cap stay reachable', () => {
-    it('pages deep into the dataset with database-level skip/take', async () => {
-      prisma.resident.count.mockResolvedValue(1200);
-      prisma.resident.findMany.mockResolvedValue([]);
+    it('pages deep into the dataset with in-memory skip/take for unitNumber sort', async () => {
+      const fakeItems = Array.from({ length: 1200 }, (_, i) => ({
+        id: `res-${i + 1}`,
+        unitNumber: String(i + 1),
+      }));
+      prisma.resident.findMany
+        .mockResolvedValueOnce(fakeItems) // lightweight select
+        .mockResolvedValueOnce([]);       // full-records call
 
-      const result = await service.findAll(CONDOMINIUM_ID, {
-        page: 2,
-        limit: 500,
-      });
+      const result = await service.findAll(CONDOMINIUM_ID, { page: 2, limit: 500 });
 
-      const findArg = prisma.resident.findMany.mock.calls[0][0];
-      expect(findArg.skip).toBe(500);
-      expect(findArg.take).toBe(500);
+      // The page-records call receives exactly 500 IDs (items 501–1000 after sort).
+      const pageCall = prisma.resident.findMany.mock.calls[1][0];
+      expect(pageCall.where.id.in).toHaveLength(500);
+      expect(pageCall.where.id.in[0]).toBe('res-501');
+
       expect(result.meta).toMatchObject({
         total: 1200,
         page: 2,
