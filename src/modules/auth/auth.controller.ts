@@ -17,12 +17,14 @@ import { Throttle } from '@nestjs/throttler';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { SkipInactivityLock } from '../../common/decorators/skip-inactivity-lock.decorator';
 import { JwtPayload } from '../../common/types';
 import { AuthService, AvatarUploadFile } from './auth.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UnlockDto } from './dto/unlock.dto';
 import { UpdateOnboardingDto } from './dto/update-onboarding.dto';
 
 @ApiTags('Auth')
@@ -58,6 +60,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @SkipInactivityLock()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Revoke refresh token' })
   logout(
@@ -67,6 +70,40 @@ export class AuthController {
     @Headers('x-request-id') requestId?: string,
   ) {
     return this.authService.logout(dto.refreshToken, { ipAddress, userAgent, requestId });
+  }
+
+  @Post('unlock')
+  @SkipInactivityLock()
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 15, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Lift the in-app screen lock by re-verifying the password' })
+  unlock(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UnlockDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    return this.authService.unlock(user.sub, user.sid, dto.password, {
+      ipAddress,
+      userAgent,
+      requestId,
+    });
+  }
+
+  @Post('heartbeat')
+  @SkipInactivityLock()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refresh session activity to defer the inactivity lock' })
+  heartbeat(@CurrentUser() user: JwtPayload) {
+    return this.authService.heartbeat(user.sid);
+  }
+
+  @Get('session-state')
+  @SkipInactivityLock()
+  @ApiOperation({ summary: 'Read the current session inactivity-lock status' })
+  sessionState(@CurrentUser() user: JwtPayload) {
+    return this.authService.getSessionState(user.sid);
   }
 
   @Public()

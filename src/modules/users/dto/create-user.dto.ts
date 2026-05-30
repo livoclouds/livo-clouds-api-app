@@ -52,4 +52,14 @@ export class CreateUserDto {
   @Min(1)
   @Max(24)
   sessionDuration?: number;
+
+  @ApiPropertyOptional({
+    default: 15,
+    description: 'Minutes of inactivity before the in-app screen lock engages',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(60)
+  inactivityLockMinutes?: number;
 }

@@ -10,7 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -33,6 +33,9 @@ export interface AvatarUploadFile {
   mimetype: string;
   size: number;
 }
+
+// Wrong screen-unlock passwords tolerated before the session is force-revoked.
+const MAX_UNLOCK_ATTEMPTS = 5;
 
 const AVATAR_ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp'] as const;
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
@@ -221,6 +224,7 @@ export class AuthService {
       accessToken,
       refreshToken,
       sessionDuration: user.sessionDuration,
+      inactivityLockMinutes: user.inactivityLockMinutes,
       user: {
         id: user.id,
         email: user.email,
@@ -304,7 +308,27 @@ export class AuthService {
       condominiumSlug: user.condominium?.slug ?? null,
     };
 
-    const { accessToken, refreshToken } = await this.generateTokens(payload);
+    // Carry the inactivity lock across rotation: a session that was explicitly
+    // locked, or had been idle past the user's threshold, hands that lock to the
+    // new session. This closes the bypass where simply letting the access token
+    // expire (and auto-refresh) would otherwise mint a fresh, unlocked session.
+    const idleMs = stored.lastActivityAt
+      ? Date.now() - stored.lastActivityAt.getTime()
+      : 0;
+    const wasLocked =
+      stored.lockedAt !== null ||
+      (stored.lastActivityAt !== null &&
+        idleMs > user.inactivityLockMinutes * 60_000);
+
+    const { accessToken, refreshToken } = await this.generateTokens(
+      payload,
+      wasLocked
+        ? {
+            lockedAt: stored.lockedAt ?? new Date(),
+            lastActivityAt: stored.lastActivityAt,
+          }
+        : undefined,
+    );
 
     try {
       await this.auditService.log({
@@ -330,7 +354,12 @@ export class AuthService {
       ip: ctx?.ipAddress,
     }));
 
-    return { accessToken, refreshToken, sessionDuration: user.sessionDuration };
+    return {
+      accessToken,
+      refreshToken,
+      sessionDuration: user.sessionDuration,
+      inactivityLockMinutes: user.inactivityLockMinutes,
+    };
   }
 
   async logout(token: string, ctx?: AuthContext) {
@@ -373,6 +402,183 @@ export class AuthService {
         requestId: ctx?.requestId,
         ip: ctx?.ipAddress,
       }));
+    }
+  }
+
+  /**
+   * Lift the in-app screen lock by re-verifying the user's password. On success
+   * the session lock is cleared and activity is refreshed. Wrong passwords
+   * accrue on the session; after MAX_UNLOCK_ATTEMPTS the session is revoked so
+   * the client is forced back to the login screen.
+   */
+  async unlock(
+    userId: string,
+    sid: string | undefined,
+    password: string,
+    ctx?: AuthContext,
+  ): Promise<{ unlocked: boolean; attemptsLeft?: number; loggedOut?: boolean }> {
+    if (!sid) {
+      // Access token minted before this feature shipped — nothing to unlock.
+      throw new UnauthorizedException('Session context missing');
+    }
+
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { id: sid },
+      select: {
+        revokedAt: true,
+        failedUnlockAttempts: true,
+        user: {
+          select: {
+            id: true,
+            passwordHash: true,
+            condominiumId: true,
+            isActive: true,
+          },
+        },
+      },
+    });
+
+    // Session gone, mismatched, or the account was disabled — force a logout.
+    if (
+      !session ||
+      session.revokedAt ||
+      session.user.id !== userId ||
+      !session.user.isActive
+    ) {
+      return { unlocked: false, loggedOut: true };
+    }
+
+    const passwordValid = await bcrypt.compare(
+      password,
+      session.user.passwordHash,
+    );
+
+    if (passwordValid) {
+      await this.prisma.refreshToken.update({
+        where: { id: sid },
+        data: {
+          lockedAt: null,
+          lastActivityAt: new Date(),
+          failedUnlockAttempts: 0,
+        },
+      });
+      await this.safeAudit({
+        userId,
+        condominiumId: session.user.condominiumId ?? undefined,
+        action: 'AUTH_SESSION_UNLOCK',
+        result: 'SUCCESS',
+        description: 'Screen lock lifted via password re-verification',
+        ctx,
+      });
+      return { unlocked: true };
+    }
+
+    const attempts = session.failedUnlockAttempts + 1;
+
+    if (attempts >= MAX_UNLOCK_ATTEMPTS) {
+      await this.prisma.refreshToken.update({
+        where: { id: sid },
+        data: { revokedAt: new Date(), failedUnlockAttempts: attempts },
+      });
+      await this.safeAudit({
+        userId,
+        condominiumId: session.user.condominiumId ?? undefined,
+        action: 'AUTH_SESSION_UNLOCK_LOCKOUT',
+        result: 'ERROR',
+        description: `Screen unlock failed ${attempts} times; session revoked`,
+        ctx,
+      });
+      return { unlocked: false, loggedOut: true };
+    }
+
+    await this.prisma.refreshToken.update({
+      where: { id: sid },
+      data: { failedUnlockAttempts: attempts },
+    });
+    await this.safeAudit({
+      userId,
+      condominiumId: session.user.condominiumId ?? undefined,
+      action: 'AUTH_SESSION_UNLOCK_FAILED',
+      result: 'WARNING',
+      description: `Screen unlock failed (attempt ${attempts}/${MAX_UNLOCK_ATTEMPTS})`,
+      ctx,
+    });
+    return { unlocked: false, attemptsLeft: MAX_UNLOCK_ATTEMPTS - attempts };
+  }
+
+  /**
+   * Refresh the session's activity timestamp. Driven by genuine user
+   * interaction (the client throttles it), so background polling never keeps a
+   * session alive. A locked session is not refreshed — it must be unlocked.
+   */
+  async heartbeat(sid: string | undefined): Promise<{ locked: boolean }> {
+    if (!sid) return { locked: false };
+
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { id: sid },
+      select: { lockedAt: true, revokedAt: true },
+    });
+
+    if (!session || session.revokedAt) return { locked: false };
+    if (session.lockedAt) return { locked: true };
+
+    await this.prisma.refreshToken.update({
+      where: { id: sid },
+      data: { lastActivityAt: new Date() },
+    });
+    return { locked: false };
+  }
+
+  /**
+   * Read-only lock status for the current session. Lets the client render the
+   * lock overlay instantly on load (e.g. after a page refresh) without waiting
+   * for a data request to bounce off the guard with a 423.
+   */
+  async getSessionState(sid: string | undefined): Promise<{ locked: boolean }> {
+    if (!sid) return { locked: false };
+
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { id: sid },
+      select: {
+        lastActivityAt: true,
+        lockedAt: true,
+        revokedAt: true,
+        user: { select: { inactivityLockMinutes: true } },
+      },
+    });
+
+    if (!session || session.revokedAt) return { locked: false };
+    if (session.lockedAt) return { locked: true };
+
+    const last = session.lastActivityAt;
+    const minutes = session.user.inactivityLockMinutes;
+    const locked = !!last && Date.now() - last.getTime() > minutes * 60_000;
+    return { locked };
+  }
+
+  // DRY wrapper around audit logging; a failure here must never break an auth flow.
+  private async safeAudit(args: {
+    userId: string;
+    condominiumId?: string;
+    action: string;
+    result: 'SUCCESS' | 'WARNING' | 'ERROR';
+    description: string;
+    ctx?: AuthContext;
+  }): Promise<void> {
+    try {
+      await this.auditService.log({
+        userId: args.userId,
+        condominiumId: args.condominiumId,
+        action: args.action,
+        actionCategory: 'AUTH',
+        module: 'auth',
+        result: args.result,
+        description: args.description,
+        ipAddress: args.ctx?.ipAddress,
+        userAgent: args.ctx?.userAgent,
+      });
+    } catch {
+      // Audit failure must not block authentication flows
     }
   }
 
@@ -821,8 +1027,18 @@ export class AuthService {
     return value * units[match[2]];
   }
 
-  private async generateTokens(payload: JwtPayload) {
-    const accessToken = this.jwtService.sign(payload);
+  private async generateTokens(
+    payload: JwtPayload,
+    // Carries the inactivity-lock state onto the freshly minted session. On
+    // login this is omitted (a brand-new, unlocked, active session). On refresh
+    // it propagates the previous session's lock so a locked session can never be
+    // silently cleared just by letting the access token expire and rotate.
+    lockState?: { lockedAt: Date | null; lastActivityAt: Date | null },
+  ) {
+    // Pre-allocate the session id so the access token can carry it as `sid`,
+    // tying every request back to this exact RefreshToken row for the
+    // inactivity screen lock (see InactivityLockGuard).
+    const sessionId = randomUUID();
 
     const refreshSecret = this.configService.get<string>('jwt.refreshSecret');
     const refreshExpiresIn = this.configService.get<string>(
@@ -835,15 +1051,22 @@ export class AuthService {
       expiresIn: refreshExpiresIn,
     });
 
+    const accessToken = this.jwtService.sign({ ...payload, sid: sessionId });
+
     // Derive DB expiresAt from the configured refresh TTL so both stay in sync (LOG-010).
     const refreshDurationMs = this.parseDurationMs(refreshExpiresIn, 7 * 86_400_000);
     const expiresAt = new Date(Date.now() + refreshDurationMs);
 
     await this.prisma.refreshToken.create({
       data: {
+        id: sessionId,
         userId: payload.sub,
         token: refreshToken,
         expiresAt,
+        // Seed activity at creation so a brand-new session isn't treated as idle.
+        // On refresh, inherit the prior session's lock/activity instead.
+        lastActivityAt: lockState?.lastActivityAt ?? new Date(),
+        lockedAt: lockState?.lockedAt ?? null,
       },
     });
 

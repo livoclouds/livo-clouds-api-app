@@ -19,6 +19,10 @@ export interface JwtPayload {
   role: UserRole;
   condominiumId: string | null;
   condominiumSlug: string | null;
+  // Session id — the RefreshToken row this access token was minted from. Lets a
+  // request be tied to its session for the inactivity screen lock. Present on
+  // access tokens; absent on refresh tokens (which are looked up by value).
+  sid?: string;
   iat?: number;
   exp?: number;
 }

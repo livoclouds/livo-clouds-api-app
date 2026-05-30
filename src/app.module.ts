@@ -14,6 +14,7 @@ import storageConfig from './config/storage.config';
 import whatsappConfig from './config/whatsapp.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
+import { InactivityLockGuard } from './common/guards/inactivity-lock.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -95,6 +96,8 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_GUARD, useClass: ThrottlerUserGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // Runs after JwtAuthGuard so request.user (and its `sid`) is populated.
+    { provide: APP_GUARD, useClass: InactivityLockGuard },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
   ],
 })
