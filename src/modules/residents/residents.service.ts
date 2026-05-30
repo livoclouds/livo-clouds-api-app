@@ -66,6 +66,16 @@ export class ResidentsService {
     const skip = (page - 1) * limit;
 
     const where = buildResidentWhere(condominiumId, dto);
+
+    // unitNumber is a String column, so Postgres sorts it lexicographically by
+    // default (1, 10, 100, 11 …). For this sort key we fetch all matching IDs
+    // with their unit numbers, apply a numeric-aware sort in JavaScript, then
+    // fetch the full records for the resulting page. For every other sort key
+    // the standard Prisma orderBy path is used.
+    if (!dto.sortBy || dto.sortBy === 'unitNumber') {
+      return this.findAllSortedByUnitNumber(where, condominiumId, dto, page, limit, skip);
+    }
+
     const orderBy = buildResidentOrderBy(dto);
 
     // Fetch the condominium's fee/currency settings alongside the page so the
@@ -88,6 +98,67 @@ export class ResidentsService {
         select: { ordinaryFeeAmount: true, lateFeeAmount: true, currency: true },
       }),
     ]);
+
+    const enriched = await this.attachLastModifiedBy(data);
+
+    return {
+      data: enriched,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        condominium: {
+          ordinaryFeeAmount: (settings?.ordinaryFeeAmount ?? 0).toString(),
+          lateFeeAmount: (settings?.lateFeeAmount ?? 0).toString(),
+          currency: settings?.currency ?? 'MXN',
+        },
+      },
+    };
+  }
+
+  // Fetches all IDs + unitNumbers matching `where`, applies a numeric-aware
+  // in-memory sort (Intl.Collator numeric mode handles "2" < "10" correctly),
+  // then fetches only the requested page's full records. Uses two DB round-trips
+  // instead of one but avoids a schema migration to change unitNumber to Int.
+  private async findAllSortedByUnitNumber(
+    where: Prisma.ResidentWhereInput,
+    condominiumId: string,
+    dto: ListResidentsDto,
+    page: number,
+    limit: number,
+    skip: number,
+  ): Promise<PaginatedResult<unknown>> {
+    const dir = dto.sortDirection === 'desc' ? 'desc' : 'asc';
+    const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+
+    const [allItems, settings] = await Promise.all([
+      this.prisma.resident.findMany({
+        where,
+        select: { id: true, unitNumber: true },
+      }),
+      this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { ordinaryFeeAmount: true, lateFeeAmount: true, currency: true },
+      }),
+    ]);
+
+    allItems.sort((a, b) => {
+      const cmp = collator.compare(a.unitNumber, b.unitNumber);
+      return dir === 'asc' ? cmp : -cmp;
+    });
+
+    const total = allItems.length;
+    const pageIds = allItems.slice(skip, skip + limit).map((r) => r.id);
+
+    const pageData = await this.prisma.resident.findMany({
+      where: { id: { in: pageIds } },
+      include: RESIDENT_INCLUDE,
+    });
+
+    // Restore the sorted order — Postgres IN (...) returns rows in arbitrary order.
+    const byId = new Map(pageData.map((r) => [r.id, r]));
+    const data = pageIds.map((id) => byId.get(id)).filter(Boolean) as typeof pageData;
 
     const enriched = await this.attachLastModifiedBy(data);
 
@@ -930,8 +1001,8 @@ function buildResidentWhere(
 
 // Maps the table's sort column to a deterministic Prisma orderBy. `id` is
 // always appended as a stable tiebreaker so pagination never skips or repeats
-// rows. unitNumber sorts lexicographically (it is a String column); natural
-// numeric ordering is a documented Phase 6 follow-up.
+// rows. unitNumber sort is handled separately via findAllSortedByUnitNumber
+// (numeric-aware in-memory sort) and never reaches this function in practice.
 function buildResidentOrderBy(
   dto: ListResidentsDto,
 ): Prisma.ResidentOrderByWithRelationInput[] {

@@ -400,11 +400,13 @@ async function main() {
   // DEV-ONLY demo credentials. These fixed passwords exist purely for local/demo
   // seed data. The production guard at the top of main() prevents this seed from
   // running in production, so they never become valid production credentials.
-  const [hashRoot, hashAdmin, hashView, hashGuard] = await Promise.all([
+  const [hashRoot, hashAdmin, hashView, hashGuard, hashSupervisor, hashNeighbor] = await Promise.all([
     bcrypt.hash('Root1234!', SALT_ROUNDS),
     bcrypt.hash('Admin1234!', SALT_ROUNDS),
     bcrypt.hash('View1234!', SALT_ROUNDS),
     bcrypt.hash('Guard1234!', SALT_ROUNDS),
+    bcrypt.hash('Supervisor1234!', SALT_ROUNDS),
+    bcrypt.hash('Vecino1234!', SALT_ROUNDS),
   ]);
 
   // ─── Condominiums ──────────────────────────────────────────────────────────
@@ -596,7 +598,7 @@ async function main() {
   console.log(`✅ System roles: ${SYSTEM_ROLES.length}`);
 
   // ─── Users ─────────────────────────────────────────────────────────────────
-  // 1 ROOT + 2-3 per condominium ≈ 24 total; ~13 active, ~11 inactive
+  // 1 ROOT + 2-5 per condominium ≈ 26 total; ~15 active, ~11 inactive
 
   const userRows: {
     email: string; passwordHash: string; role: string;
@@ -609,9 +611,11 @@ async function main() {
   const perCondoUsers: Array<{ email: string; ph: string; role: string; firstName: string; lastName: string; phone: string; active: boolean }[]> = [
     // 0 cotoalameda
     [
+      { email: 'supervisor@cotoalameda.com', ph: hashSupervisor, role: 'SUPERVISOR', firstName: 'Rodrigo', lastName: 'Salinas', phone: '+52 81 8356 1200', active: true },
       { email: 'admin@cotoalameda.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Carlos', lastName: 'Mendoza', phone: '+52 81 8356 1201', active: true },
       { email: 'view@cotoalameda.com', ph: hashView, role: 'READ_ONLY', firstName: 'Ana', lastName: 'Torres', phone: '+52 81 8356 1202', active: true },
       { email: 'guard@cotoalameda.com', ph: hashGuard, role: 'GUARD', firstName: 'Roberto', lastName: 'Flores', phone: '+52 81 8356 1203', active: false },
+      { email: 'vecino@cotoalameda.com', ph: hashNeighbor, role: 'NEIGHBOR', firstName: 'Daniela', lastName: 'Ríos', phone: '+52 81 8356 1204', active: true },
     ],
     // 1 cotolospatos
     [
