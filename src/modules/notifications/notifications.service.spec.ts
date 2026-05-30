@@ -33,11 +33,19 @@ interface PrismaMock {
   condominium: {
     findUnique: jest.Mock;
   };
+  whatsAppNotificationPreference: {
+    findUnique: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
 interface GatewayMock {
   emitAfterWrite: jest.Mock;
+}
+
+interface WebPushMock {
+  isConfigured: jest.Mock;
+  sendToPreference: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
@@ -68,6 +76,9 @@ function makePrismaMock(): PrismaMock {
     condominium: {
       findUnique: jest.fn().mockResolvedValue(null),
     },
+    whatsAppNotificationPreference: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     $transaction: jest.fn(),
   };
   mock.$transaction.mockImplementation(async (arg: unknown) => {
@@ -86,11 +97,23 @@ function makeGatewayMock(): GatewayMock {
   return { emitAfterWrite: jest.fn() };
 }
 
+function makeWebPushMock(): WebPushMock {
+  return {
+    isConfigured: jest.fn().mockReturnValue(true),
+    sendToPreference: jest.fn().mockResolvedValue(true),
+  };
+}
+
 function makeService(
   prisma: PrismaMock,
   gateway: GatewayMock = makeGatewayMock(),
+  webPush: WebPushMock = makeWebPushMock(),
 ): NotificationsService {
-  return new NotificationsService(prisma as never, gateway as never);
+  return new NotificationsService(
+    prisma as never,
+    gateway as never,
+    webPush as never,
+  );
 }
 
 function eventInput(
@@ -446,6 +469,91 @@ describe('NotificationsService.tryAggregate gateway fan-out', () => {
     await service.createForEvent(eventInput());
 
     expect(gateway.emitAfterWrite).toHaveBeenCalledWith(updated, true);
+  });
+});
+
+describe('NotificationsService.tryAggregate web push fan-out', () => {
+  it('pushes to the recipient subscription after persisting a new row', async () => {
+    const prisma = makePrismaMock();
+    const webPush = makeWebPushMock();
+    const created = {
+      id: 'notif-new',
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      title: 'Import completed',
+      message: 'Your import finished',
+      linkUrl: '/dashboard/imports/batch-1',
+      aggregateCount: 1,
+    };
+    prisma.notification.findFirst.mockResolvedValueOnce(null);
+    prisma.notification.create.mockResolvedValueOnce(created);
+    prisma.whatsAppNotificationPreference.findUnique.mockResolvedValueOnce({
+      id: 'pref-1',
+      pushSubscriptionJson: { endpoint: 'https://push.test/x', keys: {} },
+    });
+    const service = makeService(prisma, makeGatewayMock(), webPush);
+
+    await service.tryAggregate(eventInput());
+
+    expect(prisma.whatsAppNotificationPreference.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_condominiumId: {
+            userId: USER_ID,
+            condominiumId: CONDOMINIUM_ID,
+          },
+        },
+      }),
+    );
+    expect(webPush.sendToPreference).toHaveBeenCalledWith(
+      'pref-1',
+      { endpoint: 'https://push.test/x', keys: {} },
+      expect.objectContaining({
+        title: 'Import completed',
+        body: 'Your import finished',
+        tag: 'notification-notif-new',
+        url: '/dashboard/imports/batch-1',
+      }),
+    );
+  });
+
+  it('skips web push when the recipient has no stored subscription', async () => {
+    const prisma = makePrismaMock();
+    const webPush = makeWebPushMock();
+    prisma.notification.findFirst.mockResolvedValueOnce(null);
+    prisma.notification.create.mockResolvedValueOnce({
+      id: 'notif-new',
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      title: 't',
+      message: 'm',
+    });
+    prisma.whatsAppNotificationPreference.findUnique.mockResolvedValueOnce(null);
+    const service = makeService(prisma, makeGatewayMock(), webPush);
+
+    await service.tryAggregate(eventInput());
+
+    expect(webPush.sendToPreference).not.toHaveBeenCalled();
+  });
+
+  it('skips the subscription lookup entirely when VAPID is not configured', async () => {
+    const prisma = makePrismaMock();
+    const webPush = makeWebPushMock();
+    webPush.isConfigured.mockReturnValue(false);
+    prisma.notification.findFirst.mockResolvedValueOnce(null);
+    prisma.notification.create.mockResolvedValueOnce({
+      id: 'notif-new',
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      title: 't',
+      message: 'm',
+    });
+    const service = makeService(prisma, makeGatewayMock(), webPush);
+
+    await service.tryAggregate(eventInput());
+
+    expect(prisma.whatsAppNotificationPreference.findUnique).not.toHaveBeenCalled();
+    expect(webPush.sendToPreference).not.toHaveBeenCalled();
   });
 });
 

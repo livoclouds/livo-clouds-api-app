@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { WebPushModule } from '../web-push/web-push.module';
 import { MeNotificationsController } from './me-notifications.controller';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsRetentionCron } from './notifications.cron';
@@ -13,6 +14,7 @@ import { ReconciliationNotificationsListener } from './listeners/reconciliation-
 import { UsersNotificationsListener } from './listeners/users-notifications.listener';
 
 @Module({
+  imports: [WebPushModule],
   controllers: [
     NotificationsController,
     MeNotificationsController,

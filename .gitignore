@@ -35,3 +35,6 @@ prisma/migrations/*.lock
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# Claude Code agent logs
+.claude/logs/

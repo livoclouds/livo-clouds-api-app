@@ -5,12 +5,16 @@ import * as webpush from 'web-push';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
- * Web Push (Phase 5) — supplementary channel for admin escalation alerts.
+ * Web Push — the shared browser/device push channel for every notification.
  *
- * WhatsApp-to-admin remains the primary channel; Push is opt-in and only
- * dispatched when an admin has stored a valid subscription and selected the
- * PUSH or BOTH channel. Payloads are privacy-safe: they never carry message
- * content, phone numbers, media captions, or access tokens.
+ * Originally a WhatsApp-escalation supplement (Phase 5), now the delivery
+ * mechanism for all notification types: WhatsApp escalations and the general
+ * push-on-create dispatch both route through here. Payloads are privacy-safe —
+ * they carry an operational title/body only, never message content, phone
+ * numbers, media captions, or access tokens.
+ *
+ * Subscriptions live in `WhatsAppNotificationPreference.pushSubscriptionJson`,
+ * keyed by the unique (userId, condominiumId) pair.
  */
 export interface PushNotificationPayload {
   /** Concise OS-notification title. */
@@ -19,13 +23,13 @@ export interface PushNotificationPayload {
   body: string;
   /** Stable tag so re-notifications replace rather than stack. */
   tag: string;
-  /** Same-origin deep-link path to the conversation. */
+  /** Same-origin deep-link path for the notification click target. */
   url: string;
 }
 
 @Injectable()
-export class WhatsAppPushService {
-  private readonly logger = new Logger(WhatsAppPushService.name);
+export class WebPushService {
+  private readonly logger = new Logger(WebPushService.name);
   private vapidConfigured = false;
 
   constructor(
@@ -40,10 +44,10 @@ export class WhatsAppPushService {
 
   private ensureVapid(): boolean {
     if (this.vapidConfigured) return true;
-    const publicKey = this.configService.get<string>('whatsapp.vapidPublicKey', '');
-    const privateKey = this.configService.get<string>('whatsapp.vapidPrivateKey', '');
+    const publicKey = this.configService.get<string>('webPush.publicKey', '');
+    const privateKey = this.configService.get<string>('webPush.privateKey', '');
     const subject = this.configService.get<string>(
-      'whatsapp.vapidSubject',
+      'webPush.subject',
       'mailto:contact@livoclouds.com',
     );
     if (!publicKey || !privateKey) return false;
@@ -58,12 +62,12 @@ export class WhatsAppPushService {
   }
 
   /**
-   * Send a push notification to one admin's stored subscription.
+   * Send a push notification to one stored subscription.
    *
    * Invalid, revoked, or expired subscriptions (HTTP 404/410) are cleared from
    * the preference so a stale subscription never breaks future dispatch. Any
    * failure is logged without exposing the payload or subscription internals
-   * and never throws — escalation dispatch must not crash on a push error.
+   * and never throws — dispatch must not crash on a push error.
    */
   async sendToPreference(
     preferenceId: string,
