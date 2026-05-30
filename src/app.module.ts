@@ -28,6 +28,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ClassificationModule } from './modules/classification/classification.module';
 import { ImportsModule } from './modules/imports/imports.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { SecurityModule } from './modules/security/security.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PettyCashModule } from './modules/petty-cash/petty-cash.module';
@@ -84,6 +85,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     ImportsModule,
     TransactionsModule,
     InventoryModule,
+    SecurityModule,
     NotificationsModule,
     PettyCashModule,
     ReportsModule,

@@ -88,6 +88,10 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
 
   p('audit.read', 'audit', 'read', 'tenant'),
 
+  // Seguridad (RBAC Phase 4) — gate / security operations
+  p('security.visitors.read', 'security', 'read', 'tenant', 'visitors'),
+  p('security.visitors.manage', 'security', 'manage', 'tenant', 'visitors'),
+
   // Platform — cross-condominium / technical
   p('platform.condominiums.read', 'platform', 'read', 'platform', 'condominiums'),
   p('platform.condominiums.manage', 'platform', 'manage', 'platform', 'condominiums'),
@@ -187,12 +191,15 @@ const CONDOMINO_PERMS = [
   'notifications.read',
 ];
 
-// Seguridad (GUARD): gate operation. Minimal today; grows with the security module.
+// Seguridad (GUARD): gate operation. Operates the visitor log; reads the
+// resident/calendar/inventory directories it needs at the gate.
 const SECURITY_PERMS = [
   'residents.read',
   'calendar.read',
   'inventory.read',
   'notifications.read',
+  'security.visitors.read',
+  'security.visitors.manage',
 ];
 
 // Vecino (NEIGHBOR): individual unit resident, most restricted (own bookings).
