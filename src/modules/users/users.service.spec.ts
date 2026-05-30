@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { UsersService } from './users.service';
 
@@ -7,7 +8,11 @@ function makeDeps() {
     role: { findFirst: jest.fn() },
   };
   const events = { emit: jest.fn() };
-  const rbac = { invalidateUser: jest.fn() };
+  const rbac = {
+    invalidateUser: jest.fn(),
+    hasAny: jest.fn(),
+    getEffectivePermissions: jest.fn(),
+  };
   return { prisma, events, rbac };
 }
 
@@ -34,6 +39,16 @@ describe('UsersService.update — permission overrides (RBAC Phase 3)', () => {
       .mockResolvedValueOnce(row) // findOne(before)
       .mockResolvedValueOnce({ ...row }); // after
     deps.prisma.user.updateMany.mockResolvedValue({ count: 1 });
+    // ROOT holds all permissions — gates 1, 2, and 3 pass.
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.rbac.getEffectivePermissions.mockResolvedValue(
+      new Set([
+        'audit.read',
+        'platform.roles.manage',
+        'platform.users.manage',
+        'users.permissions.manage',
+      ]),
+    );
   });
 
   it('persists a sanitised override array and invalidates the cache', async () => {
@@ -76,5 +91,131 @@ describe('UsersService.update — permission overrides (RBAC Phase 3)', () => {
       data: Record<string, unknown>;
     };
     expect('permissionOverrides' in call.data).toBe(false);
+  });
+});
+
+describe('RBAC-001: permissionOverrides security gates', () => {
+  let deps: ReturnType<typeof makeDeps>;
+  let service: UsersService;
+
+  const tenantAdmin = { sub: 'ta', role: 'TENANT_ADMIN' } as never;
+  const rootUser = { sub: 'root', role: 'ROOT' } as never;
+
+  beforeEach(() => {
+    deps = makeDeps();
+    service = new UsersService(
+      deps.prisma as never,
+      deps.events as never,
+      deps.rbac as never,
+    );
+    const row = { id: 'u1', roleRef: { key: 'TENANT_ADMIN' }, permissionOverrides: null };
+    deps.prisma.user.findFirst.mockResolvedValue(row);
+    deps.prisma.user.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it('rejects actor lacking users.permissions.manage', async () => {
+    deps.rbac.hasAny.mockResolvedValue(false);
+    await expect(
+      service.update('c1', 'u1', { permissionOverrides: ['audit.read'] } as never, tenantAdmin),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('rejects platform.* override from a tenant-scoped actor', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.rbac.getEffectivePermissions.mockResolvedValue(new Set(['audit.read']));
+    await expect(
+      service.update(
+        'c1',
+        'u1',
+        { permissionOverrides: ['platform.roles.manage'] } as never,
+        tenantAdmin,
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('rejects granting a permission the actor does not hold', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.rbac.getEffectivePermissions.mockResolvedValue(new Set(['audit.read']));
+    await expect(
+      service.update('c1', 'u1', { permissionOverrides: ['users.manage'] } as never, tenantAdmin),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('allows ROOT to set a tenant-scoped override', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.rbac.getEffectivePermissions.mockResolvedValue(
+      new Set(['audit.read', 'users.manage', 'users.permissions.manage', 'platform.users.manage']),
+    );
+    deps.prisma.user.findFirst
+      .mockResolvedValueOnce({ id: 'u1', roleRef: { key: 'TENANT_ADMIN' }, permissionOverrides: null })
+      .mockResolvedValueOnce({ id: 'u1', roleRef: { key: 'TENANT_ADMIN' }, permissionOverrides: ['audit.read'] });
+    await expect(
+      service.update('c1', 'u1', { permissionOverrides: ['audit.read'] } as never, rootUser),
+    ).resolves.not.toThrow();
+  });
+
+  it('allows ROOT to set a platform-scoped override', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.rbac.getEffectivePermissions.mockResolvedValue(
+      new Set(['platform.roles.manage', 'platform.users.manage', 'users.permissions.manage']),
+    );
+    deps.prisma.user.findFirst
+      .mockResolvedValueOnce({ id: 'u1', roleRef: { key: 'ROOT' }, permissionOverrides: null })
+      .mockResolvedValueOnce({ id: 'u1', roleRef: { key: 'ROOT' }, permissionOverrides: ['platform.roles.manage'] });
+    await expect(
+      service.update(
+        'c1',
+        'u1',
+        { permissionOverrides: ['platform.roles.manage'] } as never,
+        rootUser,
+      ),
+    ).resolves.not.toThrow();
+  });
+});
+
+describe('RBAC-002: role assignment security gates', () => {
+  let deps: ReturnType<typeof makeDeps>;
+  let service: UsersService;
+
+  const tenantAdmin = { sub: 'ta', role: 'TENANT_ADMIN' } as never;
+  const rootUser = { sub: 'root', role: 'ROOT' } as never;
+
+  beforeEach(() => {
+    deps = makeDeps();
+    service = new UsersService(
+      deps.prisma as never,
+      deps.events as never,
+      deps.rbac as never,
+    );
+  });
+
+  it('rejects creating ROOT when actor lacks platform.users.manage', async () => {
+    deps.rbac.hasAny.mockResolvedValue(false);
+    await expect(
+      service.create(
+        'c1',
+        { role: 'ROOT', email: 'x@x.com', password: 'pw', firstName: 'A', lastName: 'B' } as never,
+        tenantAdmin,
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('allows ROOT to create a ROOT user', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.prisma.user.findFirst.mockResolvedValue(null); // no email conflict
+    deps.prisma.role.findFirst.mockResolvedValue({ id: 'role-root', key: 'ROOT' });
+    (deps.prisma.user as Record<string, unknown>).create = jest.fn().mockResolvedValue({
+      id: 'u2',
+      email: 'root@x.com',
+      roleRef: { key: 'ROOT' },
+      permissionOverrides: null,
+    });
+    await expect(
+      service.create(
+        'c1',
+        { role: 'ROOT', email: 'root@x.com', password: 'pw12345!', firstName: 'A', lastName: 'B' } as never,
+        rootUser,
+      ),
+    ).resolves.not.toThrow();
   });
 });
