@@ -305,6 +305,7 @@ model Condominium {
 
   settings                         CondominiumSettings?
   users                            User[]
+  roles                            Role[]
   residents                        Resident[]
   vehicles                         Vehicle[]
   pets                             Pet[]
@@ -393,7 +394,14 @@ model User {
   condominiumId   String?
   email           String
   passwordHash    String
+  // Legacy role enum. Kept during the RBAC-table transition (dual-write) so the
+  // existing @Roles() guards keep working; roleId is the new source of truth.
+  // Removed once every endpoint is migrated to permission checks (RBAC Phase 2).
   role            UserRole
+  // Dynamic RBAC (RBAC Phase 1). FK to the assigned Role row (system or custom).
+  // Nullable during backfill; the permission resolver falls back to the system
+  // preset for `role` when null, so behaviour is correct pre- and post-backfill.
+  roleId          String?
   firstName       String
   lastName        String
   phone           String?
@@ -418,6 +426,7 @@ model User {
   onboardingSkippedAt   DateTime?
 
   condominium               Condominium?                     @relation(fields: [condominiumId], references: [id])
+  roleRef                   Role?                            @relation(fields: [roleId], references: [id])
   refreshTokens             RefreshToken[]
   passwordResetTokens       PasswordResetToken[]
   pettyCashRegistered       PettyCashMovement[]              @relation("RegisteredBy")
@@ -442,6 +451,7 @@ model User {
   @@index([condominiumId])
   @@index([email])
   @@index([role])
+  @@index([roleId])
   @@index([deletedAt])
   @@map("users")
 }
