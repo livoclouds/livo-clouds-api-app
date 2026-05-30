@@ -253,16 +253,25 @@ export function isPlatformPermission(key: string): boolean {
 }
 
 /**
- * Effective permissions for a user. The assigned Role row (roleRef) is the
- * single source of truth — even an empty set (a custom role with nothing granted
- * yet). A user with no role row gets no permissions. The optional `roleKey` is a
- * legacy fallback used only by tests/back-compat callers that pass a system key
- * without a row; runtime callers omit it (every user is backfilled).
+ * Effective permissions for a user (RBAC Phase 3).
+ *
+ * Precedence:
+ *  1. Per-user `overrides` — when non-null, they ARE the effective set,
+ *     independent of the role (a custom override for this single user).
+ *  2. The assigned Role row (`roleRef`) — the source of truth otherwise, even an
+ *     empty set (a custom role with nothing granted yet).
+ *  3. `roleKey` preset — a legacy fallback used only by tests/back-compat callers
+ *     that pass a system key without a row; runtime callers omit it (every user
+ *     is backfilled).
+ *
+ * `overrides`/`roleKey` are passed via the options bag so the common 1-arg call
+ * `resolveEffectivePermissions(user.roleRef)` stays unchanged.
  */
 export function resolveEffectivePermissions(
   roleRef: { permissions: string[] } | null | undefined,
-  roleKey?: string,
+  options?: { overrides?: string[] | null; roleKey?: string },
 ): string[] {
+  if (options?.overrides != null) return sanitizePermissions(options.overrides);
   if (roleRef) return sanitizePermissions(roleRef.permissions);
-  return roleKey ? presetForRole(roleKey) : [];
+  return options?.roleKey ? presetForRole(options.roleKey) : [];
 }

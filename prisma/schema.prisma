@@ -400,6 +400,11 @@ model User {
   // Enforced server-side via RefreshToken.lastActivityAt — see InactivityLockGuard.
   inactivityLockMinutes Int @default(15)
   isActive        Boolean   @default(true)
+  // Per-user permission overrides (RBAC Phase 3). NULL = inherit the assigned
+  // role's permissions; a JSON array of catalog keys = the explicit effective
+  // set for this user (independent of the role). Resolved by
+  // resolveEffectivePermissions: overrides ?? roleRef.permissions.
+  permissionOverrides Json?
   lastLoginAt     DateTime?
   deletedAt       DateTime?
   createdAt       DateTime  @default(now())

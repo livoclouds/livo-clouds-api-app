@@ -235,7 +235,9 @@ export class AuthService {
       // enum while roleId is being backfilled.
       roleKey: user.roleRef?.key ?? null,
       roleName: user.roleRef?.name ?? null,
-      permissions: resolveEffectivePermissions(user.roleRef),
+      permissions: resolveEffectivePermissions(user.roleRef, {
+        overrides: user.permissionOverrides as string[] | null,
+      }),
       user: {
         id: user.id,
         email: user.email,
@@ -377,7 +379,9 @@ export class AuthService {
       // on the next refresh without forcing a full re-login.
       roleKey: user.roleRef?.key ?? null,
       roleName: user.roleRef?.name ?? null,
-      permissions: resolveEffectivePermissions(user.roleRef),
+      permissions: resolveEffectivePermissions(user.roleRef, {
+        overrides: user.permissionOverrides as string[] | null,
+      }),
     };
   }
 
