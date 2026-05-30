@@ -210,6 +210,8 @@ The Next.js frontend lives at `~/code/github/livoclouds/livo-clouds-web-app`.
 
 **Web app read permission**: Claude has standing permission to read any file in `~/code/github/livoclouds/livo-clouds-web-app` without asking.
 
+**Worktree isolation (mandatory)**: Never edit the active checkout or switch the branch of this repo or the web repo. All code changes — here *and* in the web repo — happen inside an isolated `.claude/worktrees/<branch>/`. A global `PreToolUse` hook blocks direct edits and branch switches on a main checkout. The user can authorize direct work explicitly — see the worktree-isolation section in `~/.claude/CLAUDE.md`.
+
 ## Known Gaps
 - No dedicated logging library (NestJS built-in Logger + Fastify `logger: true`).
 - No APM / slow-query log / `pg_stat_statements` / Prisma `$on('query')` instrumentation. Phase 8 (deferred index hardening) re-opens only when one of these provides measurement signal.
