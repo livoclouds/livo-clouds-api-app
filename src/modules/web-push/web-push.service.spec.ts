@@ -1,4 +1,4 @@
-import { WhatsAppPushService } from './whatsapp-push.service';
+import { WebPushService } from './web-push.service';
 
 jest.mock('web-push', () => ({
   setVapidDetails: jest.fn(),
@@ -25,21 +25,21 @@ function makeService(opts: { configured?: boolean } = {}) {
   const configService = {
     get: jest.fn((key: string, fallback: string) => {
       if (opts.configured === false) {
-        if (key === 'whatsapp.vapidPublicKey') return '';
-        if (key === 'whatsapp.vapidPrivateKey') return '';
+        if (key === 'webPush.publicKey') return '';
+        if (key === 'webPush.privateKey') return '';
         return fallback;
       }
-      if (key === 'whatsapp.vapidPublicKey') return 'public-key';
-      if (key === 'whatsapp.vapidPrivateKey') return 'private-key';
-      if (key === 'whatsapp.vapidSubject') return 'mailto:test@livoclouds.com';
+      if (key === 'webPush.publicKey') return 'public-key';
+      if (key === 'webPush.privateKey') return 'private-key';
+      if (key === 'webPush.subject') return 'mailto:test@livoclouds.com';
       return fallback;
     }),
   };
-  const service = new WhatsAppPushService(prisma as never, configService as never);
+  const service = new WebPushService(prisma as never, configService as never);
   return { service, prisma };
 }
 
-describe('WhatsAppPushService', () => {
+describe('WebPushService', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('reports not configured when VAPID keys are absent', () => {

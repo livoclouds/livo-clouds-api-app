@@ -17,6 +17,7 @@ import {
   NOTIFICATION_R1_TYPES,
 } from './notifications.constants';
 import { NotificationsSseGateway } from './notifications.gateway';
+import { WebPushService } from '../web-push/web-push.service';
 import {
   isR1NotificationType,
   NOTIFICATION_ROLE_ACCESS,
@@ -96,6 +97,7 @@ export class NotificationsService {
   constructor(
     private prisma: PrismaService,
     private gateway: NotificationsSseGateway,
+    private webPush: WebPushService,
   ) {}
 
   async list(params: ListNotificationsParams) {
@@ -601,7 +603,53 @@ export class NotificationsService {
       );
     }
 
+    // Web Push fan-out — every notification also pushes to the recipient's
+    // subscribed device(s). Awaited (not fire-and-forget) so the delivery
+    // completes before a serverless function can suspend; never throws.
+    await this.dispatchWebPush(row);
+
     return row;
+  }
+
+  /**
+   * Best-effort Web Push for a freshly written notification. Looks up the
+   * recipient's stored subscription (keyed by the unique userId+condominiumId
+   * pair) and sends an OS push. Notifications without a user or condominium
+   * (e.g. ROOT cross-tenant rows) have no per-tenant subscription and are
+   * skipped. Short-circuits when VAPID is not configured so we avoid a DB read.
+   */
+  private async dispatchWebPush(row: Notification): Promise<void> {
+    if (!row.userId || !row.condominiumId) return;
+    if (!this.webPush.isConfigured()) return;
+    try {
+      const preference =
+        await this.prisma.whatsAppNotificationPreference.findUnique({
+          where: {
+            userId_condominiumId: {
+              userId: row.userId,
+              condominiumId: row.condominiumId,
+            },
+          },
+          select: { id: true, pushSubscriptionJson: true },
+        });
+      if (!preference?.pushSubscriptionJson) return;
+      await this.webPush.sendToPreference(
+        preference.id,
+        preference.pushSubscriptionJson,
+        {
+          title: row.title,
+          body: row.message,
+          // Per-notification tag so distinct alerts don't replace each other,
+          // while a re-aggregated row reuses its tag to update in place.
+          tag: `notification-${row.id}`,
+          url: row.linkUrl ?? '/notifications',
+        },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Web Push fan-out failed for notification ${row.id}: ${String(err)}`,
+      );
+    }
   }
 
   private async findOwnedOrThrow(

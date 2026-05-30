@@ -12,6 +12,7 @@ import jwtConfig from './config/jwt.config';
 import emailConfig from './config/email.config';
 import storageConfig from './config/storage.config';
 import whatsappConfig from './config/whatsapp.config';
+import webPushConfig from './config/web-push.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { InactivityLockGuard } from './common/guards/inactivity-lock.guard';
@@ -48,7 +49,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     ConfigModule.forRoot({
       isGlobal: true,
       ignoreEnvFile: process.env.NODE_ENV === 'production',
-      load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig, whatsappConfig],
+      load: [appConfig, corsConfig, databaseConfig, emailConfig, jwtConfig, storageConfig, whatsappConfig, webPushConfig],
     }),
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),

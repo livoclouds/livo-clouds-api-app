@@ -12,7 +12,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { decrypt } from '../../common/utils/encryption.util';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
-import { WhatsAppPushService } from './whatsapp-push.service';
+import { WebPushService } from '../web-push/web-push.service';
 
 const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -34,7 +34,7 @@ export class WhatsAppNotificationDispatcherService {
     private prisma: PrismaService,
     private configService: ConfigService,
     private metaClient: WhatsAppMetaClientService,
-    private pushService: WhatsAppPushService,
+    private pushService: WebPushService,
   ) {}
 
   async dispatchEscalation(conversationId: string): Promise<void> {
