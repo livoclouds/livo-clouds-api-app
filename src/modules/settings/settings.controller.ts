@@ -3,10 +3,9 @@ import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -15,7 +14,7 @@ import { LogoUploadFile, SettingsService } from './settings.service';
 
 @ApiTags('Settings')
 @Controller('condominiums/:condominiumSlug/settings')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
@@ -26,7 +25,7 @@ export class SettingsController {
   }
 
   @Patch('profile')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update condominium name and brand color' })
   updateProfile(
     @Request() req: { condominiumId: string },
@@ -36,7 +35,7 @@ export class SettingsController {
   }
 
   @Patch('general')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update general settings' })
   updateGeneral(
     @Request() req: { condominiumId: string },
@@ -46,7 +45,7 @@ export class SettingsController {
   }
 
   @Patch('fees')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update fees settings' })
   updateFees(
     @Request() req: { condominiumId: string },
@@ -56,7 +55,7 @@ export class SettingsController {
   }
 
   @Patch('financial')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update financial/import settings' })
   updateFinancial(
     @Request() req: { condominiumId: string },
@@ -66,7 +65,7 @@ export class SettingsController {
   }
 
   @Patch('terrace')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Update terrace booking settings' })
   updateTerrace(
     @Request() req: { condominiumId: string },
@@ -82,7 +81,7 @@ export class SettingsController {
   }
 
   @Post('logo')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 60_000 } })
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload condominium logo (max 2 MB — PNG, JPEG, WebP)' })
@@ -143,7 +142,7 @@ export class SettingsController {
   }
 
   @Delete('logo')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('settings.update')
   @ApiOperation({ summary: 'Remove condominium logo' })
   deleteLogo(@Request() req: { condominiumId: string }) {
     return this.settingsService.deleteLogo(req.condominiumId);

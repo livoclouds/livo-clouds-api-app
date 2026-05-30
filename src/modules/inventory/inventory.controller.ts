@@ -11,10 +11,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { CreateCommonAreaDto } from './dto/create-common-area.dto';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { ListCommonAreasDto } from './dto/list-common-areas.dto';
@@ -29,7 +28,7 @@ import { InventoryService } from './inventory.service';
 type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Inventory')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 @Controller()
 export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}
@@ -46,7 +45,7 @@ export class InventoryController {
   }
 
   @Post('condominiums/:condominiumSlug/common-areas')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Create common area' })
   createArea(
     @Request() req: AuthedRequest,
@@ -60,7 +59,7 @@ export class InventoryController {
   }
 
   @Patch('condominiums/:condominiumSlug/common-areas/:id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Update common area' })
   updateArea(
     @Request() req: AuthedRequest,
@@ -76,7 +75,7 @@ export class InventoryController {
   }
 
   @Delete('condominiums/:condominiumSlug/common-areas/:id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Delete common area' })
   removeArea(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.inventoryService.removeArea(
@@ -98,7 +97,7 @@ export class InventoryController {
   }
 
   @Post('condominiums/:condominiumSlug/inventory')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Create inventory item' })
   createItem(
     @Request() req: AuthedRequest,
@@ -112,7 +111,7 @@ export class InventoryController {
   }
 
   @Patch('condominiums/:condominiumSlug/inventory/:id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Update inventory item' })
   updateItem(
     @Request() req: AuthedRequest,
@@ -128,7 +127,7 @@ export class InventoryController {
   }
 
   @Delete('condominiums/:condominiumSlug/inventory/:id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('inventory.manage')
   @ApiOperation({ summary: 'Delete inventory item' })
   removeItem(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.inventoryService.removeItem(

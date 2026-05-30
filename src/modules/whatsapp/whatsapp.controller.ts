@@ -18,10 +18,9 @@ import { Throttle } from '@nestjs/throttler';
 import type { FastifyReply } from 'fastify';
 import { Readable } from 'node:stream';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { JwtPayload } from '../../common/types';
 import { CreateResidentDto } from '../residents/dto/create-resident.dto';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppNotificationPreferenceService } from './whatsapp-notification-preference.service';
@@ -47,7 +46,7 @@ import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('WhatsApp')
 @Controller('condominiums/:condominiumSlug/communications/whatsapp')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class WhatsAppController {
   constructor(
     private readonly whatsAppService: WhatsAppService,
@@ -60,14 +59,14 @@ export class WhatsAppController {
   // ── Credentials ─────────────────────────────────────────────────────────────
 
   @Get('credentials')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Get WhatsApp credential (sanitized)' })
   getCredential(@Request() req: { condominiumId: string }) {
     return this.whatsAppService.getCredential(req.condominiumId);
   }
 
   @Patch('credentials')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Create or update WhatsApp credential' })
   upsertCredential(
     @Request() req: { condominiumId: string },
@@ -78,7 +77,7 @@ export class WhatsAppController {
   }
 
   @Delete('credentials')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @HttpCode(204)
   @ApiOperation({ summary: 'Revoke WhatsApp credential' })
   deleteCredential(
@@ -89,7 +88,7 @@ export class WhatsAppController {
   }
 
   @Post('credentials/validate-number')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 15, ttl: 60_000 } })
   @ApiOperation({ summary: 'Validate whether a phone number is ready for WhatsApp Business' })
   validateNumber(
@@ -100,7 +99,7 @@ export class WhatsAppController {
   }
 
   @Post('residents/normalize-phones')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @Throttle({ burst: { limit: 3, ttl: 10_000 }, sustained: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Dry-run or apply resident phone-number normalization' })
   normalizeResidentPhones(
@@ -112,7 +111,7 @@ export class WhatsAppController {
   }
 
   @Post('credentials/test-connection')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Test connection to Meta Graph API' })
   testConnection(@Request() req: { condominiumId: string }) {
     return this.whatsAppService.testConnection(req.condominiumId);
@@ -121,14 +120,14 @@ export class WhatsAppController {
   // ── Bot Config ───────────────────────────────────────────────────────────────
 
   @Get('bot-config')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Get bot configuration' })
   getBotConfig(@Request() req: { condominiumId: string }) {
     return this.whatsAppService.getBotConfig(req.condominiumId);
   }
 
   @Patch('bot-config')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Update bot configuration' })
   updateBotConfig(
     @Request() req: { condominiumId: string },
@@ -166,7 +165,7 @@ export class WhatsAppController {
   }
 
   @Post('faqs')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 40, ttl: 60_000 } })
   @ApiOperation({ summary: 'Create FAQ' })
   createFaq(
@@ -178,7 +177,7 @@ export class WhatsAppController {
   }
 
   @Patch('faqs/reorder')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @HttpCode(204)
   @ApiOperation({ summary: 'Reorder FAQs by ID list' })
   reorderFaqs(@Request() req: { condominiumId: string }, @Body() dto: ReorderFaqsDto) {
@@ -186,7 +185,7 @@ export class WhatsAppController {
   }
 
   @Patch('faqs/:faqId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 40, ttl: 60_000 } })
   @ApiOperation({ summary: 'Update FAQ' })
   updateFaq(
@@ -199,7 +198,7 @@ export class WhatsAppController {
   }
 
   @Delete('faqs/:faqId')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @HttpCode(204)
   @ApiOperation({ summary: 'Delete FAQ' })
   deleteFaq(
@@ -246,7 +245,7 @@ export class WhatsAppController {
   }
 
   @Post('conversations/:conversationId/messages')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Send a text message' })
   sendMessage(
     @Request() req: { condominiumId: string },
@@ -258,7 +257,7 @@ export class WhatsAppController {
   }
 
   @Post('conversations/:conversationId/take-over')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Admin take over conversation from bot' })
   takeOver(
     @Request() req: { condominiumId: string },
@@ -269,7 +268,7 @@ export class WhatsAppController {
   }
 
   @Post('conversations/:conversationId/return-to-bot')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Return conversation to bot handling' })
   returnToBot(
     @Request() req: { condominiumId: string },
@@ -280,7 +279,7 @@ export class WhatsAppController {
   }
 
   @Post('conversations/:conversationId/resolve')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Resolve a conversation' })
   resolve(
     @Request() req: { condominiumId: string },
@@ -338,7 +337,7 @@ export class WhatsAppController {
   // ── Unregistered Contacts ────────────────────────────────────────────────────
 
   @Get('unregistered')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'List unregistered contacts' })
   listUnregistered(
     @Request() req: { condominiumId: string },
@@ -348,7 +347,7 @@ export class WhatsAppController {
   }
 
   @Patch('unregistered/:id')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Update captured data, notes, or status of an unregistered contact' })
   updateUnregistered(
     @Request() req: { condominiumId: string },
@@ -360,7 +359,7 @@ export class WhatsAppController {
   }
 
   @Post('unregistered/:id/register-as-resident')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Promote an unregistered contact to a registered resident' })
   registerUnregisteredAsResident(
     @Request() req: { condominiumId: string },
@@ -372,7 +371,7 @@ export class WhatsAppController {
   }
 
   @Post('unregistered/:id/ignore')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Mark an unregistered contact as ignored' })
   ignoreUnregistered(
     @Request() req: { condominiumId: string },
@@ -385,7 +384,7 @@ export class WhatsAppController {
   // ── Notification Preferences ─────────────────────────────────────────────────
 
   @Get('notification-preference')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Get current user notification preference for this condominium' })
   getNotificationPreference(
     @Request() req: { condominiumId: string },
@@ -395,7 +394,7 @@ export class WhatsAppController {
   }
 
   @Patch('notification-preference')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Update notification preference' })
   updateNotificationPreference(
     @Request() req: { condominiumId: string },
@@ -406,7 +405,7 @@ export class WhatsAppController {
   }
 
   @Post('notification-preference/test-whatsapp')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Send a test WhatsApp notification to the admin personal number' })
   testNotification(
     @Request() req: { condominiumId: string },
@@ -421,7 +420,7 @@ export class WhatsAppController {
   }
 
   @Post('notification-preference/push-subscribe')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Store Web Push subscription (Phase 5 placeholder, no dispatch)' })
   pushSubscribe(
     @Request() req: { condominiumId: string },
@@ -436,7 +435,7 @@ export class WhatsAppController {
   }
 
   @Post('notification-preference/push-unsubscribe')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @HttpCode(204)
   @ApiOperation({ summary: 'Remove Web Push subscription' })
   pushUnsubscribe(
@@ -449,7 +448,7 @@ export class WhatsAppController {
   // ── Analytics ────────────────────────────────────────────────────────────────
 
   @Get('analytics')
-  @Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+  @RequirePermission('communications.send')
   @ApiOperation({ summary: 'Lightweight communications analytics summary' })
   getAnalytics(
     @Request() req: { condominiumId: string },

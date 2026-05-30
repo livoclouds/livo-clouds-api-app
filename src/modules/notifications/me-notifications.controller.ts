@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { JwtPayload } from '../../common/types';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import { UpdateNotificationScopeDto } from './dto/update-notification-scope.dto';
@@ -16,8 +15,7 @@ import { NotificationsService } from './notifications.service';
  */
 @ApiTags('Notifications')
 @Controller('me')
-@UseGuards(RolesGuard)
-@Roles(UserRole.ROOT)
+@RequirePermission('platform.condominiums.read')
 export class MeNotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 

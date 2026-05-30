@@ -1,15 +1,8 @@
-import {
-  Controller,
-  Delete,
-  Get,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Delete, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtPayload, UserRole } from '../../common/types';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { JwtPayload } from '../../common/types';
 import {
   ListAggregateQuery,
   ListObjectsQuery,
@@ -17,9 +10,11 @@ import {
 } from './dto/list-objects.dto';
 import { StorageAdminService } from './storage-admin.service';
 
+// RBAC Phase 2: platform storage admin. Reads require platform.storage.read
+// (Developer + Supervisor); deleting an object requires platform.storage.manage
+// (Developer only) — the method-level decorator overrides the class default.
 @ApiTags('Storage Admin')
-@UseGuards(RolesGuard)
-@Roles(UserRole.ROOT)
+@RequirePermission('platform.storage.read')
 @Controller('admin/storage')
 export class StorageAdminController {
   constructor(private readonly service: StorageAdminService) {}
@@ -61,6 +56,7 @@ export class StorageAdminController {
   }
 
   @Delete('objects')
+  @RequirePermission('platform.storage.manage')
   @ApiOperation({ summary: 'Delete an R2 object (root only)' })
   remove(@Query('key') key: string, @CurrentUser() user: JwtPayload) {
     return this.service.deleteObject(key, user);
