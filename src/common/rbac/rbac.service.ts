@@ -35,11 +35,11 @@ export class RbacService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { role: true, roleRef: { select: { permissions: true } } },
+      select: { roleRef: { select: { permissions: true } } },
     });
 
     const perms = new Set(
-      user ? resolveEffectivePermissions(user.roleRef, user.role) : [],
+      user ? resolveEffectivePermissions(user.roleRef) : [],
     );
     this.cache.set(userId, { perms, expiresAt: now + this.ttlMs });
     return perms;

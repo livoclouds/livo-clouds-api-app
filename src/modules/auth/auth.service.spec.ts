@@ -140,7 +140,7 @@ function activeUser(overrides: Record<string, unknown> = {}): Record<string, unk
     deletedAt: null,
     condominiumId: CONDOMINIUM_ID,
     condominium: { slug: CONDOMINIUM_SLUG },
-    role: UserRole.TENANT_ADMIN,
+    roleRef: { key: UserRole.TENANT_ADMIN, name: 'Administrator', permissions: [] },
     sessionDuration: 8,
     lastLoginAt: null,
     firstName: 'Test',
@@ -153,7 +153,7 @@ function activeUser(overrides: Record<string, unknown> = {}): Record<string, unk
 
 function activeRootUser(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return activeUser({
-    role: UserRole.ROOT,
+    roleRef: { key: UserRole.ROOT, name: 'Developer', permissions: [] },
     condominiumId: null,
     condominium: null,
     ...overrides,

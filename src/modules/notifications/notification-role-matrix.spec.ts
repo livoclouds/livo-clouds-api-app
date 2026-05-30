@@ -1,4 +1,5 @@
-import { NotificationType, UserRole } from '@prisma/client';
+import { NotificationType } from '@prisma/client';
+import { UserRole } from '../../common/types';
 import {
   isR1NotificationType,
   NOTIFICATION_ROLE_ACCESS,

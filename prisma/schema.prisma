@@ -14,14 +14,6 @@ datasource db {
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
-enum UserRole {
-  ROOT
-  TENANT_ADMIN
-  READ_ONLY
-  GUARD
-  NEIGHBOR
-}
-
 enum ResidentType {
   OWNER
   CO_OWNER
@@ -394,13 +386,9 @@ model User {
   condominiumId   String?
   email           String
   passwordHash    String
-  // Legacy role enum. Kept during the RBAC-table transition (dual-write) so the
-  // existing @Roles() guards keep working; roleId is the new source of truth.
-  // Removed once every endpoint is migrated to permission checks (RBAC Phase 2).
-  role            UserRole
-  // Dynamic RBAC (RBAC Phase 1). FK to the assigned Role row (system or custom).
-  // Nullable during backfill; the permission resolver falls back to the system
-  // preset for `role` when null, so behaviour is correct pre- and post-backfill.
+  // Dynamic RBAC (RBAC Phase 2). The assigned Role row is the single source of
+  // truth for role + permissions; the legacy `role` enum column was removed. The
+  // role key (Role.key) and effective permissions are read via roleRef.
   roleId          String?
   firstName       String
   lastName        String
@@ -450,7 +438,6 @@ model User {
   @@unique([condominiumId, email])
   @@index([condominiumId])
   @@index([email])
-  @@index([role])
   @@index([roleId])
   @@index([deletedAt])
   @@map("users")

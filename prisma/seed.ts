@@ -1,7 +1,6 @@
 import {
   PrismaClient,
   Prisma,
-  UserRole,
   ResidentType,
   PaymentStatus,
   CommonAreaStatus,
@@ -600,14 +599,14 @@ async function main() {
   // 1 ROOT + 2-3 per condominium ≈ 24 total; ~13 active, ~11 inactive
 
   const userRows: {
-    email: string; passwordHash: string; role: UserRole;
+    email: string; passwordHash: string; role: string;
     firstName: string; lastName: string; phone: string;
     isActive: boolean; condominiumId: string | null;
   }[] = [
     { email: 'root@demo.com', passwordHash: hashRoot, role: 'ROOT', firstName: 'Admin', lastName: 'Root', phone: '+52 81 1000 0000', isActive: true, condominiumId: null },
   ];
 
-  const perCondoUsers: Array<{ email: string; ph: string; role: UserRole; firstName: string; lastName: string; phone: string; active: boolean }[]> = [
+  const perCondoUsers: Array<{ email: string; ph: string; role: string; firstName: string; lastName: string; phone: string; active: boolean }[]> = [
     // 0 cotoalameda
     [
       { email: 'admin@cotoalameda.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Carlos', lastName: 'Mendoza', phone: '+52 81 8356 1201', active: true },
@@ -667,7 +666,7 @@ async function main() {
   // ROOT user
   const rootUser = await prisma.user.create({
     data: {
-      email: 'root@demo.com', passwordHash: hashRoot, role: 'ROOT',
+      email: 'root@demo.com', passwordHash: hashRoot,
       roleId: systemRoleIdByKey['ROOT'],
       firstName: 'Admin', lastName: 'Root', phone: '+52 81 1000 0000',
       isActive: true, condominiumId: null,
@@ -680,7 +679,7 @@ async function main() {
     for (const u of perCondoUsers[ci]) {
       const created = await prisma.user.create({
         data: {
-          email: u.email, passwordHash: u.ph, role: u.role,
+          email: u.email, passwordHash: u.ph,
           roleId: systemRoleIdByKey[u.role],
           firstName: u.firstName, lastName: u.lastName, phone: u.phone,
           isActive: u.active, condominiumId: condoId,

@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
-import { NotificationType, RootScope, UserRole } from '@prisma/client';
+import { NotificationType, RootScope } from '@prisma/client';
+import { UserRole } from '../../common/types';
 import { NotificationsService, NotificationEventInput } from './notifications.service';
 import { NOTIFICATION_R1_TYPES } from './notifications.constants';
 
@@ -687,7 +688,7 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     expect(prisma.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          role: { in: [UserRole.TENANT_ADMIN] },
+          roleRef: { key: { in: [UserRole.TENANT_ADMIN] } },
         }),
       }),
     );
@@ -696,8 +697,8 @@ describe('NotificationsService.resolveRecipientsForType', () => {
   it('removes a user with a disabled preference and keeps users with no row', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([
-      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'a@x.com' },
-      { id: 'admin-2', role: UserRole.TENANT_ADMIN, email: 'b@x.com' },
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'a@x.com' },
+      { id: 'admin-2', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'b@x.com' },
     ]);
     prisma.userNotificationPreference.findMany.mockResolvedValueOnce([
       { userId: 'admin-2' },
@@ -715,11 +716,11 @@ describe('NotificationsService.resolveRecipientsForType', () => {
   it('applies ROOT scope: ALL keeps, SPECIFIC matches the condominium, ACTIVE_TENANT drops', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([
-      { id: 'root-all', role: UserRole.ROOT, email: 'all@x.com' },
-      { id: 'root-specific-hit', role: UserRole.ROOT, email: 'sh@x.com' },
-      { id: 'root-specific-miss', role: UserRole.ROOT, email: 'sm@x.com' },
-      { id: 'root-active', role: UserRole.ROOT, email: 'ac@x.com' },
-      { id: 'root-default', role: UserRole.ROOT, email: 'df@x.com' },
+      { id: 'root-all', roleRef: { key: UserRole.ROOT }, email: 'all@x.com' },
+      { id: 'root-specific-hit', roleRef: { key: UserRole.ROOT }, email: 'sh@x.com' },
+      { id: 'root-specific-miss', roleRef: { key: UserRole.ROOT }, email: 'sm@x.com' },
+      { id: 'root-active', roleRef: { key: UserRole.ROOT }, email: 'ac@x.com' },
+      { id: 'root-default', roleRef: { key: UserRole.ROOT }, email: 'df@x.com' },
     ]);
     prisma.rootNotificationScope.findMany.mockResolvedValueOnce([
       { userId: 'root-all', scope: RootScope.ALL, condominiumIds: [] },
@@ -753,8 +754,8 @@ describe('NotificationsService.resolveRecipientsForType', () => {
   it('excludes the actor from the recipient set', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([
-      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'a@x.com' },
-      { id: 'actor', role: UserRole.TENANT_ADMIN, email: 'actor@x.com' },
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'a@x.com' },
+      { id: 'actor', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'actor@x.com' },
     ]);
     const service = makeService(prisma);
 
@@ -770,9 +771,9 @@ describe('NotificationsService.resolveRecipientsForType', () => {
   it('delivers CALENDAR_BOOKING_CONFIRMED to a NEIGHBOR only when their email matches the booking resident', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([
-      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'admin@x.com' },
-      { id: 'neighbor-owner', role: UserRole.NEIGHBOR, email: 'owner@x.com' },
-      { id: 'neighbor-other', role: UserRole.NEIGHBOR, email: 'other@x.com' },
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'admin@x.com' },
+      { id: 'neighbor-owner', roleRef: { key: UserRole.NEIGHBOR }, email: 'owner@x.com' },
+      { id: 'neighbor-other', roleRef: { key: UserRole.NEIGHBOR }, email: 'other@x.com' },
     ]);
     // Resident email casing differs — the match must be case-insensitive.
     prisma.resident.findFirst.mockResolvedValueOnce({ email: 'Owner@X.com' });
@@ -790,8 +791,8 @@ describe('NotificationsService.resolveRecipientsForType', () => {
   it('drops every NEIGHBOR recipient when the booking resident email cannot be resolved', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([
-      { id: 'admin-1', role: UserRole.TENANT_ADMIN, email: 'admin@x.com' },
-      { id: 'neighbor-1', role: UserRole.NEIGHBOR, email: 'n1@x.com' },
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'admin@x.com' },
+      { id: 'neighbor-1', roleRef: { key: UserRole.NEIGHBOR }, email: 'n1@x.com' },
     ]);
     prisma.resident.findFirst.mockResolvedValueOnce(null);
     const service = makeService(prisma);

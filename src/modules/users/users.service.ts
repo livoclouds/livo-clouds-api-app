@@ -79,7 +79,8 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-    // Link the new user to the matching system Role row (dual-write with the enum).
+    // Resolve the requested role KEY to its system Role row — the single source
+    // of truth (the legacy `role` enum column was removed in RBAC Phase 2).
     const systemRole = await this.prisma.role.findFirst({
       where: { key: dto.role, isSystem: true },
       select: { id: true },
@@ -90,7 +91,6 @@ export class UsersService {
         condominiumId,
         email: dto.email,
         passwordHash,
-        role: dto.role,
         roleId: systemRole?.id ?? null,
         firstName: dto.firstName,
         lastName: dto.lastName,
@@ -106,7 +106,7 @@ export class UsersService {
       condominiumId,
       userId: user.id,
       email: user.email,
-      role: user.role,
+      role: user.roleRef?.key ?? '',
       actorUserId: requester.sub,
     } satisfies UserAddedEventPayload);
 
@@ -128,10 +128,9 @@ export class UsersService {
       delete updateData.password;
     }
 
-    // Dynamic RBAC role assignment. The new `roleId` path and the legacy `role`
-    // enum are reconciled by resolveRoleAssignment so both stay coherent during
-    // the transition (the @Roles guards still read the enum). Never let the raw
-    // dto values through unvalidated.
+    // Dynamic RBAC role assignment. Accepts either an explicit roleId or a role
+    // KEY (the web sends the key); both resolve to a validated roleId — the only
+    // role field now persisted. Never let the raw dto values through unvalidated.
     delete updateData.roleId;
     delete updateData.role;
     const assignment = await this.resolveRoleAssignment(
@@ -156,12 +155,12 @@ export class UsersService {
 
     // Notify only when the role genuinely changed — a name/phone edit is not
     // a permissions change.
-    if (after && before.role !== after.role) {
+    if (after && before.roleRef?.key !== after.roleRef?.key) {
       this.emitNotification(USER_PERMISSIONS_CHANGED_EVENT, {
         condominiumId,
         userId: id,
-        beforeRole: before.role,
-        afterRole: after.role,
+        beforeRole: before.roleRef?.key ?? '',
+        afterRole: after.roleRef?.key ?? '',
         actorUserId: requester.sub,
       } satisfies UserPermissionsChangedEventPayload);
     }
@@ -183,19 +182,15 @@ export class UsersService {
   }
 
   /**
-   * Reconcile the role assignment from an update DTO into coherent { roleId, role }
-   * write data. Explicit `roleId` (new RBAC path) wins; otherwise a legacy `role`
-   * enum is mapped to its system Role row. System roles keep the enum in sync for
-   * the @Roles guards; custom roles set only roleId (enum stays as-is until the
-   * guards move to permissions in RBAC Phase 2).
+   * Resolve the role assignment from an update DTO to a validated `roleId` — the
+   * only role field persisted. An explicit `roleId` wins; otherwise a role KEY
+   * (`dto.role`, what the web sends) is mapped to its system Role row.
    */
   private async resolveRoleAssignment(
     condominiumId: string,
     dto: UpdateUserDto,
     requester: JwtPayload,
-  ): Promise<{ roleId?: string; role?: UserRole }> {
-    const enumKeys = new Set<string>(Object.values(UserRole));
-
+  ): Promise<{ roleId?: string }> {
     if (dto.roleId !== undefined && dto.roleId !== null) {
       const role = await this.prisma.role.findFirst({
         where: {
@@ -214,11 +209,7 @@ export class UsersService {
       ) {
         throw new ForbiddenException('Cannot assign ROOT role');
       }
-      const mappedEnum =
-        role.key && enumKeys.has(role.key)
-          ? (role.key as UserRole)
-          : undefined;
-      return { roleId: role.id, ...(mappedEnum ? { role: mappedEnum } : {}) };
+      return { roleId: role.id };
     }
 
     if (dto.role !== undefined) {
@@ -232,7 +223,8 @@ export class UsersService {
         where: { key: dto.role, isSystem: true },
         select: { id: true },
       });
-      return { role: dto.role, ...(sys ? { roleId: sys.id } : {}) };
+      if (!sys) throw new NotFoundException('Role not found');
+      return { roleId: sys.id };
     }
 
     return {};
@@ -242,7 +234,6 @@ export class UsersService {
     return {
       id: true,
       email: true,
-      role: true,
       roleId: true,
       roleRef: {
         select: {

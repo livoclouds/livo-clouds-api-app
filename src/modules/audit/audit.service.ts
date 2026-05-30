@@ -39,7 +39,7 @@ export class AuditService {
       this.prisma.auditLog.findMany({
         where,
         include: {
-          user: { select: { id: true, firstName: true, lastName: true, role: true } },
+          user: { select: { id: true, firstName: true, lastName: true, roleRef: { select: { key: true } } } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -48,7 +48,7 @@ export class AuditService {
     ]);
 
     return {
-      data: logs,
+      data: this.withActorRole(logs),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
@@ -71,7 +71,7 @@ export class AuditService {
       this.prisma.auditLog.findMany({
         where,
         include: {
-          user: { select: { id: true, firstName: true, lastName: true, role: true } },
+          user: { select: { id: true, firstName: true, lastName: true, roleRef: { select: { key: true } } } },
           condominium: { select: { id: true, slug: true, name: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -81,9 +81,22 @@ export class AuditService {
     ]);
 
     return {
-      data: logs,
+      data: this.withActorRole(logs),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  // Flatten the actor's roleRef.key back to a `role` field so the audit response
+  // contract is unchanged after the legacy role enum column was removed.
+  private withActorRole<
+    U extends { roleRef: { key: string | null } | null },
+    T extends { user: U | null },
+  >(logs: T[]) {
+    return logs.map((l) =>
+      l.user
+        ? { ...l, user: { ...l.user, role: l.user.roleRef?.key ?? null, roleRef: undefined } }
+        : l,
+    );
   }
 
   async log(
