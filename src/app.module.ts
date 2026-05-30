@@ -16,6 +16,8 @@ import webPushConfig from './config/web-push.config';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { InactivityLockGuard } from './common/guards/inactivity-lock.guard';
+import { PermissionsGuard } from './common/guards/permissions.guard';
+import { RbacModule } from './common/rbac/rbac.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -70,6 +72,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
       },
     ]),
     PrismaModule,
+    RbacModule,
     StorageModule,
     AuthModule,
     AuditModule,
@@ -101,6 +104,9 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Runs after JwtAuthGuard so request.user (and its `sid`) is populated.
     { provide: APP_GUARD, useClass: InactivityLockGuard },
+    // RBAC Phase 2: enforces @RequirePermission. No-op for routes without it, so
+    // it coexists with the legacy @Roles guard during the migration.
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
   ],
 })

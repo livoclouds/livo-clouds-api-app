@@ -10,35 +10,39 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
 import { PERMISSION_CATALOG } from '../../common/rbac/permission-catalog';
-import { UserRole } from '../../common/types';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { RolesService } from './roles.service';
 
+// RBAC Phase 2: governed by permissions. Reading roles/catalog is open to anyone
+// who manages users (so the user editor can list assignable roles); mutating
+// custom roles is restricted to platform.roles.manage (Developer/Supervisor) —
+// an intentional tightening over the old @Roles(ROOT, TENANT_ADMIN).
 @ApiTags('Roles')
 @Controller('condominiums/:condominiumSlug/roles')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
-@Roles(UserRole.ROOT, UserRole.TENANT_ADMIN)
+@UseGuards(CondominiumAccessGuard)
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 
   @Get()
+  @RequirePermission('platform.roles.manage', 'users.read', 'users.manage')
   @ApiOperation({ summary: 'List assignable roles (system + this condominium)' })
   findAll(@Request() req: { condominiumId: string }) {
     return this.rolesService.findAll(req.condominiumId);
   }
 
   @Get('catalog')
+  @RequirePermission('platform.roles.manage', 'users.read', 'users.manage')
   @ApiOperation({ summary: 'Permission catalog (sections/subsections/actions)' })
   catalog() {
     return { permissions: PERMISSION_CATALOG };
   }
 
   @Get(':id')
+  @RequirePermission('platform.roles.manage', 'users.read', 'users.manage')
   @ApiOperation({ summary: 'Get a role by id' })
   findOne(
     @Request() req: { condominiumId: string },
@@ -48,6 +52,7 @@ export class RolesController {
   }
 
   @Post()
+  @RequirePermission('platform.roles.manage')
   @ApiOperation({ summary: 'Create a custom role for this condominium' })
   create(
     @Request() req: { condominiumId: string },
@@ -57,6 +62,7 @@ export class RolesController {
   }
 
   @Patch(':id')
+  @RequirePermission('platform.roles.manage')
   @ApiOperation({ summary: 'Update a custom role' })
   update(
     @Request() req: { condominiumId: string },
@@ -67,6 +73,7 @@ export class RolesController {
   }
 
   @Delete(':id')
+  @RequirePermission('platform.roles.manage')
   @ApiOperation({ summary: 'Soft delete a custom role' })
   remove(
     @Request() req: { condominiumId: string },

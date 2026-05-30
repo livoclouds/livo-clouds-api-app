@@ -8,6 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../../common/types';
+import { RbacService } from '../../common/rbac/rbac.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -27,6 +28,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private readonly events: EventEmitter2,
+    private readonly rbac: RbacService,
   ) {}
 
   /** Best-effort notification emit — never breaks the user write. */
@@ -144,6 +146,9 @@ export class UsersService {
       data: updateData,
     });
     if (result.count === 0) throw new NotFoundException('User not found');
+    // The role/permissions may have changed — drop the cached effective set so
+    // the next request re-resolves (no re-login needed).
+    this.rbac.invalidateUser(id);
     const after = await this.prisma.user.findFirst({
       where: { id, condominiumId, deletedAt: null },
       select: this.safeSelect(),
@@ -170,6 +175,7 @@ export class UsersService {
       data: { deletedAt: new Date(), isActive: false },
     });
     if (result.count === 0) throw new NotFoundException('User not found');
+    this.rbac.invalidateUser(id);
     return this.prisma.user.findFirst({
       where: { id, condominiumId },
       select: this.safeSelect(),
