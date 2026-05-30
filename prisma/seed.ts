@@ -18,6 +18,7 @@ import {
 import * as bcrypt from 'bcryptjs';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SYSTEM_ROLES } from '../src/common/rbac/permission-catalog';
 
 const prisma = new PrismaClient();
 const SALT_ROUNDS = 12;
@@ -390,6 +391,7 @@ async function main() {
   await prisma.additionalResident.deleteMany();
   await prisma.resident.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.role.deleteMany();
   await prisma.financialMonthlySummary.deleteMany();
   await prisma.condominiumSettings.deleteMany();
   await prisma.condominium.deleteMany();
@@ -572,6 +574,28 @@ async function main() {
   totalRules += alamedaExtraRules.length;
   console.log(`✅ Reconciliation rules: ${totalRules}`);
 
+  // ─── System roles (Dynamic RBAC) ─────────────────────────────────────────────
+  // Seed the keyed system roles from the code catalog. Users below are linked to
+  // the role matching their UserRole enum value (keys are aligned 1:1), so roleId
+  // is backfilled by construction. Custom roles are created later from the UI.
+  console.log('🛡️  Seeding system roles...');
+  const systemRoleIdByKey: Record<string, string> = {};
+  for (const r of SYSTEM_ROLES) {
+    const created = await prisma.role.create({
+      data: {
+        key: r.key,
+        name: r.name,
+        description: r.description,
+        isSystem: true,
+        isActive: true,
+        condominiumId: null,
+        permissions: [...r.permissions],
+      },
+    });
+    systemRoleIdByKey[r.key] = created.id;
+  }
+  console.log(`✅ System roles: ${SYSTEM_ROLES.length}`);
+
   // ─── Users ─────────────────────────────────────────────────────────────────
   // 1 ROOT + 2-3 per condominium ≈ 24 total; ~13 active, ~11 inactive
 
@@ -644,6 +668,7 @@ async function main() {
   const rootUser = await prisma.user.create({
     data: {
       email: 'root@demo.com', passwordHash: hashRoot, role: 'ROOT',
+      roleId: systemRoleIdByKey['ROOT'],
       firstName: 'Admin', lastName: 'Root', phone: '+52 81 1000 0000',
       isActive: true, condominiumId: null,
     },
@@ -656,6 +681,7 @@ async function main() {
       const created = await prisma.user.create({
         data: {
           email: u.email, passwordHash: u.ph, role: u.role,
+          roleId: systemRoleIdByKey[u.role],
           firstName: u.firstName, lastName: u.lastName, phone: u.phone,
           isActive: u.active, condominiumId: condoId,
         },

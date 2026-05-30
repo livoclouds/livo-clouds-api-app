@@ -36,6 +36,7 @@ import { StorageAdminModule } from './modules/storage-admin/storage-admin.module
 import { ResidentsModule } from './modules/residents/residents.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
+import { RolesModule } from './modules/roles/roles.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
@@ -85,6 +86,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     ResidentsModule,
     SettingsModule,
     UsersModule,
+    RolesModule,
     ReconciliationRulesModule,
     CalendarModule,
     CalendarReclassifyModule,

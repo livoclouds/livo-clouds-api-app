@@ -305,6 +305,7 @@ model Condominium {
 
   settings                         CondominiumSettings?
   users                            User[]
+  roles                            Role[]
   residents                        Resident[]
   vehicles                         Vehicle[]
   pets                             Pet[]
@@ -393,7 +394,14 @@ model User {
   condominiumId   String?
   email           String
   passwordHash    String
+  // Legacy role enum. Kept during the RBAC-table transition (dual-write) so the
+  // existing @Roles() guards keep working; roleId is the new source of truth.
+  // Removed once every endpoint is migrated to permission checks (RBAC Phase 2).
   role            UserRole
+  // Dynamic RBAC (RBAC Phase 1). FK to the assigned Role row (system or custom).
+  // Nullable during backfill; the permission resolver falls back to the system
+  // preset for `role` when null, so behaviour is correct pre- and post-backfill.
+  roleId          String?
   firstName       String
   lastName        String
   phone           String?
@@ -418,6 +426,7 @@ model User {
   onboardingSkippedAt   DateTime?
 
   condominium               Condominium?                     @relation(fields: [condominiumId], references: [id])
+  roleRef                   Role?                            @relation(fields: [roleId], references: [id])
   refreshTokens             RefreshToken[]
   passwordResetTokens       PasswordResetToken[]
   pettyCashRegistered       PettyCashMovement[]              @relation("RegisteredBy")
@@ -442,8 +451,39 @@ model User {
   @@index([condominiumId])
   @@index([email])
   @@index([role])
+  @@index([roleId])
   @@index([deletedAt])
   @@map("users")
+}
+
+// Dynamic RBAC (RBAC Phase 1). Roles are DATA (rows) so new roles can be created
+// from the UI without code changes; permissions are a CODE-defined catalog
+// (src/common/rbac/permission-catalog.ts) because each key maps to a real guard
+// check. `permissions` holds catalog keys; it is validated against the catalog on
+// write. System roles (isSystem=true) are seeded and keyed (ROOT, SUPERVISOR,
+// TENANT_ADMIN, READ_ONLY, GUARD, NEIGHBOR); custom roles have key=null and are
+// scoped to a condominium. Effective permissions are read live from this table
+// (cached), so changes apply without forcing a re-login.
+model Role {
+  id            String    @id @default(uuid())
+  key           String?   @unique
+  name          String
+  description   String?
+  isSystem      Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  condominiumId String?
+  permissions   String[]  @default([])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  condominium Condominium? @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  users       User[]
+
+  @@unique([condominiumId, name])
+  @@index([condominiumId])
+  @@index([key])
+  @@map("roles")
 }
 
 model RefreshToken {
