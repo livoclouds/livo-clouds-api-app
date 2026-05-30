@@ -323,6 +323,7 @@ model Condominium {
   whatsAppNotificationPrefs        WhatsAppNotificationPreference[]
   bankProfiles                     BankProfile[]
   r2AccessLogs                     R2AccessLog[]
+  visitorLogs                      VisitorLog[]
 
   @@map("condominiums")
 }
@@ -548,6 +549,7 @@ model Resident {
   reconciliationCorrectionPatterns ReconciliationCorrectionPattern[]
   calendarEvents                   CalendarEvent[]
   whatsAppConversations            WhatsAppConversation[]
+  visitorLogs                      VisitorLog[]
 
   @@unique([condominiumId, unitNumber])
   @@index([condominiumId])
@@ -1307,4 +1309,36 @@ model R2AccessLog {
   @@index([userId, accessedAt])
   @@index([accessType])
   @@map("r2_access_logs")
+}
+
+// Visitor entry/exit log kept at the gate by security staff (RBAC Phase 4 —
+// Seguridad module). A row is created on check-in; checkOutAt is set when the
+// visitor leaves (null = still inside). residentId optionally links the visit to
+// a resident in the directory; unit is free text so condos that don't model
+// units can still record where the visitor went.
+model VisitorLog {
+  id            String    @id @default(uuid())
+  condominiumId String
+  residentId    String?
+  visitorName   String
+  unit          String
+  plate         String?
+  checkInAt     DateTime  @default(now())
+  checkOutAt    DateTime?
+  notes         String?
+  // API-owned audit fields — the acting security user, never the request body.
+  createdBy     String?
+  updatedBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  resident    Resident?   @relation(fields: [residentId], references: [id])
+
+  @@index([condominiumId])
+  @@index([condominiumId, checkOutAt])
+  @@index([residentId])
+  @@index([deletedAt])
+  @@map("visitor_logs")
 }
