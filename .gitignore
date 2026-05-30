@@ -38,3 +38,4 @@ prisma/migrations/*.lock
 
 # Claude Code agent logs
 .claude/logs/
+.vercel
