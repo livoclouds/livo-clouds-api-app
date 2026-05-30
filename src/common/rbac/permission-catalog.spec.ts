@@ -80,24 +80,69 @@ describe('permission-catalog', () => {
   describe('resolveEffectivePermissions', () => {
     it('uses the assigned role row when present (even if empty)', () => {
       expect(
-        resolveEffectivePermissions({ permissions: ['reports.read'] }, 'ROOT'),
+        resolveEffectivePermissions(
+          { permissions: ['reports.read'] },
+          { roleKey: 'ROOT' },
+        ),
       ).toEqual(['reports.read']);
-      expect(resolveEffectivePermissions({ permissions: [] }, 'ROOT')).toEqual([]);
+      expect(
+        resolveEffectivePermissions({ permissions: [] }, { roleKey: 'ROOT' }),
+      ).toEqual([]);
     });
 
     it('falls back to the enum preset when no role row (pre-backfill)', () => {
-      expect(resolveEffectivePermissions(null, 'READ_ONLY')).toEqual(
-        presetForRole('READ_ONLY'),
-      );
+      expect(
+        resolveEffectivePermissions(null, { roleKey: 'READ_ONLY' }),
+      ).toEqual(presetForRole('READ_ONLY'));
     });
 
     it('drops unknown keys coming from a stored role', () => {
       expect(
         resolveEffectivePermissions(
           { permissions: ['dashboard.read', 'legacy.key'] },
-          'TENANT_ADMIN',
+          { roleKey: 'TENANT_ADMIN' },
         ),
       ).toEqual(['dashboard.read']);
+    });
+
+    describe('per-user overrides (RBAC Phase 3)', () => {
+      it('overrides take precedence over the role when non-null', () => {
+        expect(
+          resolveEffectivePermissions(
+            { permissions: ['dashboard.read', 'reports.read'] },
+            { overrides: ['audit.read'] },
+          ),
+        ).toEqual(['audit.read']);
+      });
+
+      it('an empty override array grants nothing (distinct from inherit)', () => {
+        expect(
+          resolveEffectivePermissions(
+            { permissions: ['dashboard.read'] },
+            { overrides: [] },
+          ),
+        ).toEqual([]);
+      });
+
+      it('null/undefined overrides inherit the role', () => {
+        expect(
+          resolveEffectivePermissions(
+            { permissions: ['dashboard.read'] },
+            { overrides: null },
+          ),
+        ).toEqual(['dashboard.read']);
+        expect(
+          resolveEffectivePermissions({ permissions: ['dashboard.read'] }),
+        ).toEqual(['dashboard.read']);
+      });
+
+      it('sanitises unknown keys out of overrides', () => {
+        expect(
+          resolveEffectivePermissions(null, {
+            overrides: ['reports.read', 'legacy.key'],
+          }),
+        ).toEqual(['reports.read']);
+      });
     });
   });
 });

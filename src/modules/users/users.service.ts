@@ -6,9 +6,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../../common/types';
 import { RbacService } from '../../common/rbac/rbac.service';
+import { sanitizePermissions } from '../../common/rbac/permission-catalog';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -140,6 +142,17 @@ export class UsersService {
     );
     Object.assign(updateData, assignment);
 
+    // Per-user permission overrides (RBAC Phase 3). `null` resets to inheriting
+    // the role (DB NULL); an array is sanitised against the catalog; an absent
+    // key leaves overrides unchanged. The unconditional cache invalidation below
+    // makes the new effective set apply on the next request (no re-login).
+    if ('permissionOverrides' in dto) {
+      updateData.permissionOverrides =
+        dto.permissionOverrides == null
+          ? Prisma.DbNull
+          : sanitizePermissions(dto.permissionOverrides);
+    }
+
     const result = await this.prisma.user.updateMany({
       where: { id, condominiumId, deletedAt: null },
       data: updateData,
@@ -251,6 +264,7 @@ export class UsersService {
       sessionDuration: true,
       inactivityLockMinutes: true,
       isActive: true,
+      permissionOverrides: true,
       lastLoginAt: true,
       createdAt: true,
       updatedAt: true,

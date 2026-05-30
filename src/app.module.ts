@@ -35,6 +35,7 @@ import { HealthController } from './health/health.controller';
 import { ReportsModule } from './modules/reports/reports.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { StorageAdminModule } from './modules/storage-admin/storage-admin.module';
+import { PlatformUsersModule } from './modules/platform-users/platform-users.module';
 import { ResidentsModule } from './modules/residents/residents.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
@@ -96,6 +97,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     WhatsAppModule,
     BankProfilesModule,
     StorageAdminModule,
+    PlatformUsersModule,
     SystemStatusModule,
   ],
   providers: [

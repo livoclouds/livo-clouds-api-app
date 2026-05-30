@@ -29,6 +29,24 @@ describe('RbacService', () => {
     expect(perms.size).toBe(0);
   });
 
+  it('per-user overrides take precedence over the role (RBAC Phase 3)', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      permissionOverrides: ['audit.read'],
+      roleRef: { permissions: ['users.read', 'residents.manage'] },
+    });
+    const perms = await service.getEffectivePermissions('u1');
+    expect([...perms]).toEqual(['audit.read']);
+  });
+
+  it('null overrides inherit the role', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      permissionOverrides: null,
+      roleRef: { permissions: ['dashboard.read'] },
+    });
+    const perms = await service.getEffectivePermissions('u1');
+    expect([...perms]).toEqual(['dashboard.read']);
+  });
+
   it('returns no permissions for an unknown user', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
     const perms = await service.getEffectivePermissions('ghost');
