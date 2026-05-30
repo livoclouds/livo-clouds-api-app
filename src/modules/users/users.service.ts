@@ -10,7 +10,7 @@ import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../../common/types';
 import { RbacService } from '../../common/rbac/rbac.service';
-import { sanitizePermissions } from '../../common/rbac/permission-catalog';
+import { isPlatformPermission, sanitizePermissions } from '../../common/rbac/permission-catalog';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -42,6 +42,44 @@ export class UsersService {
     }
   }
 
+  private async assertCanSetPermissionOverrides(
+    requester: JwtPayload,
+    overrides: string[] | null | undefined,
+  ): Promise<void> {
+    // Gate 1: any override mutation (even null) requires users.permissions.manage.
+    // Only ROOT holds this key in the default presets.
+    const canManage = await this.rbac.hasAny(requester.sub, ['users.permissions.manage']);
+    if (!canManage) throw new ForbiddenException('Requires users.permissions.manage');
+
+    // Unknown keys will be dropped by sanitizePermissions before storage — only
+    // check valid catalog keys so gates 2 and 3 apply to real capability grants.
+    const valid = Array.isArray(overrides) ? sanitizePermissions(overrides) : null;
+    if (!valid || valid.length === 0) return;
+
+    const requesterPerms = await this.rbac.getEffectivePermissions(requester.sub);
+
+    // Gate 2: tenant-scoped actors cannot grant platform-wide capabilities.
+    if (valid.some((k) => isPlatformPermission(k))) {
+      const hasPlatformAccess = [...requesterPerms].some((k) => isPlatformPermission(k));
+      if (!hasPlatformAccess)
+        throw new ForbiddenException('Cannot grant platform-scoped permissions');
+    }
+
+    // Gate 3: cap grants to the actor's own effective permissions.
+    const unowned = valid.filter((k) => !requesterPerms.has(k));
+    if (unowned.length > 0)
+      throw new ForbiddenException('Cannot grant permissions you do not hold');
+  }
+
+  private async assertCanAssignRole(
+    requester: JwtPayload,
+    roleKey: string | null,
+  ): Promise<void> {
+    if (roleKey !== UserRole.ROOT) return;
+    const allowed = await this.rbac.hasAny(requester.sub, ['platform.users.manage']);
+    if (!allowed) throw new ForbiddenException('Cannot assign ROOT role');
+  }
+
   async findAll(condominiumId: string) {
     return this.prisma.user.findMany({
       where: { condominiumId, deletedAt: null },
@@ -64,9 +102,7 @@ export class UsersService {
   }
 
   async create(condominiumId: string, dto: CreateUserDto, requester: JwtPayload) {
-    if (requester.role === UserRole.TENANT_ADMIN && dto.role === UserRole.ROOT) {
-      throw new ForbiddenException('Cannot create a ROOT user');
-    }
+    await this.assertCanAssignRole(requester, dto.role);
 
     // ROOT users require globally unique emails (condominiumId is null, DB constraint doesn't enforce it)
     const emailWhere =
@@ -147,6 +183,7 @@ export class UsersService {
     // key leaves overrides unchanged. The unconditional cache invalidation below
     // makes the new effective set apply on the next request (no re-login).
     if ('permissionOverrides' in dto) {
+      await this.assertCanSetPermissionOverrides(requester, dto.permissionOverrides);
       updateData.permissionOverrides =
         dto.permissionOverrides == null
           ? Prisma.DbNull
@@ -216,22 +253,12 @@ export class UsersService {
         select: { id: true, key: true },
       });
       if (!role) throw new NotFoundException('Role not found');
-      if (
-        requester.role === UserRole.TENANT_ADMIN &&
-        role.key === UserRole.ROOT
-      ) {
-        throw new ForbiddenException('Cannot assign ROOT role');
-      }
+      await this.assertCanAssignRole(requester, role.key);
       return { roleId: role.id };
     }
 
     if (dto.role !== undefined) {
-      if (
-        requester.role === UserRole.TENANT_ADMIN &&
-        dto.role === UserRole.ROOT
-      ) {
-        throw new ForbiddenException('Cannot assign ROOT role');
-      }
+      await this.assertCanAssignRole(requester, dto.role);
       const sys = await this.prisma.role.findFirst({
         where: { key: dto.role, isSystem: true },
         select: { id: true },
