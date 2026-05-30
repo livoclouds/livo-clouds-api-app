@@ -22,6 +22,7 @@ interface PrismaMock {
   };
   refreshToken: {
     findFirst: jest.Mock;
+    findUnique: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
     updateMany: jest.Mock;
@@ -66,6 +67,7 @@ function makePrismaMock(): PrismaMock {
     },
     refreshToken: {
       findFirst: jest.fn(),
+      findUnique: jest.fn(),
       create: jest.fn().mockResolvedValue(undefined),
       update: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -778,6 +780,100 @@ describe('AuthService', () => {
       await expect(
         service.resetPassword({ token: 'valid-raw-token', newPassword: 'NewPass1234!' }),
       ).resolves.toMatchObject({ message: expect.any(String) });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // [RBAC-012] unlock() — screen-lock password re-verification and
+  // failedUnlockAttempts lifecycle.
+  // ---------------------------------------------------------------------------
+  describe('unlock', () => {
+    const SID = 'session-id-1';
+    const PASSWORD = 'TestPass1!';
+
+    function activeSession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        revokedAt: null,
+        failedUnlockAttempts: 0,
+        user: {
+          id: USER_ID,
+          passwordHash: 'stored-password-hash',
+          condominiumId: CONDOMINIUM_ID,
+          isActive: true,
+        },
+        ...overrides,
+      };
+    }
+
+    it('returns unlocked:true and resets failedUnlockAttempts to 0 on correct password', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(activeSession());
+      bcryptCompare.mockResolvedValue(true);
+
+      const result = await service.unlock(USER_ID, SID, PASSWORD);
+
+      expect(result).toEqual({ unlocked: true });
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({ failedUnlockAttempts: 0 }),
+        }),
+      );
+    });
+
+    it('increments failedUnlockAttempts and returns attemptsLeft on wrong password', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(
+        activeSession({ failedUnlockAttempts: 1 }),
+      );
+      bcryptCompare.mockResolvedValue(false);
+
+      const result = await service.unlock(USER_ID, SID, PASSWORD);
+
+      expect(result.unlocked).toBe(false);
+      expect(result.attemptsLeft).toBeDefined();
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({ failedUnlockAttempts: 2 }),
+        }),
+      );
+    });
+
+    it('revokes the session (loggedOut:true) when failedUnlockAttempts reaches MAX_UNLOCK_ATTEMPTS (5)', async () => {
+      // 4 previous failures — this attempt is the 5th.
+      prisma.refreshToken.findUnique.mockResolvedValue(
+        activeSession({ failedUnlockAttempts: 4 }),
+      );
+      bcryptCompare.mockResolvedValue(false);
+
+      const result = await service.unlock(USER_ID, SID, PASSWORD);
+
+      expect(result).toEqual({ unlocked: false, loggedOut: true });
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({
+            failedUnlockAttempts: 5,
+            revokedAt: expect.any(Date),
+          }),
+        }),
+      );
+    });
+
+    // [RBAC-012] Fresh login creates a new RefreshToken where failedUnlockAttempts
+    // defaults to 0 — the counter never carries over from a revoked session.
+    it('fresh login creates a RefreshToken without failedUnlockAttempts set (DB default 0)', async () => {
+      prisma.user.findFirst.mockResolvedValue(activeUser());
+      bcryptCompare.mockResolvedValue(true);
+
+      await service.login(
+        { email: 'user@test.local', password: PASSWORD },
+        { ipAddress: '127.0.0.1', requestId: 'req-fresh' },
+      );
+
+      expect(prisma.refreshToken.create).toHaveBeenCalledTimes(1);
+      const createData = prisma.refreshToken.create.mock.calls[0][0].data as Record<string, unknown>;
+      // failedUnlockAttempts is NOT set — the schema default of 0 applies.
+      expect(createData).not.toHaveProperty('failedUnlockAttempts');
     });
   });
 });
