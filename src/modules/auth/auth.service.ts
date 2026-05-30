@@ -12,6 +12,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
+import { resolveEffectivePermissions } from '../../common/rbac/permission-catalog';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../email/email.service';
@@ -105,7 +106,10 @@ export class AuthService {
 
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, deletedAt: null },
-      include: { condominium: { select: { slug: true } } },
+      include: {
+        condominium: { select: { slug: true } },
+        roleRef: { select: { key: true, name: true, permissions: true } },
+      },
     });
 
     if (!user) {
@@ -225,6 +229,13 @@ export class AuthService {
       refreshToken,
       sessionDuration: user.sessionDuration,
       inactivityLockMinutes: user.inactivityLockMinutes,
+      // Dynamic RBAC: effective permissions + the assigned role's stable key and
+      // display name. Drives the web UI (RequirePermission). The API still
+      // enforces authorisation independently. roleKey falls back to the legacy
+      // enum while roleId is being backfilled.
+      roleKey: user.roleRef?.key ?? user.role,
+      roleName: user.roleRef?.name ?? null,
+      permissions: resolveEffectivePermissions(user.roleRef, user.role),
       user: {
         id: user.id,
         email: user.email,
@@ -250,7 +261,10 @@ export class AuthService {
       where: { token },
       include: {
         user: {
-          include: { condominium: { select: { slug: true } } },
+          include: {
+            condominium: { select: { slug: true } },
+            roleRef: { select: { key: true, name: true, permissions: true } },
+          },
         },
       },
     });
@@ -359,6 +373,11 @@ export class AuthService {
       refreshToken,
       sessionDuration: user.sessionDuration,
       inactivityLockMinutes: user.inactivityLockMinutes,
+      // Re-issue RBAC context on rotation so permission/role changes take effect
+      // on the next refresh without forcing a full re-login.
+      roleKey: user.roleRef?.key ?? user.role,
+      roleName: user.roleRef?.name ?? null,
+      permissions: resolveEffectivePermissions(user.roleRef, user.role),
     };
   }
 

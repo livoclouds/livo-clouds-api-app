@@ -456,6 +456,36 @@ model User {
   @@map("users")
 }
 
+// Dynamic RBAC (RBAC Phase 1). Roles are DATA (rows) so new roles can be created
+// from the UI without code changes; permissions are a CODE-defined catalog
+// (src/common/rbac/permission-catalog.ts) because each key maps to a real guard
+// check. `permissions` holds catalog keys; it is validated against the catalog on
+// write. System roles (isSystem=true) are seeded and keyed (ROOT, SUPERVISOR,
+// TENANT_ADMIN, READ_ONLY, GUARD, NEIGHBOR); custom roles have key=null and are
+// scoped to a condominium. Effective permissions are read live from this table
+// (cached), so changes apply without forcing a re-login.
+model Role {
+  id            String    @id @default(uuid())
+  key           String?   @unique
+  name          String
+  description   String?
+  isSystem      Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  condominiumId String?
+  permissions   String[]  @default([])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  condominium Condominium? @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  users       User[]
+
+  @@unique([condominiumId, name])
+  @@index([condominiumId])
+  @@index([key])
+  @@map("roles")
+}
+
 model RefreshToken {
   id        String    @id @default(uuid())
   userId    String

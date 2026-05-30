@@ -77,12 +77,19 @@ export class UsersService {
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
+    // Link the new user to the matching system Role row (dual-write with the enum).
+    const systemRole = await this.prisma.role.findFirst({
+      where: { key: dto.role, isSystem: true },
+      select: { id: true },
+    });
+
     const user = await this.prisma.user.create({
       data: {
         condominiumId,
         email: dto.email,
         passwordHash,
         role: dto.role,
+        roleId: systemRole?.id ?? null,
         firstName: dto.firstName,
         lastName: dto.lastName,
         phone: dto.phone,
@@ -112,16 +119,25 @@ export class UsersService {
   ) {
     const before = await this.findOne(condominiumId, id);
 
-    if (requester.role === UserRole.TENANT_ADMIN && dto.role === UserRole.ROOT) {
-      throw new ForbiddenException('Cannot assign ROOT role');
-    }
-
     const updateData: Record<string, unknown> = { ...dto };
 
     if (dto.password) {
       updateData.passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
       delete updateData.password;
     }
+
+    // Dynamic RBAC role assignment. The new `roleId` path and the legacy `role`
+    // enum are reconciled by resolveRoleAssignment so both stay coherent during
+    // the transition (the @Roles guards still read the enum). Never let the raw
+    // dto values through unvalidated.
+    delete updateData.roleId;
+    delete updateData.role;
+    const assignment = await this.resolveRoleAssignment(
+      condominiumId,
+      dto,
+      requester,
+    );
+    Object.assign(updateData, assignment);
 
     const result = await this.prisma.user.updateMany({
       where: { id, condominiumId, deletedAt: null },
@@ -160,11 +176,77 @@ export class UsersService {
     });
   }
 
+  /**
+   * Reconcile the role assignment from an update DTO into coherent { roleId, role }
+   * write data. Explicit `roleId` (new RBAC path) wins; otherwise a legacy `role`
+   * enum is mapped to its system Role row. System roles keep the enum in sync for
+   * the @Roles guards; custom roles set only roleId (enum stays as-is until the
+   * guards move to permissions in RBAC Phase 2).
+   */
+  private async resolveRoleAssignment(
+    condominiumId: string,
+    dto: UpdateUserDto,
+    requester: JwtPayload,
+  ): Promise<{ roleId?: string; role?: UserRole }> {
+    const enumKeys = new Set<string>(Object.values(UserRole));
+
+    if (dto.roleId !== undefined && dto.roleId !== null) {
+      const role = await this.prisma.role.findFirst({
+        where: {
+          id: dto.roleId,
+          isActive: true,
+          deletedAt: null,
+          // Assignable: a global system role, or a custom role of this condominium.
+          OR: [{ isSystem: true }, { condominiumId }],
+        },
+        select: { id: true, key: true },
+      });
+      if (!role) throw new NotFoundException('Role not found');
+      if (
+        requester.role === UserRole.TENANT_ADMIN &&
+        role.key === UserRole.ROOT
+      ) {
+        throw new ForbiddenException('Cannot assign ROOT role');
+      }
+      const mappedEnum =
+        role.key && enumKeys.has(role.key)
+          ? (role.key as UserRole)
+          : undefined;
+      return { roleId: role.id, ...(mappedEnum ? { role: mappedEnum } : {}) };
+    }
+
+    if (dto.role !== undefined) {
+      if (
+        requester.role === UserRole.TENANT_ADMIN &&
+        dto.role === UserRole.ROOT
+      ) {
+        throw new ForbiddenException('Cannot assign ROOT role');
+      }
+      const sys = await this.prisma.role.findFirst({
+        where: { key: dto.role, isSystem: true },
+        select: { id: true },
+      });
+      return { role: dto.role, ...(sys ? { roleId: sys.id } : {}) };
+    }
+
+    return {};
+  }
+
   private safeSelect() {
     return {
       id: true,
       email: true,
       role: true,
+      roleId: true,
+      roleRef: {
+        select: {
+          id: true,
+          key: true,
+          name: true,
+          isSystem: true,
+          permissions: true,
+        },
+      },
       firstName: true,
       lastName: true,
       phone: true,
