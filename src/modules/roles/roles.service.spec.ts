@@ -186,4 +186,28 @@ describe('RolesService', () => {
       );
     });
   });
+
+  // RBAC-011: cross-tenant isolation — custom roles are scoped to their
+  // condominium. An actor passing a foreign condominiumId must receive 404,
+  // not a forbidden data leak.
+  describe('cross-tenant isolation (roles)', () => {
+    beforeEach(() => {
+      // findFirst returns null — simulates no match for this (slug, id) pair.
+      prisma.role.findFirst.mockResolvedValue(null);
+    });
+
+    it('findOne: 404 when role is not in the requested condominium', async () => {
+      await expect(service.findOne('condo-a', 'role-from-condo-b')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('update: 404 when custom role belongs to a different condominium', async () => {
+      await expect(service.update('condo-a', 'role-from-condo-b', { name: 'Hijacked' })).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.role.update).not.toHaveBeenCalled();
+    });
+
+    it('remove: 404 when custom role belongs to a different condominium', async () => {
+      await expect(service.remove('condo-a', 'role-from-condo-b')).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.role.update).not.toHaveBeenCalled();
+    });
+  });
 });
