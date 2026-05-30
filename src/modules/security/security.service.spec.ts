@@ -159,4 +159,27 @@ describe('SecurityService — visitor logs', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
+
+  describe('[RBAC-006] tenant-scoping — condominiumId in Prisma write calls', () => {
+    it('updateVisitor: passes condominiumId to prisma.visitorLog.findFirst', async () => {
+      deps.prisma.visitorLog.findFirst.mockResolvedValue({ id: 'v1', checkOutAt: null });
+      deps.prisma.visitorLog.update.mockResolvedValue({ id: 'v1' });
+      await service.updateVisitor(CONDO, USER, 'v1', { notes: 'edited' });
+      expect(deps.prisma.visitorLog.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ condominiumId: CONDO }),
+        }),
+      );
+    });
+
+    it('removeVisitor: passes condominiumId to prisma.visitorLog.updateMany where', async () => {
+      deps.prisma.visitorLog.updateMany.mockResolvedValue({ count: 1 });
+      await service.removeVisitor(CONDO, USER, 'v1');
+      expect(deps.prisma.visitorLog.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ condominiumId: CONDO }),
+        }),
+      );
+    });
+  });
 });

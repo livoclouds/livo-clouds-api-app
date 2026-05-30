@@ -80,7 +80,7 @@ describe('RolesService', () => {
       expect(prisma.role.create).not.toHaveBeenCalled();
     });
 
-    it('creates a condominium-scoped custom role with sanitized permissions', async () => {
+    it('[RBAC-006] creates a condominium-scoped custom role with sanitized permissions (condominiumId in data)', async () => {
       prisma.role.create.mockResolvedValue({ id: 'new' });
       await service.create(CONDO, {
         name: 'Council',

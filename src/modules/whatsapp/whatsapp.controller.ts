@@ -290,6 +290,7 @@ export class WhatsAppController {
   }
 
   @Post('conversations/:conversationId/mark-read')
+  @RequirePermission('communications.read')
   @HttpCode(204)
   @ApiOperation({ summary: 'Mark conversation as read' })
   markRead(
