@@ -1,5 +1,11 @@
+// System role keys (mirror the seeded Role.key values). No longer a Prisma enum
+// — roles live in the `roles` table — but kept as a string enum so role-key
+// comparisons (e.g. ROOT bypass) stay typed across the codebase. A user's role
+// key is read from roleRef.key; custom roles (key = null) fall back to READ_ONLY
+// when a single key value is required (e.g. the JWT payload).
 export enum UserRole {
   ROOT = 'ROOT',
+  SUPERVISOR = 'SUPERVISOR',
   TENANT_ADMIN = 'TENANT_ADMIN',
   READ_ONLY = 'READ_ONLY',
   GUARD = 'GUARD',

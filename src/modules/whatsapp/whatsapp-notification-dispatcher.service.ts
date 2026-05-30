@@ -2,13 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Prisma,
-  UserRole,
   WhatsAppConversationStatus,
   WhatsAppMessageDirection,
   WhatsAppMessageStatus,
   WhatsAppMessageType,
   WhatsAppNotifyChannel,
 } from '@prisma/client';
+import { UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decrypt } from '../../common/utils/encryption.util';
 import { WhatsAppMetaClientService } from './whatsapp-meta-client.service';
@@ -206,7 +206,7 @@ export class WhatsAppNotificationDispatcherService {
         user: {
           isActive: true,
           deletedAt: null,
-          role: { in: [UserRole.ROOT, UserRole.TENANT_ADMIN] },
+          roleRef: { key: { in: [UserRole.ROOT, UserRole.TENANT_ADMIN] } },
         },
       },
       select: {

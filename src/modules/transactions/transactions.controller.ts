@@ -3,13 +3,12 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { FastifyReply } from 'fastify';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
 import { TransactionsService } from './transactions.service';
 import { ListTransactionsDto } from './dto/list-transactions.dto';
 
 @ApiTags('Transactions')
 @Controller('condominiums/:condominiumSlug/transactions')
-@UseGuards(CondominiumAccessGuard, RolesGuard)
+@UseGuards(CondominiumAccessGuard)
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 

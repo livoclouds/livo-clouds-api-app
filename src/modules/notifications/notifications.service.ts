@@ -9,8 +9,8 @@ import {
   NotificationType,
   Prisma,
   RootScope,
-  UserRole,
 } from '@prisma/client';
+import { UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   AGGREGATION_WINDOW_MINUTES,
@@ -327,16 +327,23 @@ export class NotificationsService {
     }
     const eligibleRoles = NOTIFICATION_ROLE_ACCESS[type];
 
-    let candidates = await this.prisma.user.findMany({
+    const rows = await this.prisma.user.findMany({
       where: {
-        role: { in: eligibleRoles },
+        roleRef: { key: { in: eligibleRoles as readonly string[] as string[] } },
         isActive: true,
         deletedAt: null,
         // ROOT users have no condominiumId; they are picked up by role alone.
-        OR: [{ condominiumId }, { role: UserRole.ROOT }],
+        OR: [{ condominiumId }, { roleRef: { key: UserRole.ROOT } }],
       },
-      select: { id: true, role: true, email: true },
+      select: { id: true, email: true, roleRef: { select: { key: true } } },
     });
+    // Flatten roleRef.key back to `role` so the downstream role-based helpers
+    // (typed `{ role: UserRole }`) are unchanged after the enum column removal.
+    let candidates = rows.map((u) => ({
+      id: u.id,
+      email: u.email,
+      role: (u.roleRef?.key ?? '') as UserRole,
+    }));
 
     candidates = await this.applyRootScope(candidates, condominiumId);
     candidates = await this.applyNeighborOwnerFilter(

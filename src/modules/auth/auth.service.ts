@@ -186,7 +186,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      role: user.role as UserRole,
+      role: (user.roleRef?.key as UserRole) ?? UserRole.READ_ONLY,
       condominiumId: user.condominiumId,
       condominiumSlug: user.condominium?.slug ?? null,
     };
@@ -233,15 +233,15 @@ export class AuthService {
       // display name. Drives the web UI (RequirePermission). The API still
       // enforces authorisation independently. roleKey falls back to the legacy
       // enum while roleId is being backfilled.
-      roleKey: user.roleRef?.key ?? user.role,
+      roleKey: user.roleRef?.key ?? null,
       roleName: user.roleRef?.name ?? null,
-      permissions: resolveEffectivePermissions(user.roleRef, user.role),
+      permissions: resolveEffectivePermissions(user.roleRef),
       user: {
         id: user.id,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        role: user.role,
+        role: user.roleRef?.key ?? null,
         condominiumId: user.condominiumId,
         condominiumSlug: user.condominium?.slug ?? null,
         avatarUrl: await this.resolveAvatarUrl(
@@ -317,7 +317,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      role: user.role as UserRole,
+      role: (user.roleRef?.key as UserRole) ?? UserRole.READ_ONLY,
       condominiumId: user.condominiumId,
       condominiumSlug: user.condominium?.slug ?? null,
     };
@@ -375,9 +375,9 @@ export class AuthService {
       inactivityLockMinutes: user.inactivityLockMinutes,
       // Re-issue RBAC context on rotation so permission/role changes take effect
       // on the next refresh without forcing a full re-login.
-      roleKey: user.roleRef?.key ?? user.role,
+      roleKey: user.roleRef?.key ?? null,
       roleName: user.roleRef?.name ?? null,
-      permissions: resolveEffectivePermissions(user.roleRef, user.role),
+      permissions: resolveEffectivePermissions(user.roleRef),
     };
   }
 
@@ -734,6 +734,7 @@ export class AuthService {
             settings: { select: { logoUrl: true } },
           },
         },
+        roleRef: { select: { key: true } },
       },
     });
 
@@ -752,7 +753,7 @@ export class AuthService {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      role: user.role,
+      role: user.roleRef?.key ?? null,
       avatarUrl: await this.resolveAvatarUrl(
         user.avatarUrl,
         user.id,

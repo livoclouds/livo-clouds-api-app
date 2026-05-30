@@ -1,5 +1,4 @@
 import { PrismaService } from '../../prisma/prisma.service';
-import { presetForRole } from './permission-catalog';
 import { RbacService } from './rbac.service';
 
 function makePrismaMock() {
@@ -24,13 +23,10 @@ describe('RbacService', () => {
     expect([...perms].sort()).toEqual(['residents.manage', 'users.read']);
   });
 
-  it('falls back to the enum preset when the user has no role row', async () => {
-    prisma.user.findUnique.mockResolvedValue({
-      role: 'READ_ONLY',
-      roleRef: null,
-    });
+  it('grants no permissions when the user has no role row', async () => {
+    prisma.user.findUnique.mockResolvedValue({ roleRef: null });
     const perms = await service.getEffectivePermissions('u1');
-    expect([...perms].sort()).toEqual([...presetForRole('READ_ONLY')].sort());
+    expect(perms.size).toBe(0);
   });
 
   it('returns no permissions for an unknown user', async () => {

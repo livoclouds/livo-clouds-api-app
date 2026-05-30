@@ -1,4 +1,5 @@
-import { NotificationType, UserRole } from '@prisma/client';
+import { NotificationType } from '@prisma/client';
+import { UserRole } from '../../common/types';
 
 /**
  * Legacy NotificationType values that predate the Notifications module. They

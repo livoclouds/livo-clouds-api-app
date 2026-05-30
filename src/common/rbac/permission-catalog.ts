@@ -254,15 +254,15 @@ export function isPlatformPermission(key: string): boolean {
 
 /**
  * Effective permissions for a user. The assigned Role row (roleRef) is the
- * source of truth when present — even if it is an empty set (a custom role with
- * nothing granted yet). When roleId has not been backfilled (roleRef null), fall
- * back to the system preset for the legacy `role` enum, so behaviour is correct
- * before and after the backfill runs.
+ * single source of truth — even an empty set (a custom role with nothing granted
+ * yet). A user with no role row gets no permissions. The optional `roleKey` is a
+ * legacy fallback used only by tests/back-compat callers that pass a system key
+ * without a row; runtime callers omit it (every user is backfilled).
  */
 export function resolveEffectivePermissions(
   roleRef: { permissions: string[] } | null | undefined,
-  roleEnum: string,
+  roleKey?: string,
 ): string[] {
   if (roleRef) return sanitizePermissions(roleRef.permissions);
-  return presetForRole(roleEnum);
+  return roleKey ? presetForRole(roleKey) : [];
 }

@@ -278,7 +278,7 @@ export class StorageAdminService {
             where: { id: { in: realIds } },
             select: {
               id: true,
-              role: true,
+              roleRef: { select: { key: true } },
               condominiumId: true,
               condominium: { select: { name: true, slug: true } },
             },
@@ -290,7 +290,7 @@ export class StorageAdminService {
       const details = userDetailMap.get(b.id);
       return {
         ...b,
-        role: details?.role ?? null,
+        role: details?.roleRef?.key ?? null,
         condominiumId: details?.condominiumId ?? null,
         condominiumName: details?.condominium?.name ?? null,
         condominiumSlug: details?.condominium?.slug ?? null,
