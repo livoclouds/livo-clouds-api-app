@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { RbacService } from '../../common/rbac/rbac.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RolesService } from './roles.service';
 
@@ -37,11 +38,16 @@ function makePrismaMock(): PrismaMock {
 
 describe('RolesService', () => {
   let prisma: PrismaMock;
+  let rbac: { invalidateAll: jest.Mock; invalidateUser: jest.Mock };
   let service: RolesService;
 
   beforeEach(() => {
     prisma = makePrismaMock();
-    service = new RolesService(prisma as unknown as PrismaService);
+    rbac = { invalidateAll: jest.fn(), invalidateUser: jest.fn() };
+    service = new RolesService(
+      prisma as unknown as PrismaService,
+      rbac as unknown as RbacService,
+    );
   });
 
   describe('findAll', () => {
@@ -91,6 +97,7 @@ describe('RolesService', () => {
           }),
         }),
       );
+      expect(rbac.invalidateAll).toHaveBeenCalled();
     });
 
     it('maps a unique-constraint violation to a Conflict', async () => {
@@ -169,6 +176,7 @@ describe('RolesService', () => {
           data: expect.objectContaining({ isActive: false }),
         }),
       );
+      expect(rbac.invalidateAll).toHaveBeenCalled();
     });
 
     it('throws NotFound for a missing role', async () => {

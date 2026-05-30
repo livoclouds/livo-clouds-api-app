@@ -10,13 +10,17 @@ import {
   sanitizePermissions,
   unknownPermissions,
 } from '../../common/rbac/permission-catalog';
+import { RbacService } from '../../common/rbac/rbac.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 
 @Injectable()
 export class RolesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private rbac: RbacService,
+  ) {}
 
   private roleSelect() {
     return {
@@ -82,7 +86,7 @@ export class RolesService {
   async create(condominiumId: string, dto: CreateRoleDto) {
     const permissions = this.validatePermissions(dto.permissions);
     try {
-      return await this.prisma.role.create({
+      const role = await this.prisma.role.create({
         data: {
           name: dto.name,
           description: dto.description,
@@ -93,6 +97,8 @@ export class RolesService {
         },
         select: this.roleSelect(),
       });
+      this.rbac.invalidateAll();
+      return role;
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -123,11 +129,13 @@ export class RolesService {
     }
 
     try {
-      return await this.prisma.role.update({
+      const role = await this.prisma.role.update({
         where: { id },
         data,
         select: this.roleSelect(),
       });
+      this.rbac.invalidateAll();
+      return role;
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -158,10 +166,12 @@ export class RolesService {
       );
     }
 
-    return this.prisma.role.update({
+    const deleted = await this.prisma.role.update({
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
       select: this.roleSelect(),
     });
+    this.rbac.invalidateAll();
+    return deleted;
   }
 }
