@@ -218,6 +218,29 @@ describe('RBAC-002: role assignment security gates', () => {
       ),
     ).resolves.not.toThrow();
   });
+
+  it('[RBAC-006] create: condominiumId is threaded into prisma.user.create data', async () => {
+    deps.rbac.hasAny.mockResolvedValue(true);
+    deps.prisma.user.findFirst.mockResolvedValue(null); // no email conflict
+    deps.prisma.role.findFirst.mockResolvedValue({ id: 'role-ta', key: 'TENANT_ADMIN' });
+    const createMock = jest.fn().mockResolvedValue({
+      id: 'u-new',
+      email: 'new@x.com',
+      roleRef: { key: 'TENANT_ADMIN' },
+      permissionOverrides: null,
+    });
+    (deps.prisma.user as Record<string, unknown>).create = createMock;
+    await service.create(
+      'condo-target',
+      { role: 'TENANT_ADMIN', email: 'new@x.com', password: 'pw12345!', firstName: 'A', lastName: 'B' } as never,
+      rootUser,
+    );
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ condominiumId: 'condo-target' }),
+      }),
+    );
+  });
 });
 
 // RBAC-011: cross-tenant isolation — the service must scope every read/write to

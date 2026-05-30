@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
@@ -65,6 +66,7 @@ export class NotificationsController {
   }
 
   @Patch('preferences')
+  @RequirePermission('notifications.read')
   @ApiOperation({
     summary: 'Update notification preferences for the current user',
   })
@@ -80,6 +82,7 @@ export class NotificationsController {
   }
 
   @Post('read-all')
+  @RequirePermission('notifications.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark all notifications as read' })
   markAllRead(
@@ -90,6 +93,7 @@ export class NotificationsController {
   }
 
   @Post(':id/read')
+  @RequirePermission('notifications.read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark a notification as read' })
   markRead(
@@ -101,6 +105,7 @@ export class NotificationsController {
   }
 
   @Delete(':id')
+  @RequirePermission('notifications.read')
   @ApiOperation({ summary: 'Dismiss a notification' })
   dismiss(
     @Request() req: { condominiumId: string },
