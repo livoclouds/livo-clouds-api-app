@@ -399,6 +399,10 @@ model User {
   phone           String?
   avatarUrl       String?
   sessionDuration Int       @default(8)
+  // Minutes of inactivity before the in-app screen lock engages. Per-user so an
+  // office shared workstation (admin) can be tighter than a low-risk profile.
+  // Enforced server-side via RefreshToken.lastActivityAt — see InactivityLockGuard.
+  inactivityLockMinutes Int @default(15)
   isActive        Boolean   @default(true)
   lastLoginAt     DateTime?
   deletedAt       DateTime?
@@ -449,6 +453,15 @@ model RefreshToken {
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
+
+  // In-app inactivity screen lock (server-authoritative). A session is locked
+  // when lockedAt is set, or when now - lastActivityAt exceeds the user's
+  // inactivityLockMinutes. Only the heartbeat / unlock endpoints refresh
+  // lastActivityAt, so background polling never keeps a session alive.
+  // failedUnlockAttempts forces a logout after repeated wrong passwords.
+  lastActivityAt       DateTime?
+  lockedAt             DateTime?
+  failedUnlockAttempts Int       @default(0)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

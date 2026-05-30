@@ -88,6 +88,7 @@ export class UsersService {
         phone: dto.phone,
         avatarUrl: dto.avatarUrl,
         sessionDuration: dto.sessionDuration ?? 8,
+        inactivityLockMinutes: dto.inactivityLockMinutes ?? 15,
       },
       select: this.safeSelect(),
     });
@@ -169,6 +170,7 @@ export class UsersService {
       phone: true,
       avatarUrl: true,
       sessionDuration: true,
+      inactivityLockMinutes: true,
       isActive: true,
       lastLoginAt: true,
       createdAt: true,
