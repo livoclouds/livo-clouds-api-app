@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  Prisma,
   WhatsAppConversationStatus,
   WhatsAppMessageDirection,
   WhatsAppMessageStatus,
@@ -23,7 +22,6 @@ interface PreferenceForDispatch {
   notifyOnEscalation: boolean;
   personalPhoneNumber: string | null;
   personalPhoneVerifiedAt: Date | null;
-  pushSubscriptionJson: Prisma.JsonValue;
 }
 
 @Injectable()
@@ -74,6 +72,7 @@ export class WhatsAppNotificationDispatcherService {
       preferences.map((pref) =>
         this.notifyAdmin({
           preference: pref,
+          condominiumId: conversation.condominiumId,
           credential,
           subject,
           deepLink,
@@ -124,6 +123,7 @@ export class WhatsAppNotificationDispatcherService {
       preferences.map((pref) =>
         this.notifyAdmin({
           preference: pref,
+          condominiumId: conversation.condominiumId,
           credential,
           subject,
           deepLink,
@@ -216,7 +216,6 @@ export class WhatsAppNotificationDispatcherService {
         notifyOnEscalation: true,
         personalPhoneNumber: true,
         personalPhoneVerifiedAt: true,
-        pushSubscriptionJson: true,
       },
     });
     return rows.filter((r) => r.notifyChannel !== WhatsAppNotifyChannel.NONE);
@@ -224,6 +223,7 @@ export class WhatsAppNotificationDispatcherService {
 
   private async notifyAdmin(args: {
     preference: PreferenceForDispatch;
+    condominiumId: string;
     credential: {
       phoneNumberId: string;
       accessTokenCiphertext: string;
@@ -236,8 +236,16 @@ export class WhatsAppNotificationDispatcherService {
     context: string;
     conversationId: string;
   }): Promise<void> {
-    const { preference, credential, subject, deepLink, messageText, context, conversationId } =
-      args;
+    const {
+      preference,
+      condominiumId,
+      credential,
+      subject,
+      deepLink,
+      messageText,
+      context,
+      conversationId,
+    } = args;
 
     const wantsWhatsApp =
       preference.notifyChannel === WhatsAppNotifyChannel.WHATSAPP ||
@@ -246,21 +254,30 @@ export class WhatsAppNotificationDispatcherService {
       preference.notifyChannel === WhatsAppNotifyChannel.PUSH ||
       preference.notifyChannel === WhatsAppNotifyChannel.BOTH;
 
-    // Web Push (Phase 5) — supplementary channel. A stable per-conversation tag
-    // makes a re-notification replace the original alert instead of stacking.
+    // Web Push — supplementary channel. Fans out to every registered device for
+    // this admin (notifications iter2 — multi-device). A stable per-conversation
+    // tag makes a re-notification replace the original alert instead of stacking.
     if (wantsPush) {
       const isReNotify = context === 're-notification';
-      await this.pushService.sendToPreference(
-        preference.id,
-        preference.pushSubscriptionJson,
-        {
-          title: isReNotify ? 'Recordatorio de conversación' : 'Conversación escalada',
-          body: isReNotify
-            ? `${subject} sigue esperando atención`
-            : `${subject} necesita atención`,
-          tag: `whatsapp-conversation-${conversationId}`,
-          url: `/communications/${conversationId}`,
-        },
+      const subscriptions = await this.prisma.pushSubscription.findMany({
+        where: { userId: preference.userId, condominiumId },
+        select: { id: true, endpoint: true, p256dh: true, auth: true },
+      });
+      await Promise.allSettled(
+        subscriptions.map((sub) =>
+          this.pushService.sendToSubscription(
+            sub.id,
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            {
+              title: isReNotify ? 'Recordatorio de conversación' : 'Conversación escalada',
+              body: isReNotify
+                ? `${subject} sigue esperando atención`
+                : `${subject} necesita atención`,
+              tag: `whatsapp-conversation-${conversationId}`,
+              url: `/communications/${conversationId}`,
+            },
+          ),
+        ),
       );
     }
 

@@ -13,8 +13,11 @@ import { PrismaService } from '../../prisma/prisma.service';
  * they carry an operational title/body only, never message content, phone
  * numbers, media captions, or access tokens.
  *
- * Subscriptions live in `WhatsAppNotificationPreference.pushSubscriptionJson`,
- * keyed by the unique (userId, condominiumId) pair.
+ * Subscriptions live in the multi-device `PushSubscription` table (one row per
+ * browser/device), keyed by a globally unique `endpoint`. A gone subscription
+ * (HTTP 404/410) deletes its own row via `sendToSubscription`. The legacy
+ * single-row `sendToPreference` path is retained only while the deprecated
+ * `WhatsAppNotificationPreference.pushSubscriptionJson` column still exists.
  */
 export interface PushNotificationPayload {
   /** Concise OS-notification title. */
@@ -62,17 +65,48 @@ export class WebPushService {
   }
 
   /**
-   * Send a push notification to one stored subscription.
+   * Send a push notification to one `PushSubscription` row (multi-device path).
    *
-   * Invalid, revoked, or expired subscriptions (HTTP 404/410) are cleared from
-   * the preference so a stale subscription never breaks future dispatch. Any
-   * failure is logged without exposing the payload or subscription internals
-   * and never throws — dispatch must not crash on a push error.
+   * Invalid, revoked, or expired subscriptions (HTTP 404/410) delete their own
+   * row so a stale device never breaks future dispatch and other devices for
+   * the same user keep working. Any failure is logged without exposing the
+   * payload or subscription internals and never throws — dispatch must not
+   * crash on a push error.
+   */
+  async sendToSubscription(
+    subscriptionId: string,
+    subscriptionJson: unknown,
+    payload: PushNotificationPayload,
+  ): Promise<boolean> {
+    return this.deliver(`subId=${subscriptionId}`, subscriptionJson, payload, () =>
+      this.deleteSubscriptionRow(subscriptionId),
+    );
+  }
+
+  /**
+   * Legacy single-row send keyed by the preference id. Retained only while the
+   * deprecated `pushSubscriptionJson` column exists; new dispatch fans out via
+   * {@link sendToSubscription}. A gone subscription clears the legacy field.
    */
   async sendToPreference(
     preferenceId: string,
     subscriptionJson: unknown,
     payload: PushNotificationPayload,
+  ): Promise<boolean> {
+    return this.deliver(`prefId=${preferenceId}`, subscriptionJson, payload, () =>
+      this.disableSubscription(preferenceId),
+    );
+  }
+
+  /**
+   * Shared delivery path: narrow the subscription, send, and on a gone status
+   * (404/410) run the supplied cleanup. Never throws.
+   */
+  private async deliver(
+    label: string,
+    subscriptionJson: unknown,
+    payload: PushNotificationPayload,
+    onGone: () => Promise<void>,
   ): Promise<boolean> {
     if (!this.ensureVapid()) {
       this.logger.warn('[push] skipped — VAPID keys not configured');
@@ -80,7 +114,7 @@ export class WebPushService {
     }
     const subscription = this.toSubscription(subscriptionJson);
     if (!subscription) {
-      this.logger.warn(`[push] prefId=${preferenceId} no usable subscription — skipping`);
+      this.logger.warn(`[push] ${label} no usable subscription — skipping`);
       return false;
     }
     const body = JSON.stringify({
@@ -91,21 +125,30 @@ export class WebPushService {
     });
     try {
       await webpush.sendNotification(subscription, body, { TTL: 600 });
-      this.logger.log(`[push] prefId=${preferenceId} delivered (tag=${payload.tag})`);
+      this.logger.log(`[push] ${label} delivered (tag=${payload.tag})`);
       return true;
     } catch (err) {
       const statusCode = (err as { statusCode?: number }).statusCode;
       if (statusCode === 404 || statusCode === 410) {
-        await this.disableSubscription(preferenceId);
-        this.logger.log(
-          `[push] prefId=${preferenceId} subscription gone (${statusCode}) — cleared`,
-        );
+        await onGone();
+        this.logger.log(`[push] ${label} subscription gone (${statusCode}) — cleared`);
       } else {
         this.logger.error(
-          `[push] prefId=${preferenceId} delivery failed (status=${statusCode ?? 'n/a'})`,
+          `[push] ${label} delivery failed (status=${statusCode ?? 'n/a'})`,
         );
       }
       return false;
+    }
+  }
+
+  /** Delete a single gone `PushSubscription` row, keeping the user's other devices. */
+  private async deleteSubscriptionRow(subscriptionId: string): Promise<void> {
+    try {
+      await this.prisma.pushSubscription.deleteMany({ where: { id: subscriptionId } });
+    } catch (err) {
+      this.logger.error(
+        `[push] failed to delete subscription subId=${subscriptionId}: ${(err as Error).message}`,
+      );
     }
   }
 

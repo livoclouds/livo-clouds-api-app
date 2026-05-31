@@ -30,6 +30,10 @@ function makeService(overrides: {
       update: jest.fn().mockImplementation(({ data }) => ({ ...base, ...(data as object) })),
       findFirst: jest.fn().mockResolvedValue(overrides.phoneConflict ? { id: 'other' } : null),
     },
+    pushSubscription: {
+      upsert: jest.fn().mockResolvedValue({ id: 'sub-1' }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
     resident: {
       findFirst: jest.fn().mockResolvedValue(overrides.residentMatch ? { id: 'res-1' } : null),
     },
@@ -203,15 +207,23 @@ describe('WhatsAppNotificationPreferenceService.savePushSubscription', () => {
     keys: { p256dh: 'p256', auth: 'authkey' },
   };
 
-  it('stores a valid subscription and audits without leaking the payload', async () => {
+  it('upserts the subscription by endpoint and audits without leaking the payload', async () => {
     const { service, prisma, auditService } = makeService();
     await service.savePushSubscription('condo-1', 'user-1', validSub);
-    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
-    expect(data.pushSubscriptionJson).toEqual({
+    const call = prisma.pushSubscription.upsert.mock.calls[0][0];
+    expect(call.where).toEqual({ endpoint: 'https://push.test/endpoint' });
+    expect(call.create).toEqual({
+      userId: 'user-1',
+      condominiumId: 'condo-1',
       endpoint: 'https://push.test/endpoint',
-      expirationTime: null,
-      keys: { p256dh: 'p256', auth: 'authkey' },
+      p256dh: 'p256',
+      auth: 'authkey',
     });
+    // Re-registering the same browser refreshes its keys + lastSeenAt.
+    expect(call.update).toMatchObject({ p256dh: 'p256', auth: 'authkey' });
+    expect(call.update.lastSeenAt).toBeInstanceOf(Date);
+    // The legacy single-row field is no longer written.
+    expect(prisma.whatsAppNotificationPreference.update).not.toHaveBeenCalled();
     expect(auditService.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'WHATSAPP_PUSH_SUBSCRIPTION_UPDATED' }),
     );
@@ -250,21 +262,46 @@ describe('WhatsAppNotificationPreferenceService.savePushSubscription', () => {
       ...validSub,
       evilField: 'x',
     } as never);
-    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
-    expect(data.pushSubscriptionJson).not.toHaveProperty('evilField');
+    const call = prisma.pushSubscription.upsert.mock.calls[0][0];
+    expect(call.create).not.toHaveProperty('evilField');
+    expect(JSON.stringify(call)).not.toContain('evilField');
   });
 });
 
 describe('WhatsAppNotificationPreferenceService.removePushSubscription', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it('clears the stored subscription and audits the removal', async () => {
+  it('removes only the given device by endpoint and audits the removal', async () => {
+    const { service, prisma, auditService } = makeService();
+    const result = await service.removePushSubscription(
+      'condo-1',
+      'user-1',
+      'https://push.test/endpoint',
+    );
+    expect(prisma.pushSubscription.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1', condominiumId: 'condo-1', endpoint: 'https://push.test/endpoint' },
+    });
+    expect(prisma.whatsAppNotificationPreference.update).not.toHaveBeenCalled();
+    expect(result).toEqual({ removed: 1 });
+    expect(auditService.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED',
+        afterState: expect.objectContaining({ scope: 'device' }),
+      }),
+    );
+  });
+
+  it('removes every device for the user when no endpoint is given', async () => {
     const { service, prisma, auditService } = makeService();
     await service.removePushSubscription('condo-1', 'user-1');
-    const data = prisma.whatsAppNotificationPreference.update.mock.calls[0][0].data;
-    expect(data).toHaveProperty('pushSubscriptionJson');
+    expect(prisma.pushSubscription.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1', condominiumId: 'condo-1' },
+    });
     expect(auditService.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED' }),
+      expect.objectContaining({
+        action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED',
+        afterState: expect.objectContaining({ scope: 'all-devices' }),
+      }),
     );
   });
 });

@@ -40,6 +40,7 @@ import { UpdateUnregisteredContactDto } from './dto/update-unregistered.dto';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
 import { TestNotificationDto } from './dto/test-notification.dto';
 import { PushSubscriptionDto } from './dto/push-subscription.dto';
+import { PushUnsubscribeDto } from './dto/push-unsubscribe.dto';
 import { ValidateNumberDto } from './dto/validate-number.dto';
 import { NormalizeResidentPhonesDto } from './dto/normalize-resident-phones.dto';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
@@ -422,7 +423,8 @@ export class WhatsAppController {
 
   @Post('notification-preference/push-subscribe')
   @RequirePermission('communications.send')
-  @ApiOperation({ summary: 'Store Web Push subscription (Phase 5 placeholder, no dispatch)' })
+  @Throttle({ burst: { limit: 20, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Register a Web Push subscription for this device (multi-device)' })
   pushSubscribe(
     @Request() req: { condominiumId: string },
     @Body() dto: PushSubscriptionDto,
@@ -437,13 +439,19 @@ export class WhatsAppController {
 
   @Post('notification-preference/push-unsubscribe')
   @RequirePermission('communications.send')
+  @Throttle({ burst: { limit: 20, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
   @HttpCode(204)
-  @ApiOperation({ summary: 'Remove Web Push subscription' })
+  @ApiOperation({ summary: 'Remove a Web Push subscription (this device, or all when no endpoint)' })
   pushUnsubscribe(
     @Request() req: { condominiumId: string },
+    @Body() dto: PushUnsubscribeDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.notificationPreferenceService.removePushSubscription(req.condominiumId, user.sub);
+    return this.notificationPreferenceService.removePushSubscription(
+      req.condominiumId,
+      user.sub,
+      dto.endpoint,
+    );
   }
 
   // ── Analytics ────────────────────────────────────────────────────────────────

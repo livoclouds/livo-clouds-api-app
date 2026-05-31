@@ -5,6 +5,7 @@ import { WhatsAppNotificationDispatcherService } from './whatsapp-notification-d
 function makeDispatcher(overrides: {
   conversation?: Record<string, unknown> | null;
   preferences?: Record<string, unknown>[];
+  pushSubscriptions?: Record<string, unknown>[];
   credential?: Record<string, unknown> | null;
   condominium?: { slug: string } | null;
   recentInbound?: boolean;
@@ -58,6 +59,15 @@ function makeDispatcher(overrides: {
           ],
         ),
     },
+    pushSubscription: {
+      findMany: jest
+        .fn()
+        .mockResolvedValue(
+          overrides.pushSubscriptions ?? [
+            { id: 'sub-1', endpoint: 'https://push.test/x', p256dh: 'a', auth: 'b' },
+          ],
+        ),
+    },
     whatsAppCredential: {
       findUnique: jest.fn().mockResolvedValue(
         overrides.credential === undefined
@@ -99,6 +109,7 @@ function makeDispatcher(overrides: {
 
   const pushService = {
     sendToPreference: jest.fn().mockResolvedValue(true),
+    sendToSubscription: jest.fn().mockResolvedValue(true),
     isConfigured: jest.fn().mockReturnValue(true),
   };
 
@@ -224,8 +235,8 @@ describe('WhatsAppNotificationDispatcherService.dispatchEscalation', () => {
     expect(sendTextMessage).not.toHaveBeenCalled();
   });
 
-  it('dispatches a Web Push notification for PUSH channel with a stable per-conversation tag', async () => {
-    const { service, pushService, sendTextMessage } = makeDispatcher({
+  it('fans out Web Push to every device for PUSH channel with a stable per-conversation tag', async () => {
+    const { service, prisma, pushService, sendTextMessage } = makeDispatcher({
       preferences: [
         {
           id: 'pref-push',
@@ -234,15 +245,22 @@ describe('WhatsAppNotificationDispatcherService.dispatchEscalation', () => {
           notifyOnEscalation: true,
           personalPhoneNumber: null,
           personalPhoneVerifiedAt: null,
-          pushSubscriptionJson: { endpoint: 'https://push.test/x', keys: { p256dh: 'a', auth: 'b' } },
         },
+      ],
+      pushSubscriptions: [
+        { id: 'sub-phone', endpoint: 'https://push.test/phone', p256dh: 'p1', auth: 'a1' },
+        { id: 'sub-desktop', endpoint: 'https://push.test/desktop', p256dh: 'p2', auth: 'a2' },
       ],
     });
     await service.dispatchEscalation('conv-1');
     expect(sendTextMessage).not.toHaveBeenCalled();
-    expect(pushService.sendToPreference).toHaveBeenCalledWith(
-      'pref-push',
-      expect.objectContaining({ endpoint: 'https://push.test/x' }),
+    expect(prisma.pushSubscription.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'u', condominiumId: 'condo-1' } }),
+    );
+    expect(pushService.sendToSubscription).toHaveBeenCalledTimes(2);
+    expect(pushService.sendToSubscription).toHaveBeenCalledWith(
+      'sub-phone',
+      { endpoint: 'https://push.test/phone', keys: { p256dh: 'p1', auth: 'a1' } },
       expect.objectContaining({
         tag: 'whatsapp-conversation-conv-1',
         url: '/communications/conv-1',
@@ -261,13 +279,15 @@ describe('WhatsAppNotificationDispatcherService.dispatchEscalation', () => {
           notifyOnEscalation: true,
           personalPhoneNumber: '+528122222222',
           personalPhoneVerifiedAt: new Date(),
-          pushSubscriptionJson: { endpoint: 'https://push.test/y', keys: { p256dh: 'a', auth: 'b' } },
         },
+      ],
+      pushSubscriptions: [
+        { id: 'sub-y', endpoint: 'https://push.test/y', p256dh: 'a', auth: 'b' },
       ],
     });
     await service.dispatchEscalation('conv-1');
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(pushService.sendToPreference).toHaveBeenCalledTimes(1);
+    expect(pushService.sendToSubscription).toHaveBeenCalledTimes(1);
   });
 });
 
