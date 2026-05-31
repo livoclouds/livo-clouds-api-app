@@ -15,7 +15,7 @@ import { calendarEventLink, calendarLink, copyKeys } from './notification-links'
 /**
  * Translates `CalendarService` domain events into notifications. The booking
  * confirmation carries `residentId`, which `dispatchEvent` forwards to the
- * NEIGHBOR owner filter so only the booking's resident-user receives it.
+ * RESIDENT owner filter so only the booking's resident-user receives it.
  */
 @Injectable()
 export class CalendarNotificationsListener {

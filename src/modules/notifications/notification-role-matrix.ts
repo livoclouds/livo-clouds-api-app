@@ -51,7 +51,7 @@ export const NOTIFICATION_ROLE_ACCESS = {
   CALENDAR_BOOKING_CONFIRMED: [
     UserRole.TENANT_ADMIN,
     UserRole.READ_ONLY,
-    UserRole.NEIGHBOR,
+    UserRole.RESIDENT,
   ],
 
   // Finance — ROOT excluded: condominium-level operational events
@@ -67,14 +67,14 @@ export const NOTIFICATION_ROLE_ACCESS = {
     UserRole.TENANT_ADMIN,
     UserRole.READ_ONLY,
     UserRole.GUARD,
-    UserRole.NEIGHBOR,
+    UserRole.RESIDENT,
   ],
   SESSION_EXPIRING: [
     UserRole.ROOT,
     UserRole.TENANT_ADMIN,
     UserRole.READ_ONLY,
     UserRole.GUARD,
-    UserRole.NEIGHBOR,
+    UserRole.RESIDENT,
   ],
 } satisfies Record<R1NotificationType, UserRole[]>;
 

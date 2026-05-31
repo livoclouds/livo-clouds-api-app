@@ -11,7 +11,7 @@ const has = (roleKey: string, perm: string) =>
 
 describe('RBAC Phase 2 sweep — permission mappings', () => {
   // Tenant mutations were @Roles(ROOT, TENANT_ADMIN). Mapped permissions must be
-  // held by ROOT + TENANT_ADMIN and by NONE of READ_ONLY / GUARD / NEIGHBOR.
+  // held by ROOT + TENANT_ADMIN and by NONE of READ_ONLY / GUARD / RESIDENT.
   const TENANT_WRITE = [
     'residents.manage', // residents
     'calendar.manage', // calendar
@@ -29,7 +29,7 @@ describe('RBAC Phase 2 sweep — permission mappings', () => {
     expect(has('TENANT_ADMIN', perm)).toBe(true);
     expect(has('READ_ONLY', perm)).toBe(false);
     expect(has('GUARD', perm)).toBe(false);
-    expect(has('NEIGHBOR', perm)).toBe(false);
+    expect(has('RESIDENT', perm)).toBe(false);
   });
 
   // Platform-admin endpoints were @Roles(ROOT). Read maps to perms ROOT +

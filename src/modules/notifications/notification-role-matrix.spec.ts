@@ -30,7 +30,7 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
       CALENDAR_BOOKING_CONFIRMED: [
         UserRole.TENANT_ADMIN,
         UserRole.READ_ONLY,
-        UserRole.NEIGHBOR,
+        UserRole.RESIDENT,
       ],
       NEGATIVE_BALANCE: [UserRole.TENANT_ADMIN],
       NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
@@ -40,14 +40,14 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
         UserRole.TENANT_ADMIN,
         UserRole.READ_ONLY,
         UserRole.GUARD,
-        UserRole.NEIGHBOR,
+        UserRole.RESIDENT,
       ],
       SESSION_EXPIRING: [
         UserRole.ROOT,
         UserRole.TENANT_ADMIN,
         UserRole.READ_ONLY,
         UserRole.GUARD,
-        UserRole.NEIGHBOR,
+        UserRole.RESIDENT,
       ],
     };
     for (const [type, roles] of Object.entries(expected)) {
@@ -86,8 +86,8 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
     expect(typesForRole(UserRole.GUARD)).toEqual(
       ['PERMISSIONS_CHANGED', 'SESSION_EXPIRING'].sort(),
     );
-    // NEIGHBOR receives personal booking confirmations plus system events.
-    expect(typesForRole(UserRole.NEIGHBOR)).toEqual(
+    // RESIDENT receives personal booking confirmations plus system events.
+    expect(typesForRole(UserRole.RESIDENT)).toEqual(
       ['CALENDAR_BOOKING_CONFIRMED', 'PERMISSIONS_CHANGED', 'SESSION_EXPIRING'].sort(),
     );
   });

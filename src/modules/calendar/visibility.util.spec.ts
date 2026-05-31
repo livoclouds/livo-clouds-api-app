@@ -42,8 +42,8 @@ describe('visibility.util — Phase 5C', () => {
     expect(canSeeVisibility(UserRole.READ_ONLY, CalendarEventVisibility.COUNCIL_ONLY)).toBe(true);
   });
 
-  it('GUARD and NEIGHBOR see PUBLIC only', () => {
-    for (const role of [UserRole.GUARD, UserRole.NEIGHBOR]) {
+  it('GUARD and RESIDENT see PUBLIC only', () => {
+    for (const role of [UserRole.GUARD, UserRole.RESIDENT]) {
       expect(visibleVisibilitiesForRole(role)).toEqual([CalendarEventVisibility.PUBLIC]);
       expect(canSeeVisibility(role, CalendarEventVisibility.COUNCIL_ONLY)).toBe(false);
       expect(canSeeVisibility(role, CalendarEventVisibility.PRIVATE)).toBe(false);
@@ -55,7 +55,7 @@ describe('visibility.util — Phase 5C', () => {
     expect(buildVisibilityFilter(UserRole.TENANT_ADMIN)).toEqual({});
   });
 
-  it('buildVisibilityFilter scopes READ_ONLY, GUARD, and NEIGHBOR queries', () => {
+  it('buildVisibilityFilter scopes READ_ONLY, GUARD, and RESIDENT queries', () => {
     expect(buildVisibilityFilter(UserRole.READ_ONLY)).toEqual({
       visibility: {
         in: [CalendarEventVisibility.PUBLIC, CalendarEventVisibility.COUNCIL_ONLY],
@@ -64,7 +64,7 @@ describe('visibility.util — Phase 5C', () => {
     expect(buildVisibilityFilter(UserRole.GUARD)).toEqual({
       visibility: { in: [CalendarEventVisibility.PUBLIC] },
     });
-    expect(buildVisibilityFilter(UserRole.NEIGHBOR)).toEqual({
+    expect(buildVisibilityFilter(UserRole.RESIDENT)).toEqual({
       visibility: { in: [CalendarEventVisibility.PUBLIC] },
     });
   });

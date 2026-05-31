@@ -142,7 +142,7 @@ export type SystemRoleKey =
   | 'TENANT_ADMIN'
   | 'READ_ONLY'
   | 'GUARD'
-  | 'NEIGHBOR';
+  | 'RESIDENT';
 
 export interface SystemRoleDef {
   key: SystemRoleKey;
@@ -182,8 +182,7 @@ const SUPERVISOR_PERMS = [
   'platform.audit.read',
 ];
 
-// Condómino (READ_ONLY, renamed on the web): resident-appropriate read only.
-// Intentionally narrow — broader "council/auditor" read is a custom role.
+// Auditor (READ_ONLY): council/auditor read-only access to condominium data.
 const CONDOMINO_PERMS = [
   'dashboard.read',
   'reports.read',
@@ -202,14 +201,14 @@ const SECURITY_PERMS = [
   'security.visitors.manage',
 ];
 
-// Vecino (NEIGHBOR): individual unit resident, most restricted (own bookings).
-const NEIGHBOR_PERMS = ['calendar.read', 'notifications.read'];
+// Residente (RESIDENT): unit resident — calendar bookings and notifications.
+const RESIDENT_PERMS = ['calendar.read', 'notifications.read'];
 
 export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
   {
     key: 'ROOT',
-    name: 'Developer',
-    description: 'Platform owner / developer — full technical and platform access.',
+    name: 'Root',
+    description: 'Platform root — full technical and platform access.',
     permissions: ALL_PERMISSION_KEYS,
   },
   {
@@ -227,8 +226,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
   },
   {
     key: 'READ_ONLY',
-    name: 'Resident',
-    description: 'Condominium resident — read-only access to permitted sections.',
+    name: 'Auditor',
+    description: 'Condominium auditor — read-only access to reports, dashboard, and calendar.',
     permissions: sanitizePermissions(CONDOMINO_PERMS),
   },
   {
@@ -238,10 +237,10 @@ export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
     permissions: sanitizePermissions(SECURITY_PERMS),
   },
   {
-    key: 'NEIGHBOR',
-    name: 'Neighbor',
-    description: 'Individual unit resident — minimal own-unit access.',
-    permissions: sanitizePermissions(NEIGHBOR_PERMS),
+    key: 'RESIDENT',
+    name: 'Resident',
+    description: 'Unit resident — calendar bookings, notifications, and future interactive features.',
+    permissions: sanitizePermissions(RESIDENT_PERMS),
   },
 ] as const;
 

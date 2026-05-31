@@ -20,7 +20,7 @@ import { UsersService } from './users.service';
 
 // RBAC Phase 2: access is governed by permissions (PermissionsGuard) instead of
 // @Roles. The presets preserve the previous behaviour — ROOT and TENANT_ADMIN
-// both hold users.read + users.manage; READ_ONLY/GUARD/NEIGHBOR hold neither.
+// both hold users.read + users.manage; READ_ONLY/GUARD/RESIDENT hold neither.
 // CondominiumAccessGuard still enforces tenant isolation.
 @ApiTags('Users')
 @Controller('condominiums/:condominiumSlug/users')
