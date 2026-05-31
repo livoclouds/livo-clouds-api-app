@@ -20,11 +20,12 @@ src/
 ├── app.module.ts        global APP_FILTER + APP_GUARD + APP_INTERCEPTOR
 ├── config/              app | cors | database | jwt  (all use registerAs())
 ├── common/
-│   ├── decorators/      @Public  @CurrentUser  @Roles
+│   ├── decorators/      @Public  @CurrentUser  @RequirePermission  @SkipInactivityLock
 │   ├── filters/         GlobalExceptionFilter
-│   ├── guards/          JwtAuthGuard  RolesGuard  CondominiumAccessGuard
+│   ├── guards/          JwtAuthGuard  PermissionsGuard  CondominiumAccessGuard
+│   │                    ThrottlerUserGuard  InactivityLockGuard
 │   ├── interceptors/    ResponseInterceptor
-│   └── types/           UserRole enum  JwtPayload  PaginationQuery
+│   └── types/           UserRole enum  JwtPayload  PaginatedResult<T>
 ├── prisma/              PrismaService (global module)
 ├── health/              GET /health  (@Public)
 └── modules/             feature modules (see below)
@@ -32,10 +33,13 @@ src/
 
 ## Feature Modules (`src/modules/`)
 
-All 21 modules — each is `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`:
+All 27 modules — each is `*.module.ts` + `*.controller.ts` + `*.service.ts` + `dto/`:
 
-- `auth` — login, JWT issue/refresh, password reset
-- `users` — platform and tenant user accounts
+- `auth` — login, JWT issue/refresh, password reset, inactivity screen lock
+- `users` — tenant user accounts
+- `platform-users` — platform-level user administration (split from `users`)
+- `roles` — dynamic RBAC: role records + permission catalog assignment
+- `security` — visitor log for the `GUARD` (Seguridad) role
 - `condominiums` — tenant records and access
 - `residents` — residents and pets; server-side filtering/sorting
 - `settings` — per-condominium configuration (`CondominiumSettings`)
@@ -51,15 +55,20 @@ All 21 modules — each is `*.module.ts` + `*.controller.ts` + `*.service.ts` + 
 - `inventory` — common-area inventory items
 - `calendar` — calendar events and terrace bookings
 - `notifications` — in-app notifications and SSE feed
+- `web-push` — multi-device Web Push subscriptions + delivery (throttled)
 - `email` — transactional email via Resend
 - `whatsapp` — WhatsApp messaging, conversations, FAQ, media
 - `audit` — append-only audit logging
 - `storage` — Cloudflare R2 file uploads
+- `storage-admin` — tenant storage administration views
+- `system-status` — on-demand health / status checks
 
 ## Request Pipeline (applied globally in app.module.ts)
 1. `GlobalExceptionFilter` — normalizes all thrown exceptions
-2. `JwtAuthGuard` — validates Bearer JWT; bypassed by `@Public()`
+2. Global guards, in order: `JwtAuthGuard` (Bearer JWT; `@Public()` bypass) → `PermissionsGuard` (`@RequirePermission`, ANY-OF, live effective permissions) → `ThrottlerUserGuard` (per-user rate limit) → `InactivityLockGuard` (server-enforced inactivity lock; `@SkipInactivityLock` bypass)
 3. `ResponseInterceptor` — wraps successful responses in `{ data: T }`
+
+`CondominiumAccessGuard` is applied per controller (not global) — see Auth & Authorization.
 
 ## Auth & Authorization
 
@@ -76,13 +85,19 @@ All 21 modules — each is `*.module.ts` + `*.controller.ts` + `*.service.ts` + 
 { sub: string; email: string; role: UserRole; condominiumId: string | null; condominiumSlug: string | null }
 ```
 
-**Roles**: `ROOT | TENANT_ADMIN | READ_ONLY | GUARD | NEIGHBOR`
+**Authorization is permission-based (dynamic RBAC).** Enforcement reads each user's
+*effective* permissions live from the DB (cached) via `PermissionsGuard`; mutations
+declare `@RequirePermission('key', …)` (ANY-OF). Per-user `User.permissionOverrides`
+(JSONB, nullable) freeze-frame a user's set independent of their role. The `roles`
+module manages role↔permission assignment. A role or permission change applies on the
+next request — **no re-login**. Do not gate logic on a hardcoded role when a permission
+key exists. System roles (`UserRole` enum): `ROOT` · `SUPERVISOR` · `TENANT_ADMIN` ·
+`READ_ONLY` (Auditor) · `GUARD` (Security) · `RESIDENT`. Detail → vault:
+`03 - API (NestJS)/Security - API.md` + `04 - Shared/Roles & Permissions (RBAC).md`.
 
-**Multi-tenancy guard** (`CondominiumAccessGuard`):
-- Applied via `@UseGuards(CondominiumAccessGuard, RolesGuard)` on tenant-scoped controllers
-- Extracts `:condominiumSlug` from route params, validates condominium exists + is active
-- Sets `request.condominiumId` for downstream service calls
-- ROOT bypasses tenant ownership check
+**Tenant isolation** (`CondominiumAccessGuard`, applied per tenant-scoped controller via `@UseGuards`):
+- Extracts `:condominiumSlug` from route params, validates the condominium exists + is active
+- Sets `request.condominiumId` for downstream service calls; `ROOT` bypasses the ownership check inside the guard (services never re-implement it)
 
 **Route prefix pattern**: `/condominiums/:condominiumSlug/[resource]`
 
@@ -117,6 +132,16 @@ NestJS exception classes map to HTTP codes: `NotFoundException` → 404, `Confli
 - **Password hashing** — `bcryptjs` with `SALT_ROUNDS = 12` (inline in auth + users services; `bcryptjs`, not `bcrypt`, for Vercel serverless compatibility)
 - **Refresh token storage** — `RefreshToken` model; revocation via `revokedAt` field
 
+## Reuse & Change Discipline
+
+Reuse the established pattern before adding code — don't fork it. A new endpoint reuses
+`PaginatedResult<T>`, the global guard chain + `@RequirePermission`, `safeSelect()`, and
+`registerAs()` config; it never re-implements pagination, tenant scoping, the `ROOT`
+bypass, or password hashing. Cross-service side effects flow through the event emitter
+(ADR-010), not direct service-to-service calls. When a shared pattern is genuinely
+missing, add it once under `common/` and reuse it — never copy logic between modules.
+Schema/index changes are evidence-driven (see below), never speculative.
+
 ## Endpoint & Data Access Standards
 
 Invariants from the v1 API Performance & Risk Review (see `docs/api-review/v1/2026-05-13/`). Every new endpoint and every modification to an existing one must satisfy each of these — they are the contract that keeps the API ready to grow.
@@ -136,17 +161,11 @@ Invariants from the v1 API Performance & Risk Review (see `docs/api-review/v1/20
 Schema changes are **evidence-driven**. Do NOT add composite indexes, new constraints, or migrations speculatively. Each change must be backed by one of: (a) representative `EXPLAIN ANALYZE` showing the current plan is the bottleneck, (b) production slow-query log evidence, or (c) measured row-count thresholds (e.g. `audit_logs > ~500k` per tenant, `import_batches > ~250k`). When the measurement infrastructure is missing, document the gap and defer — never guess. Write the smallest delta that solves the problem; use `CREATE INDEX CONCURRENTLY` on populated tables; never remove an `@@index` / `@@unique` without measured evidence its dependent query was retired. Reference: Phase 8 evaluation in `docs/api-review/v1/2026-05-13/progress/overall-progress.md`.
 
 ## Environment Variables
-```
-PORT                    default 3001
-NODE_ENV
-DATABASE_URL            pooled (pgbouncer=true)
-DIRECT_URL              direct postgres connection
-JWT_SECRET              minimum 32 chars
-JWT_REFRESH_SECRET      minimum 32 chars, different from JWT_SECRET
-JWT_EXPIRES_IN          default 15m
-JWT_REFRESH_EXPIRES_IN  default 7d
-CORS_ORIGIN             comma-separated list of allowed origins
-```
+
+Full list with defaults, constraints, and comments → `.env.example` (authoritative).
+Minimum to boot: `DATABASE_URL` (pooled, `pgbouncer=true`), `DIRECT_URL` (migrations),
+`JWT_SECRET` + `JWT_REFRESH_SECRET` (≥32 chars, distinct), `CORS_ORIGIN`. `PORT` defaults
+to `3001`.
 
 ## Scripts
 ```
@@ -154,29 +173,25 @@ npm run start:dev         nest start --watch
 npm run build             nest build  →  dist/
 npm run start:prod        node dist/main
 npm run lint              eslint --fix
+npm run typecheck         tsc --noEmit
 npm test                  jest
+npm run test:cov          jest --coverage
 npm run prisma:generate   run after schema changes
 npm run prisma:migrate    prisma migrate dev
 npm run prisma:deploy     prisma migrate deploy (CI/production)
 npm run prisma:seed       ts-node prisma/seed.ts
+npm run prisma:reconcile-system-roles   sync system roles + permission catalog
+npm run prisma:studio     prisma studio
 ```
 
 ## Seed Data / Dev Credentials
 
-`npm run prisma:seed` (`prisma/seed.ts`) populates 10 test condominiums with users,
-residents, common areas, inventory, and bank data. Login accounts follow a fixed pattern:
-
-| Account | Email | Password | Role |
-|---|---|---|---|
-| Platform root | `root@demo.com` | `Root1234!` | `ROOT` |
-| Tenant admin | `admin@<slug>.com` | `Admin1234!` | `TENANT_ADMIN` |
-| Read-only viewer | `view@<slug>.com` | `View1234!` | `READ_ONLY` |
-| Guard | `guard@<slug>.com` | `Guard1234!` | `GUARD` |
-
-Condominium slugs: `cotoalameda` · `cotolospatos` · `cotoencinos` · `bosquesdellago` ·
-`cotovalledorado` · `vistaroble` · `puertadelsol` · `jardinesdelvalley` ·
-`altosdelparque` · `senderosdelsbosque`. Not every condominium seeds all four account
-types and some accounts are seeded inactive — see `prisma/seed.ts` for the exact matrix.
+`npm run prisma:seed` (`prisma/seed.ts`) populates 10 demo condominiums with users,
+residents, common areas, inventory, and bank data. Accounts follow a fixed pattern
+(`root@demo.com` platform-wide, plus `admin@<slug>.com` / `view@<slug>.com` /
+`guard@<slug>.com` per condominium). Not every condominium seeds every role and some
+accounts seed inactive. **Authoritative credential matrix → `README.md` §"Test Accounts"
+and `prisma/seed.ts`.**
 
 ## Git & Version Control Rules
 
