@@ -619,38 +619,38 @@ export class NotificationsService {
   }
 
   /**
-   * Best-effort Web Push for a freshly written notification. Looks up the
-   * recipient's stored subscription (keyed by the unique userId+condominiumId
-   * pair) and sends an OS push. Notifications without a user or condominium
-   * (e.g. ROOT cross-tenant rows) have no per-tenant subscription and are
-   * skipped. Short-circuits when VAPID is not configured so we avoid a DB read.
+   * Best-effort Web Push for a freshly written notification. Fans out to every
+   * registered device for the recipient's (userId, condominiumId) pair so push
+   * reaches their phone and desktop at once (notifications iter2 — multi-device).
+   * Notifications without a user or condominium (e.g. ROOT cross-tenant rows)
+   * have no per-tenant subscription and are skipped. Short-circuits when VAPID
+   * is not configured so we avoid a DB read. Each send runs independently
+   * (`Promise.allSettled`) so one dead device never blocks the others.
    */
   private async dispatchWebPush(row: Notification): Promise<void> {
     if (!row.userId || !row.condominiumId) return;
     if (!this.webPush.isConfigured()) return;
     try {
-      const preference =
-        await this.prisma.whatsAppNotificationPreference.findUnique({
-          where: {
-            userId_condominiumId: {
-              userId: row.userId,
-              condominiumId: row.condominiumId,
+      const subscriptions = await this.prisma.pushSubscription.findMany({
+        where: { userId: row.userId, condominiumId: row.condominiumId },
+        select: { id: true, endpoint: true, p256dh: true, auth: true },
+      });
+      if (subscriptions.length === 0) return;
+      await Promise.allSettled(
+        subscriptions.map((sub) =>
+          this.webPush.sendToSubscription(
+            sub.id,
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            {
+              title: row.title,
+              body: row.message,
+              // Per-notification tag so distinct alerts don't replace each other,
+              // while a re-aggregated row reuses its tag to update in place.
+              tag: `notification-${row.id}`,
+              url: row.linkUrl ?? '/notifications',
             },
-          },
-          select: { id: true, pushSubscriptionJson: true },
-        });
-      if (!preference?.pushSubscriptionJson) return;
-      await this.webPush.sendToPreference(
-        preference.id,
-        preference.pushSubscriptionJson,
-        {
-          title: row.title,
-          body: row.message,
-          // Per-notification tag so distinct alerts don't replace each other,
-          // while a re-aggregated row reuses its tag to update in place.
-          tag: `notification-${row.id}`,
-          url: row.linkUrl ?? '/notifications',
-        },
+          ),
+        ),
       );
     } catch (err) {
       this.logger.warn(

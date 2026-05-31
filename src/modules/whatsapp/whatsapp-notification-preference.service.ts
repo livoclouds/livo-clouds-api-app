@@ -148,12 +148,15 @@ export class WhatsAppNotificationPreferenceService {
   }
 
   /**
-   * Store a Web Push subscription for the current admin (Phase 5).
+   * Register (or refresh) a Web Push subscription for the current admin's device
+   * (notifications iter2 — multi-device).
    *
    * The payload is validated and reduced to the canonical Web Push shape before
-   * persistence — extra client-supplied fields are dropped. The subscription is
-   * scoped to (userId, condominiumId) by the unique preference row, so an admin
-   * can only ever manage their own subscription for the current condominium.
+   * persistence. Subscriptions are upserted by their globally unique `endpoint`,
+   * so a phone and a desktop coexist as separate rows for the same
+   * (userId, condominiumId); re-registering the same browser refreshes its keys
+   * and `lastSeenAt` instead of creating a duplicate. The deprecated single
+   * `pushSubscriptionJson` field is no longer written.
    */
   async savePushSubscription(
     condominiumId: string,
@@ -161,11 +164,21 @@ export class WhatsAppNotificationPreferenceService {
     subscription: Record<string, unknown> | undefined,
   ) {
     const validated = this.validatePushSubscription(subscription);
-    const preference = await this.getForCurrentUser(condominiumId, userId);
-    const updated = await this.prisma.whatsAppNotificationPreference.update({
-      where: { id: preference.id },
-      data: {
-        pushSubscriptionJson: validated as unknown as Prisma.InputJsonValue,
+    const saved = await this.prisma.pushSubscription.upsert({
+      where: { endpoint: validated.endpoint },
+      create: {
+        userId,
+        condominiumId,
+        endpoint: validated.endpoint,
+        p256dh: validated.keys.p256dh,
+        auth: validated.keys.auth,
+      },
+      update: {
+        userId,
+        condominiumId,
+        p256dh: validated.keys.p256dh,
+        auth: validated.keys.auth,
+        lastSeenAt: new Date(),
       },
     });
 
@@ -175,22 +188,27 @@ export class WhatsAppNotificationPreferenceService {
       action: 'WHATSAPP_PUSH_SUBSCRIPTION_UPDATED',
       actionCategory: 'COMMUNICATIONS',
       module: 'WHATSAPP',
-      entityType: 'WhatsAppNotificationPreference',
-      entityId: updated.id,
+      entityType: 'PushSubscription',
+      entityId: saved.id,
       result: 'SUCCESS',
       description: 'Web Push subscription registered',
       afterState: { pushEnabled: true },
     });
 
-    return updated;
+    return saved;
   }
 
-  async removePushSubscription(condominiumId: string, userId: string) {
-    const preference = await this.getForCurrentUser(condominiumId, userId);
-    const updated = await this.prisma.whatsAppNotificationPreference.update({
-      where: { id: preference.id },
-      data: { pushSubscriptionJson: Prisma.JsonNull },
-    });
+  /**
+   * Remove a Web Push subscription. When an `endpoint` is supplied only that
+   * device is unsubscribed (the user's other devices keep receiving push); when
+   * omitted, every subscription for the current (userId, condominiumId) is
+   * removed — a full opt-out from this browser context.
+   */
+  async removePushSubscription(condominiumId: string, userId: string, endpoint?: string) {
+    const where = endpoint
+      ? { userId, condominiumId, endpoint }
+      : { userId, condominiumId };
+    const result = await this.prisma.pushSubscription.deleteMany({ where });
 
     await this.auditService.log({
       condominiumId,
@@ -198,14 +216,14 @@ export class WhatsAppNotificationPreferenceService {
       action: 'WHATSAPP_PUSH_SUBSCRIPTION_REMOVED',
       actionCategory: 'COMMUNICATIONS',
       module: 'WHATSAPP',
-      entityType: 'WhatsAppNotificationPreference',
-      entityId: updated.id,
+      entityType: 'PushSubscription',
+      entityId: endpoint ?? 'all',
       result: 'SUCCESS',
-      description: 'Web Push subscription removed',
-      afterState: { pushEnabled: false },
+      description: `Web Push subscription removed (${result.count})`,
+      afterState: { removed: result.count, scope: endpoint ? 'device' : 'all-devices' },
     });
 
-    return updated;
+    return { removed: result.count };
   }
 
   /**

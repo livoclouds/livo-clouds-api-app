@@ -324,6 +324,7 @@ model Condominium {
   bankProfiles                     BankProfile[]
   r2AccessLogs                     R2AccessLog[]
   visitorLogs                      VisitorLog[]
+  pushSubscriptions                PushSubscription[]
 
   @@map("condominiums")
 }
@@ -440,6 +441,7 @@ model User {
   notificationPreferences   UserNotificationPreference[]
   rootNotificationScope     RootNotificationScope?
   r2AccessLogs              R2AccessLog[]
+  pushSubscriptions         PushSubscription[]
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -1278,6 +1280,10 @@ model WhatsAppNotificationPreference {
   notifyChannel           WhatsAppNotifyChannel @default(WHATSAPP)
   personalPhoneNumber     String?
   personalPhoneVerifiedAt DateTime?
+  // DEPRECATED (notifications iter2): single-device Web Push subscription.
+  // Superseded by the multi-device `PushSubscription` table; backfilled by
+  // migration `20260601140000_add_push_subscriptions` and no longer written.
+  // Kept one release for rollback safety; a follow-up migration drops it.
   pushSubscriptionJson    Json?
   reNotifyAfterMinutes    Int?
   createdAt               DateTime              @default(now())
@@ -1289,6 +1295,28 @@ model WhatsAppNotificationPreference {
   @@unique([userId, condominiumId])
   @@index([condominiumId, personalPhoneNumber])
   @@map("whatsapp_notification_preferences")
+}
+
+/// One Web Push subscription per browser/device (notifications iter2 — multi-device).
+/// Replaces the single `WhatsAppNotificationPreference.pushSubscriptionJson` field so a
+/// user can receive push on phone + desktop simultaneously. `endpoint` is globally unique
+/// (it identifies the browser push channel); dispatch fans out to every row for a
+/// `(userId, condominiumId)` pair, and a gone (404/410) subscription deletes its own row.
+model PushSubscription {
+  id            String   @id @default(uuid())
+  userId        String
+  condominiumId String
+  endpoint      String   @unique
+  p256dh        String
+  auth          String
+  createdAt     DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+
+  @@index([userId, condominiumId])
+  @@map("push_subscriptions")
 }
 
 model R2AccessLog {

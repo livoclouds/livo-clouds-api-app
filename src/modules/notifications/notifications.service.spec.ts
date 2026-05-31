@@ -37,6 +37,9 @@ interface PrismaMock {
   whatsAppNotificationPreference: {
     findUnique: jest.Mock;
   };
+  pushSubscription: {
+    findMany: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -47,6 +50,7 @@ interface GatewayMock {
 interface WebPushMock {
   isConfigured: jest.Mock;
   sendToPreference: jest.Mock;
+  sendToSubscription: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
@@ -80,6 +84,9 @@ function makePrismaMock(): PrismaMock {
     whatsAppNotificationPreference: {
       findUnique: jest.fn().mockResolvedValue(null),
     },
+    pushSubscription: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     $transaction: jest.fn(),
   };
   mock.$transaction.mockImplementation(async (arg: unknown) => {
@@ -102,6 +109,7 @@ function makeWebPushMock(): WebPushMock {
   return {
     isConfigured: jest.fn().mockReturnValue(true),
     sendToPreference: jest.fn().mockResolvedValue(true),
+    sendToSubscription: jest.fn().mockResolvedValue(true),
   };
 }
 
@@ -474,7 +482,7 @@ describe('NotificationsService.tryAggregate gateway fan-out', () => {
 });
 
 describe('NotificationsService.tryAggregate web push fan-out', () => {
-  it('pushes to the recipient subscription after persisting a new row', async () => {
+  it('fans out to every registered device after persisting a new row', async () => {
     const prisma = makePrismaMock();
     const webPush = makeWebPushMock();
     const created = {
@@ -488,27 +496,23 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
     };
     prisma.notification.findFirst.mockResolvedValueOnce(null);
     prisma.notification.create.mockResolvedValueOnce(created);
-    prisma.whatsAppNotificationPreference.findUnique.mockResolvedValueOnce({
-      id: 'pref-1',
-      pushSubscriptionJson: { endpoint: 'https://push.test/x', keys: {} },
-    });
+    prisma.pushSubscription.findMany.mockResolvedValueOnce([
+      { id: 'sub-phone', endpoint: 'https://push.test/phone', p256dh: 'p1', auth: 'a1' },
+      { id: 'sub-desktop', endpoint: 'https://push.test/desktop', p256dh: 'p2', auth: 'a2' },
+    ]);
     const service = makeService(prisma, makeGatewayMock(), webPush);
 
     await service.tryAggregate(eventInput());
 
-    expect(prisma.whatsAppNotificationPreference.findUnique).toHaveBeenCalledWith(
+    expect(prisma.pushSubscription.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          userId_condominiumId: {
-            userId: USER_ID,
-            condominiumId: CONDOMINIUM_ID,
-          },
-        },
+        where: { userId: USER_ID, condominiumId: CONDOMINIUM_ID },
       }),
     );
-    expect(webPush.sendToPreference).toHaveBeenCalledWith(
-      'pref-1',
-      { endpoint: 'https://push.test/x', keys: {} },
+    expect(webPush.sendToSubscription).toHaveBeenCalledTimes(2);
+    expect(webPush.sendToSubscription).toHaveBeenCalledWith(
+      'sub-phone',
+      { endpoint: 'https://push.test/phone', keys: { p256dh: 'p1', auth: 'a1' } },
       expect.objectContaining({
         title: 'Import completed',
         body: 'Your import finished',
@@ -516,9 +520,14 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
         url: '/dashboard/imports/batch-1',
       }),
     );
+    expect(webPush.sendToSubscription).toHaveBeenCalledWith(
+      'sub-desktop',
+      { endpoint: 'https://push.test/desktop', keys: { p256dh: 'p2', auth: 'a2' } },
+      expect.objectContaining({ tag: 'notification-notif-new' }),
+    );
   });
 
-  it('skips web push when the recipient has no stored subscription', async () => {
+  it('skips web push when the recipient has no registered device', async () => {
     const prisma = makePrismaMock();
     const webPush = makeWebPushMock();
     prisma.notification.findFirst.mockResolvedValueOnce(null);
@@ -529,12 +538,12 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
       title: 't',
       message: 'm',
     });
-    prisma.whatsAppNotificationPreference.findUnique.mockResolvedValueOnce(null);
+    prisma.pushSubscription.findMany.mockResolvedValueOnce([]);
     const service = makeService(prisma, makeGatewayMock(), webPush);
 
     await service.tryAggregate(eventInput());
 
-    expect(webPush.sendToPreference).not.toHaveBeenCalled();
+    expect(webPush.sendToSubscription).not.toHaveBeenCalled();
   });
 
   it('skips the subscription lookup entirely when VAPID is not configured', async () => {
@@ -553,8 +562,8 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
 
     await service.tryAggregate(eventInput());
 
-    expect(prisma.whatsAppNotificationPreference.findUnique).not.toHaveBeenCalled();
-    expect(webPush.sendToPreference).not.toHaveBeenCalled();
+    expect(prisma.pushSubscription.findMany).not.toHaveBeenCalled();
+    expect(webPush.sendToSubscription).not.toHaveBeenCalled();
   });
 });
 

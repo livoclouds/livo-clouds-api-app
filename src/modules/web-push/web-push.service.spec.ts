@@ -21,6 +21,7 @@ const PAYLOAD = {
 function makeService(opts: { configured?: boolean } = {}) {
   const prisma = {
     whatsAppNotificationPreference: { update: jest.fn().mockResolvedValue({}) },
+    pushSubscription: { deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
   };
   const configService = {
     get: jest.fn((key: string, fallback: string) => {
@@ -104,5 +105,35 @@ describe('WebPushService', () => {
     const ok = await service.sendToPreference('pref-1', VALID_SUB, PAYLOAD);
     expect(ok).toBe(false);
     expect(webpush.sendNotification).not.toHaveBeenCalled();
+  });
+
+  describe('sendToSubscription (multi-device)', () => {
+    it('delivers to a single device row and returns true', async () => {
+      const { service } = makeService();
+      (webpush.sendNotification as jest.Mock).mockResolvedValue({});
+      const ok = await service.sendToSubscription('sub-1', VALID_SUB, PAYLOAD);
+      expect(ok).toBe(true);
+      const [, payload] = (webpush.sendNotification as jest.Mock).mock.calls[0];
+      expect(JSON.parse(payload as string)).toEqual(PAYLOAD);
+    });
+
+    it('deletes only the gone device row on 410, keeping the legacy field untouched', async () => {
+      const { service, prisma } = makeService();
+      (webpush.sendNotification as jest.Mock).mockRejectedValue({ statusCode: 410 });
+      const ok = await service.sendToSubscription('sub-gone', VALID_SUB, PAYLOAD);
+      expect(ok).toBe(false);
+      expect(prisma.pushSubscription.deleteMany).toHaveBeenCalledWith({
+        where: { id: 'sub-gone' },
+      });
+      expect(prisma.whatsAppNotificationPreference.update).not.toHaveBeenCalled();
+    });
+
+    it('keeps the device row on a transient (500) delivery error', async () => {
+      const { service, prisma } = makeService();
+      (webpush.sendNotification as jest.Mock).mockRejectedValue({ statusCode: 500 });
+      const ok = await service.sendToSubscription('sub-1', VALID_SUB, PAYLOAD);
+      expect(ok).toBe(false);
+      expect(prisma.pushSubscription.deleteMany).not.toHaveBeenCalled();
+    });
   });
 });
