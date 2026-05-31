@@ -9,7 +9,7 @@ export enum UserRole {
   TENANT_ADMIN = 'TENANT_ADMIN',
   READ_ONLY = 'READ_ONLY',
   GUARD = 'GUARD',
-  NEIGHBOR = 'NEIGHBOR',
+  RESIDENT = 'RESIDENT',
 }
 
 export enum OnboardingStatus {

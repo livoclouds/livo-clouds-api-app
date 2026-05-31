@@ -615,7 +615,7 @@ async function main() {
       { email: 'admin@cotoalameda.com', ph: hashAdmin, role: 'TENANT_ADMIN', firstName: 'Carlos', lastName: 'Mendoza', phone: '+52 81 8356 1201', active: true },
       { email: 'view@cotoalameda.com', ph: hashView, role: 'READ_ONLY', firstName: 'Ana', lastName: 'Torres', phone: '+52 81 8356 1202', active: true },
       { email: 'guard@cotoalameda.com', ph: hashGuard, role: 'GUARD', firstName: 'Roberto', lastName: 'Flores', phone: '+52 81 8356 1203', active: false },
-      { email: 'vecino@cotoalameda.com', ph: hashNeighbor, role: 'NEIGHBOR', firstName: 'Daniela', lastName: 'Ríos', phone: '+52 81 8356 1204', active: true },
+      { email: 'vecino@cotoalameda.com', ph: hashNeighbor, role: 'RESIDENT', firstName: 'Daniela', lastName: 'Ríos', phone: '+52 81 8356 1204', active: true },
     ],
     // 1 cotolospatos
     [

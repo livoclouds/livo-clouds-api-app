@@ -398,7 +398,7 @@ export class NotificationsService {
   }
 
   /**
-   * A booking confirmation reaches a NEIGHBOR only when the booking's resident
+   * A booking confirmation reaches a RESIDENT only when the booking's resident
    * unit belongs to that user. The sole User-to-unit bridge available today is
    * a shared email address with the Resident row — see OQ-NT-13. Other roles
    * are unaffected.
@@ -413,7 +413,7 @@ export class NotificationsService {
   ): Promise<T[]> {
     if (
       type !== NotificationType.CALENDAR_BOOKING_CONFIRMED ||
-      !candidates.some((u) => u.role === UserRole.NEIGHBOR)
+      !candidates.some((u) => u.role === UserRole.RESIDENT)
     ) {
       return candidates;
     }
@@ -423,7 +423,7 @@ export class NotificationsService {
     );
     const ownerEmailLower = ownerEmail?.toLowerCase() ?? null;
     return candidates.filter((u) => {
-      if (u.role !== UserRole.NEIGHBOR) {
+      if (u.role !== UserRole.RESIDENT) {
         return true;
       }
       return (
@@ -493,7 +493,7 @@ export class NotificationsService {
 
   /**
    * Fan-out entry point for Phase 3 domain listeners. Resolves the recipient
-   * set for `type` from the role matrix (preferences, ROOT scope, NEIGHBOR
+   * set for `type` from the role matrix (preferences, ROOT scope, RESIDENT
    * owner filter and actor exclusion all applied), then writes one — possibly
    * aggregated — notification per recipient. This wrapper is what the
    * architecture's "centralized recipient resolution" decision refers to:

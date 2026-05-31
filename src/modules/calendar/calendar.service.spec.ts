@@ -736,12 +736,12 @@ describe('CalendarService — Phase 5C visibility', () => {
     expect(args.where.visibility).toEqual({ in: [CalendarEventVisibility.PUBLIC] });
   });
 
-  it('list restricts NEIGHBOR to PUBLIC only', async () => {
+  it('list restricts RESIDENT to PUBLIC only', async () => {
     const prisma = makePrismaMock();
     const audit = makeAuditMock();
     const service = makeService(prisma, audit);
 
-    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.NEIGHBOR);
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never, UserRole.RESIDENT);
 
     const args = prisma.calendarEvent.findMany.mock.calls[0][0] as {
       where: Record<string, unknown>;
@@ -749,7 +749,7 @@ describe('CalendarService — Phase 5C visibility', () => {
     expect(args.where.visibility).toEqual({ in: [CalendarEventVisibility.PUBLIC] });
   });
 
-  it('findOne hides COUNCIL_ONLY events from NEIGHBOR (404)', async () => {
+  it('findOne hides COUNCIL_ONLY events from RESIDENT (404)', async () => {
     const prisma = makePrismaMock();
     const audit = makeAuditMock();
     const service = makeService(prisma, audit);
@@ -759,7 +759,7 @@ describe('CalendarService — Phase 5C visibility', () => {
     );
 
     await expect(
-      service.findOne(CONDOMINIUM_ID, EVENT_ID, UserRole.NEIGHBOR),
+      service.findOne(CONDOMINIUM_ID, EVENT_ID, UserRole.RESIDENT),
     ).rejects.toThrow('Calendar event not found');
   });
 
@@ -815,7 +815,7 @@ describe('CalendarService — Phase 5C visibility', () => {
     expect(result.visibility).toBe(CalendarEventVisibility.PRIVATE);
   });
 
-  it('findOne still returns PUBLIC events to NEIGHBOR (regression for default behavior)', async () => {
+  it('findOne still returns PUBLIC events to RESIDENT (regression for default behavior)', async () => {
     const prisma = makePrismaMock();
     const audit = makeAuditMock();
     const service = makeService(prisma, audit);
@@ -825,7 +825,7 @@ describe('CalendarService — Phase 5C visibility', () => {
     const result = (await service.findOne(
       CONDOMINIUM_ID,
       EVENT_ID,
-      UserRole.NEIGHBOR,
+      UserRole.RESIDENT,
     )) as Record<string, unknown>;
 
     expect(result.id).toBe(EVENT_ID);

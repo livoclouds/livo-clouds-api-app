@@ -39,11 +39,11 @@ describe('permission-catalog', () => {
   describe('system roles', () => {
     it('defines exactly the six keyed system roles', () => {
       expect(SYSTEM_ROLES.map((r) => r.key).sort()).toEqual(
-        ['GUARD', 'NEIGHBOR', 'READ_ONLY', 'ROOT', 'SUPERVISOR', 'TENANT_ADMIN'].sort(),
+        ['GUARD', 'RESIDENT', 'READ_ONLY', 'ROOT', 'SUPERVISOR', 'TENANT_ADMIN'].sort(),
       );
     });
 
-    it('ROOT (Developer) gets the full catalog', () => {
+    it('ROOT gets the full catalog', () => {
       expect(presetForRole('ROOT').sort()).toEqual([...ALL_PERMISSION_KEYS].sort());
     });
 

@@ -33,7 +33,7 @@ export interface CalendarBookingConfirmedEventPayload {
    * Terrace model is introduced. See OQ-NT-18.
    */
   terraceId: string | null;
-  /** Resident the booking belongs to; drives the NEIGHBOR owner filter. */
+  /** Resident the booking belongs to; drives the RESIDENT owner filter. */
   residentId: string | null;
   /** ISO-8601 start timestamp. */
   startsAt: string;

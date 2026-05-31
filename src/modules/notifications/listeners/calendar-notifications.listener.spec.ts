@@ -58,7 +58,7 @@ describe('CalendarNotificationsListener', () => {
     );
   });
 
-  it('maps calendar.booking_confirmed to CALENDAR_BOOKING_CONFIRMED including residentId for the NEIGHBOR filter', async () => {
+  it('maps calendar.booking_confirmed to CALENDAR_BOOKING_CONFIRMED including residentId for the RESIDENT filter', async () => {
     const notifications = makeNotificationsMock();
     const listener = new CalendarNotificationsListener(notifications as never);
 
@@ -84,7 +84,7 @@ describe('CalendarNotificationsListener', () => {
         actorUserId: 'user-9',
       }),
     );
-    // residentId is the field resolveRecipientsForType uses to filter NEIGHBOR
+    // residentId is the field resolveRecipientsForType uses to filter RESIDENT
     // recipients to the booking's owner.
     const call = notifications.dispatchEvent.mock.calls[0][0] as {
       data: { residentId: unknown };
