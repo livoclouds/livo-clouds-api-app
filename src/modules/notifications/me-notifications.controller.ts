@@ -31,6 +31,8 @@ export class MeNotificationsController {
       unreadOnly: dto.unreadOnly,
       readOnly: dto.readOnly,
       includeDismissed: dto.includeDismissed,
+      snoozedOnly: dto.snoozedOnly,
+      includeSnoozed: dto.includeSnoozed,
       types: dto.types,
       from: dto.from,
       to: dto.to,

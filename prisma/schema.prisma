@@ -907,6 +907,7 @@ model Notification {
   linkUrl        String?
   readAt         DateTime?
   dismissedAt    DateTime?
+  snoozedUntil   DateTime?
   aggregateCount Int              @default(1)
   aggregateUntil DateTime?
   createdAt      DateTime         @default(now())
@@ -921,6 +922,7 @@ model Notification {
   @@index([createdAt])
   @@index([userId, isRead, createdAt(sort: Desc)])
   @@index([userId, type, aggregateUntil])
+  @@index([userId, snoozedUntil])
   @@map("notifications")
 }
 
