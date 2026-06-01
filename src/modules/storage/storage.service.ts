@@ -89,15 +89,23 @@ export class StorageService {
     return key;
   }
 
+  /**
+   * Sign a temporary GET URL for an object.
+   *
+   * `log` defaults to `true` and records an R2 access-log entry. Pass `false`
+   * for high-frequency, low-sensitivity thumbnails (e.g. avatar clusters in
+   * list views) where logging every presign would flood the audit table.
+   */
   async getPresignedUrl(
     key: string,
     expiresIn = 3600,
     ctx?: AccessLogContext,
+    log = true,
   ): Promise<string> {
     if (!this.client) throw new Error('External storage is not configured');
     const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
     const url = await getSignedUrl(this.client, command, { expiresIn });
-    await this.recordAccess(key, R2AccessType.PRESIGNED_GET, ctx);
+    if (log) await this.recordAccess(key, R2AccessType.PRESIGNED_GET, ctx);
     return url;
   }
 

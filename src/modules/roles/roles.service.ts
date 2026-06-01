@@ -12,14 +12,21 @@ import {
 } from '../../common/rbac/permission-catalog';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
+
+/** Avatar thumbnails shown in role list views are low-sensitivity, high-frequency reads. */
+const AVATAR_PRESIGN_TTL_SECONDS = 3600;
+/** How many sample users (with avatars) the role list returns per role. */
+const ROLE_SAMPLE_USERS = 3;
 
 @Injectable()
 export class RolesService {
   constructor(
     private prisma: PrismaService,
     private rbac: RbacService,
+    private storage: StorageService,
   ) {}
 
   private roleSelect() {
@@ -44,7 +51,21 @@ export class RolesService {
         deletedAt: null,
         OR: [{ isSystem: true }, { condominiumId }],
       },
-      select: this.roleSelect(),
+      select: {
+        ...this.roleSelect(),
+        // First few assigned users so the UI can show an avatar cluster per role.
+        users: {
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            avatarUrl: true,
+          },
+          take: ROLE_SAMPLE_USERS,
+          orderBy: { createdAt: 'asc' },
+        },
+      },
       orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
     });
     // Attach assigned-user counts so the UI can warn before deletion.
@@ -56,7 +77,43 @@ export class RolesService {
     const countByRole = new Map(
       counts.map((c) => [c.roleId, c._count._all]),
     );
-    return roles.map((r) => ({ ...r, userCount: countByRole.get(r.id) ?? 0 }));
+    return Promise.all(
+      roles.map(async ({ users, ...r }) => ({
+        ...r,
+        userCount: countByRole.get(r.id) ?? 0,
+        sampleUsers: await Promise.all(
+          users.map(async (u) => ({
+            id: u.id,
+            name: `${u.firstName} ${u.lastName}`.trim(),
+            avatarUrl: await this.resolveAvatarUrl(u.avatarUrl, condominiumId),
+          })),
+        ),
+      })),
+    );
+  }
+
+  /**
+   * Resolve a stored avatar value into a renderable URL: pass through legacy
+   * absolute URLs, presign R2 object keys (without access-logging, since these
+   * are list-view thumbnails), or return null when unavailable.
+   */
+  private async resolveAvatarUrl(
+    value: string | null,
+    condominiumId: string | null,
+  ): Promise<string | null> {
+    if (!value) return null;
+    if (/^https?:\/\//i.test(value)) return value;
+    if (!this.storage.isConfigured()) return null;
+    try {
+      return await this.storage.getPresignedUrl(
+        value,
+        AVATAR_PRESIGN_TTL_SECONDS,
+        { condominiumId },
+        false,
+      );
+    } catch {
+      return null;
+    }
   }
 
   async findOne(condominiumId: string, id: string) {

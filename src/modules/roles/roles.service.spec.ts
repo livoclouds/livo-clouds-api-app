@@ -7,6 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { RolesService } from './roles.service';
 
 const CONDO = 'condo-1';
@@ -39,22 +40,28 @@ function makePrismaMock(): PrismaMock {
 describe('RolesService', () => {
   let prisma: PrismaMock;
   let rbac: { invalidateAll: jest.Mock; invalidateUser: jest.Mock };
+  let storage: { isConfigured: jest.Mock; getPresignedUrl: jest.Mock };
   let service: RolesService;
 
   beforeEach(() => {
     prisma = makePrismaMock();
     rbac = { invalidateAll: jest.fn(), invalidateUser: jest.fn() };
+    storage = {
+      isConfigured: jest.fn().mockReturnValue(true),
+      getPresignedUrl: jest.fn(),
+    };
     service = new RolesService(
       prisma as unknown as PrismaService,
       rbac as unknown as RbacService,
+      storage as unknown as StorageService,
     );
   });
 
   describe('findAll', () => {
-    it('returns system + custom roles with assigned-user counts', async () => {
+    it('returns system + custom roles with assigned-user counts and empty sampleUsers', async () => {
       prisma.role.findMany.mockResolvedValue([
-        { id: 'r-sys', isSystem: true, name: 'Administrator' },
-        { id: 'r-custom', isSystem: false, name: 'Council' },
+        { id: 'r-sys', isSystem: true, name: 'Administrator', users: [] },
+        { id: 'r-custom', isSystem: false, name: 'Council', users: [] },
       ]);
       prisma.user.groupBy.mockResolvedValue([
         { roleId: 'r-sys', _count: { _all: 3 } },
@@ -63,9 +70,61 @@ describe('RolesService', () => {
       const result = await service.findAll(CONDO);
 
       expect(result).toEqual([
-        { id: 'r-sys', isSystem: true, name: 'Administrator', userCount: 3 },
-        { id: 'r-custom', isSystem: false, name: 'Council', userCount: 0 },
+        { id: 'r-sys', isSystem: true, name: 'Administrator', userCount: 3, sampleUsers: [] },
+        { id: 'r-custom', isSystem: false, name: 'Council', userCount: 0, sampleUsers: [] },
       ]);
+    });
+
+    it('builds sampleUsers: passes through absolute URLs and presigns R2 keys without access-logging', async () => {
+      prisma.role.findMany.mockResolvedValue([
+        {
+          id: 'r-sys',
+          isSystem: true,
+          name: 'Administrator',
+          users: [
+            { id: 'u1', firstName: 'Ada', lastName: 'Lovelace', avatarUrl: 'condominiums/c/users/u1/avatar.png' },
+            { id: 'u2', firstName: 'Alan', lastName: 'Turing', avatarUrl: 'https://cdn.example.com/u2.png' },
+            { id: 'u3', firstName: 'Grace', lastName: 'Hopper', avatarUrl: null },
+          ],
+        },
+      ]);
+      prisma.user.groupBy.mockResolvedValue([{ roleId: 'r-sys', _count: { _all: 9 } }]);
+      storage.getPresignedUrl.mockResolvedValue('https://signed.example.com/u1.png');
+
+      const result = await service.findAll(CONDO);
+
+      expect(result[0].userCount).toBe(9); // total, not truncated to 3
+      expect(result[0].sampleUsers).toEqual([
+        { id: 'u1', name: 'Ada Lovelace', avatarUrl: 'https://signed.example.com/u1.png' },
+        { id: 'u2', name: 'Alan Turing', avatarUrl: 'https://cdn.example.com/u2.png' },
+        { id: 'u3', name: 'Grace Hopper', avatarUrl: null },
+      ]);
+      // Only the R2 key is presigned, and logging is disabled (4th arg false).
+      expect(storage.getPresignedUrl).toHaveBeenCalledTimes(1);
+      expect(storage.getPresignedUrl).toHaveBeenCalledWith(
+        'condominiums/c/users/u1/avatar.png',
+        3600,
+        { condominiumId: CONDO },
+        false,
+      );
+    });
+
+    it('returns null avatarUrl for R2 keys when storage is not configured', async () => {
+      storage.isConfigured.mockReturnValue(false);
+      prisma.role.findMany.mockResolvedValue([
+        {
+          id: 'r-sys',
+          isSystem: true,
+          name: 'Administrator',
+          users: [{ id: 'u1', firstName: 'Ada', lastName: 'Lovelace', avatarUrl: 'key/u1.png' }],
+        },
+      ]);
+      prisma.user.groupBy.mockResolvedValue([]);
+
+      const result = await service.findAll(CONDO);
+
+      expect(result[0].sampleUsers).toEqual([{ id: 'u1', name: 'Ada Lovelace', avatarUrl: null }]);
+      expect(storage.getPresignedUrl).not.toHaveBeenCalled();
     });
   });
 
