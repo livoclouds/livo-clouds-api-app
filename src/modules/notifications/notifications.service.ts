@@ -37,6 +37,10 @@ export interface ListNotificationsParams {
   /** Return only notifications that have already been read. */
   readOnly?: boolean;
   includeDismissed?: boolean;
+  /** Return only currently-snoozed notifications (for the "Snoozed" view). */
+  snoozedOnly?: boolean;
+  /** Include snoozed-and-not-yet-due notifications alongside the rest. */
+  includeSnoozed?: boolean;
   types?: NotificationType[];
   from?: string;
   to?: string;
@@ -90,6 +94,21 @@ function readStringField(
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * A notification is hidden by snooze while `snoozedUntil` is in the future. This
+ * predicate selects rows that are NOT currently snoozed (never snoozed, or the
+ * snooze has elapsed) — when the snooze passes, the row resurfaces naturally on
+ * the next query/sync. Spliced into every default-view query so snoozed rows
+ * drop out of the inbox, the unread count and the SSE snapshot until due.
+ */
+function notVisiblySnoozed(
+  now: Date,
+): Prisma.NotificationWhereInput {
+  return {
+    OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
+  };
+}
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -115,6 +134,14 @@ export class NotificationsService {
     if (!params.includeDismissed) {
       where.dismissedAt = null;
     }
+    const now = new Date();
+    if (params.snoozedOnly) {
+      // The dedicated "Snoozed" view: only rows still hidden by a future snooze.
+      where.snoozedUntil = { gt: now };
+    } else if (!params.includeSnoozed) {
+      // Default views hide snoozed-and-not-yet-due rows.
+      where.AND = [notVisiblySnoozed(now)];
+    }
     if (params.types && params.types.length > 0) {
       where.type = { in: params.types };
     }
@@ -133,6 +160,8 @@ export class NotificationsService {
       userId,
       readAt: null,
       dismissedAt: null,
+      // The badge count never includes snoozed-and-hidden rows.
+      AND: [notVisiblySnoozed(now)],
     };
     if (condominiumId) {
       unreadWhere.condominiumId = condominiumId;
@@ -158,7 +187,13 @@ export class NotificationsService {
 
   async getUnreadCount(condominiumId: string, userId: string) {
     const unreadCount = await this.prisma.notification.count({
-      where: { condominiumId, userId, readAt: null, dismissedAt: null },
+      where: {
+        condominiumId,
+        userId,
+        readAt: null,
+        dismissedAt: null,
+        AND: [notVisiblySnoozed(new Date())],
+      },
     });
     return { unreadCount };
   }
@@ -196,6 +231,39 @@ export class NotificationsService {
       where: { id: notification.id },
       data: { dismissedAt: new Date() },
       select: { id: true, dismissedAt: true },
+    });
+  }
+
+  /**
+   * Snoozes a notification until `snoozedUntil` (an absolute future instant).
+   * The row stays unread; it simply disappears from the default views until due,
+   * then resurfaces on the next query/sync. Read state is intentionally left
+   * untouched so a snoozed-then-due item returns in whatever state it had.
+   */
+  async snooze(
+    condominiumId: string,
+    id: string,
+    userId: string,
+    snoozedUntil: Date,
+  ) {
+    const notification = await this.findOwnedOrThrow(condominiumId, id, userId);
+    if (snoozedUntil.getTime() <= Date.now()) {
+      throw new BadRequestException('snoozedUntil must be in the future');
+    }
+    return this.prisma.notification.update({
+      where: { id: notification.id },
+      data: { snoozedUntil },
+      select: { id: true, snoozedUntil: true },
+    });
+  }
+
+  /** Clears a snooze so the notification returns to the inbox immediately. */
+  async unsnooze(condominiumId: string, id: string, userId: string) {
+    const notification = await this.findOwnedOrThrow(condominiumId, id, userId);
+    return this.prisma.notification.update({
+      where: { id: notification.id },
+      data: { snoozedUntil: null },
+      select: { id: true, snoozedUntil: true },
     });
   }
 
@@ -297,14 +365,26 @@ export class NotificationsService {
    * recent (non-dismissed) notifications, fetched in a single round trip.
    */
   async getStreamSync(condominiumId: string, userId: string) {
+    const now = new Date();
     const [recent, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
-        where: { userId, condominiumId, dismissedAt: null },
+        where: {
+          userId,
+          condominiumId,
+          dismissedAt: null,
+          AND: [notVisiblySnoozed(now)],
+        },
         orderBy: { createdAt: 'desc' },
         take: 20,
       }),
       this.prisma.notification.count({
-        where: { userId, condominiumId, readAt: null, dismissedAt: null },
+        where: {
+          userId,
+          condominiumId,
+          readAt: null,
+          dismissedAt: null,
+          AND: [notVisiblySnoozed(now)],
+        },
       }),
     ]);
     return { unreadCount, recent };
@@ -566,6 +646,10 @@ export class NotificationsService {
             aggregateUntil: { gt: now },
             readAt: null,
             dismissedAt: null,
+            // Never coalesce a new event into a currently-snoozed row, or the
+            // new occurrence would inherit the snooze and stay hidden. A fresh
+            // visible row is created instead.
+            OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
           },
           orderBy: { aggregateUntil: 'desc' },
         });

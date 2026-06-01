@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { NotificationType, RootScope } from '@prisma/client';
 import { UserRole } from '../../common/types';
 import { NotificationsService, NotificationEventInput } from './notifications.service';
@@ -214,6 +214,24 @@ describe('NotificationsService.tryAggregate', () => {
     expect(prisma.notification.update).not.toHaveBeenCalled();
   });
 
+  it('never coalesces into a currently-snoozed row (snooze guard in the candidate query)', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findFirst.mockResolvedValueOnce(null);
+    prisma.notification.create.mockResolvedValueOnce({ id: 'notif-new' });
+    const service = makeService(prisma);
+
+    await service.tryAggregate(eventInput());
+
+    const where = prisma.notification.findFirst.mock.calls[0][0].where as {
+      OR?: unknown;
+    };
+    expect(where.OR).toEqual([
+      { snoozedUntil: null },
+      { snoozedUntil: { lte: expect.any(Date) } },
+    ]);
+    expect(prisma.notification.create).toHaveBeenCalled();
+  });
+
   it('does not aggregate into a row where dismissedAt is not null', async () => {
     const prisma = makePrismaMock();
     prisma.notification.findFirst.mockResolvedValueOnce(null);
@@ -337,6 +355,118 @@ describe('NotificationsService.dismiss', () => {
     );
     expect(result).toEqual(
       expect.objectContaining({ dismissedAt: expect.any(Date) }),
+    );
+  });
+});
+
+describe('NotificationsService.snooze', () => {
+  it('sets snoozedUntil for an owned notification and leaves read state untouched', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findFirst.mockResolvedValueOnce({
+      id: 'notif-1',
+      userId: USER_ID,
+      readAt: null,
+      dismissedAt: null,
+    });
+    const until = new Date(Date.now() + 3_600_000);
+    prisma.notification.update.mockResolvedValueOnce({
+      id: 'notif-1',
+      snoozedUntil: until,
+    });
+    const service = makeService(prisma);
+
+    const result = await service.snooze(
+      CONDOMINIUM_ID,
+      'notif-1',
+      USER_ID,
+      until,
+    );
+
+    expect(prisma.notification.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'notif-1' },
+        data: { snoozedUntil: until },
+      }),
+    );
+    // Read state must NOT be modified by a snooze.
+    const data = prisma.notification.update.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(data).not.toHaveProperty('readAt');
+    expect(data).not.toHaveProperty('isRead');
+    expect(result).toEqual(
+      expect.objectContaining({ snoozedUntil: until }),
+    );
+  });
+
+  it('rejects a snoozedUntil that is not in the future', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findFirst.mockResolvedValueOnce({
+      id: 'notif-1',
+      userId: USER_ID,
+      readAt: null,
+      dismissedAt: null,
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.snooze(
+        CONDOMINIUM_ID,
+        'notif-1',
+        USER_ID,
+        new Date(Date.now() - 1000),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.notification.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects snoozing another user notification', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findFirst.mockResolvedValueOnce({
+      id: 'notif-1',
+      userId: 'someone-else',
+      readAt: null,
+      dismissedAt: null,
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.snooze(
+        CONDOMINIUM_ID,
+        'notif-1',
+        USER_ID,
+        new Date(Date.now() + 1000),
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('NotificationsService.unsnooze', () => {
+  it('clears snoozedUntil for an owned notification', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findFirst.mockResolvedValueOnce({
+      id: 'notif-1',
+      userId: USER_ID,
+      readAt: null,
+      dismissedAt: null,
+    });
+    prisma.notification.update.mockResolvedValueOnce({
+      id: 'notif-1',
+      snoozedUntil: null,
+    });
+    const service = makeService(prisma);
+
+    const result = await service.unsnooze(CONDOMINIUM_ID, 'notif-1', USER_ID);
+
+    expect(prisma.notification.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'notif-1' },
+        data: { snoozedUntil: null },
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({ snoozedUntil: null }),
     );
   });
 });
@@ -580,14 +710,34 @@ describe('NotificationsService.getStreamSync', () => {
     expect(result).toEqual({ unreadCount: 5, recent });
     expect(prisma.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           userId: USER_ID,
           condominiumId: CONDOMINIUM_ID,
           dismissedAt: null,
-        },
+          // Snoozed-and-not-yet-due rows are excluded from the SSE snapshot.
+          AND: [
+            { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: expect.any(Date) } }] },
+          ],
+        }),
         take: 20,
       }),
     );
+  });
+
+  it('excludes currently-snoozed notifications from the snapshot and count', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.findMany.mockResolvedValueOnce([]);
+    prisma.notification.count.mockResolvedValueOnce(0);
+    const service = makeService(prisma);
+
+    await service.getStreamSync(CONDOMINIUM_ID, USER_ID);
+
+    const countArgs = prisma.notification.count.mock.calls[0][0] as {
+      where: { AND?: unknown };
+    };
+    expect(countArgs.where.AND).toEqual([
+      { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: expect.any(Date) } }] },
+    ]);
   });
 });
 
@@ -665,6 +815,64 @@ describe('NotificationsService.list', () => {
       where: { readAt?: unknown };
     };
     expect(args.where.readAt).toBeNull();
+  });
+
+  it('hides snoozed-and-not-yet-due notifications by default', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      where: { AND?: unknown; snoozedUntil?: unknown };
+    };
+    expect(args.where.AND).toEqual([
+      { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: expect.any(Date) } }] },
+    ]);
+    expect(args.where.snoozedUntil).toBeUndefined();
+  });
+
+  it('returns only currently-snoozed rows when snoozedOnly is set', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+      snoozedOnly: true,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      where: { AND?: unknown; snoozedUntil?: unknown };
+    };
+    expect(args.where.snoozedUntil).toEqual({ gt: expect.any(Date) });
+    expect(args.where.AND).toBeUndefined();
+  });
+
+  it('includes snoozed rows when includeSnoozed is set', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.list({
+      userId: USER_ID,
+      condominiumId: CONDOMINIUM_ID,
+      page: 1,
+      limit: 20,
+      includeSnoozed: true,
+    });
+
+    const args = prisma.notification.findMany.mock.calls[0][0] as {
+      where: { AND?: unknown; snoozedUntil?: unknown };
+    };
+    expect(args.where.AND).toBeUndefined();
+    expect(args.where.snoozedUntil).toBeUndefined();
   });
 });
 

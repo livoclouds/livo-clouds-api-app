@@ -60,6 +60,22 @@ export class ListNotificationsDto {
   readOnly?: boolean;
 
   @ApiPropertyOptional({
+    description: 'Return only notifications that are currently snoozed.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  snoozedOnly?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Include snoozed-and-not-yet-due notifications in the result.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  includeSnoozed?: boolean;
+
+  @ApiPropertyOptional({
     description: 'Field to sort by.',
     enum: NOTIFICATION_SORT_FIELDS,
     default: 'createdAt',

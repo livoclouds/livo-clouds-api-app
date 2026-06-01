@@ -18,6 +18,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
+import { SnoozeNotificationDto } from './dto/snooze-notification.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import { NotificationsService } from './notifications.service';
 
@@ -42,6 +43,8 @@ export class NotificationsController {
       unreadOnly: dto.unreadOnly,
       readOnly: dto.readOnly,
       includeDismissed: dto.includeDismissed,
+      snoozedOnly: dto.snoozedOnly,
+      includeSnoozed: dto.includeSnoozed,
       types: dto.types,
       from: dto.from,
       to: dto.to,
@@ -113,5 +116,34 @@ export class NotificationsController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.notificationsService.dismiss(req.condominiumId, id, user.sub);
+  }
+
+  @Post(':id/snooze')
+  @RequirePermission('notifications.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Snooze a notification until a future instant' })
+  snooze(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SnoozeNotificationDto,
+  ) {
+    return this.notificationsService.snooze(
+      req.condominiumId,
+      id,
+      user.sub,
+      new Date(dto.snoozedUntil),
+    );
+  }
+
+  @Delete(':id/snooze')
+  @RequirePermission('notifications.read')
+  @ApiOperation({ summary: 'Clear a notification snooze (bring it back now)' })
+  unsnooze(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationsService.unsnooze(req.condominiumId, id, user.sub);
   }
 }
