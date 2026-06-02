@@ -47,6 +47,7 @@ describe('ImportsNotificationsListener', () => {
         data: { batchId: 'batch-1', rowCount: 142, currency: 'MXN' },
         linkUrl: `/condominiums/${SLUG}/imports/batch-1`,
         actorUserId: 'user-9',
+        includeActor: true,
       }),
     );
   });
@@ -73,6 +74,7 @@ describe('ImportsNotificationsListener', () => {
         },
         linkUrl: `/condominiums/${SLUG}/imports/batch-2`,
         actorUserId: 'user-9',
+        includeActor: true,
       }),
     );
   });
@@ -93,6 +95,7 @@ describe('ImportsNotificationsListener', () => {
         type: NotificationType.IMPORT_WITH_WARNINGS,
         data: { batchId: 'batch-3', warningCount: 7 },
         actorUserId: 'user-9',
+        includeActor: true,
       }),
     );
   });
@@ -117,6 +120,7 @@ describe('ImportsNotificationsListener', () => {
         },
         linkUrl: `/condominiums/${SLUG}/imports/batch-orig`,
         actorUserId: 'user-9',
+        includeActor: true,
       }),
     );
   });

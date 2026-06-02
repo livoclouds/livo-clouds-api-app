@@ -985,6 +985,45 @@ describe('NotificationsService.resolveRecipientsForType', () => {
     expect(result).toEqual(['admin-1']);
   });
 
+  it('keeps the actor in the recipient set when includeActor is true', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'a@x.com' },
+      { id: 'actor', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'actor@x.com' },
+    ]);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+      { actorUserId: 'actor', includeActor: true },
+    );
+
+    // The importer (actor) now receives the notification for their own import.
+    expect(result.sort()).toEqual(['actor', 'admin-1'].sort());
+  });
+
+  it('still drops the actor when includeActor is true but they opted out', async () => {
+    const prisma = makePrismaMock();
+    prisma.user.findMany.mockResolvedValueOnce([
+      { id: 'admin-1', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'a@x.com' },
+      { id: 'actor', roleRef: { key: UserRole.TENANT_ADMIN }, email: 'actor@x.com' },
+    ]);
+    // The actor disabled IMPORT_FAILED in their preferences — opt-out wins.
+    prisma.userNotificationPreference.findMany.mockResolvedValueOnce([
+      { userId: 'actor' },
+    ]);
+    const service = makeService(prisma);
+
+    const result = await service.resolveRecipientsForType(
+      NotificationType.IMPORT_FAILED,
+      CONDOMINIUM_ID,
+      { actorUserId: 'actor', includeActor: true },
+    );
+
+    expect(result).toEqual(['admin-1']);
+  });
+
   it('delivers CALENDAR_BOOKING_CONFIRMED to a RESIDENT only when their email matches the booking resident', async () => {
     const prisma = makePrismaMock();
     prisma.user.findMany.mockResolvedValueOnce([

@@ -65,6 +65,14 @@ export interface ResolveRecipientsOptions {
   eventData?: Record<string, unknown>;
   /** User who performed the action; excluded from the recipient set. */
   actorUserId?: string;
+  /**
+   * Keep the actor in the recipient set instead of excluding them. Used for
+   * events that confirm the actor's own action — notably the import family,
+   * where the person who ran the import wants to know its result. Every other
+   * filter (role matrix, ROOT scope, owner filter, preference opt-out) still
+   * applies, so the actor is included only when role-eligible and not opted-out.
+   */
+  includeActor?: boolean;
 }
 
 /**
@@ -81,8 +89,14 @@ export interface DispatchEventInput {
   message: string;
   data?: Prisma.InputJsonValue;
   linkUrl?: string | null;
-  /** Actor of the domain action; excluded from the recipient set. */
+  /** Actor of the domain action; excluded from the recipient set by default. */
   actorUserId?: string;
+  /**
+   * When true, the actor is NOT excluded — they receive the notification for
+   * their own action (subject to the role matrix and their preferences). Set by
+   * the import listeners so an importer is notified of their import's result.
+   */
+  includeActor?: boolean;
 }
 
 /** Reads a non-empty string field from an untyped event payload. */
@@ -434,10 +448,13 @@ export class NotificationsService {
     );
     candidates = await this.applyPreferenceOptOut(candidates, type);
 
-    // Never notify the actor about their own action.
-    const recipientIds = candidates
-      .map((u) => u.id)
-      .filter((id) => id !== options.actorUserId);
+    // By default the actor is never notified about their own action. Events
+    // that confirm the actor's own action (the import family) pass
+    // includeActor so the actor stays in — still gated by every filter above.
+    const ids = candidates.map((u) => u.id);
+    const recipientIds = options.includeActor
+      ? ids
+      : ids.filter((id) => id !== options.actorUserId);
     return Array.from(new Set(recipientIds));
   }
 
@@ -593,7 +610,11 @@ export class NotificationsService {
     const recipientIds = await this.resolveRecipientsForType(
       input.type,
       input.condominiumId,
-      { eventData, actorUserId: input.actorUserId },
+      {
+        eventData,
+        actorUserId: input.actorUserId,
+        includeActor: input.includeActor,
+      },
     );
 
     for (const userId of recipientIds) {
