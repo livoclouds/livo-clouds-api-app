@@ -684,6 +684,52 @@ export class NotificationsService {
       },
     );
 
+    await this.runFanOut(row, isAggregateUpdate);
+
+    return row;
+  }
+
+  /**
+   * Dev-only: writes a fresh, **non-aggregated** notification directly to a
+   * single user and runs the same best-effort fan-out as the production path.
+   * Unlike {@link createForEvent}, it never coalesces into an open aggregate
+   * row (its window is born already closed), so every call yields a distinct,
+   * toast-eligible arrival — exactly what the Notification Playground needs to
+   * exercise the live SSE pipeline end-to-end. Recipient resolution and actor
+   * exclusion are intentionally bypassed: the caller is the recipient. Its only
+   * caller (`NotificationsDevController`) is hard-gated to non-production.
+   */
+  async createDirectForUser(
+    input: NotificationEventInput,
+  ): Promise<Notification> {
+    const now = new Date();
+    const row = await this.prisma.notification.create({
+      data: {
+        userId: input.userId,
+        condominiumId: input.condominiumId,
+        type: input.type,
+        title: input.title,
+        message: input.message,
+        linkUrl: input.linkUrl ?? null,
+        aggregateCount: 1,
+        // Window already closed so no later real event coalesces into this row.
+        aggregateUntil: now,
+        ...(input.data !== undefined ? { data: input.data } : {}),
+      },
+    });
+    await this.runFanOut(row, false);
+    return row;
+  }
+
+  /**
+   * Best-effort post-commit fan-out shared by every write path: SSE to the
+   * recipient's open tabs and Web Push to their subscribed devices. A failure
+   * in either channel is logged but never rolls back the persisted row.
+   */
+  private async runFanOut(
+    row: Notification,
+    isAggregateUpdate: boolean,
+  ): Promise<void> {
     // SSE fan-out runs after the DB commit and is best-effort: a push failure
     // must never roll back the persisted notification.
     try {
@@ -698,8 +744,6 @@ export class NotificationsService {
     // subscribed device(s). Awaited (not fire-and-forget) so the delivery
     // completes before a serverless function can suspend; never throws.
     await this.dispatchWebPush(row);
-
-    return row;
   }
 
   /**
