@@ -521,6 +521,24 @@ export class ClassificationService {
     return { ...extraction, ...match };
   }
 
+  /**
+   * Best-effort write of the per-batch classification progress counter. A
+   * failure here (e.g. the batch row was deleted mid-run) must never abort
+   * classification, so it only logs a warning.
+   */
+  private async writeProgress(batchId: string, processedCount: number): Promise<void> {
+    try {
+      await this.prisma.importBatch.update({
+        where: { id: batchId },
+        data: { processedCount },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `classifyBatch: progress write failed batchId=${batchId} processed=${processedCount}: ${String(err)}`,
+      );
+    }
+  }
+
   async classifyBatch(
     condominiumId: string,
     batchId: string,
@@ -541,6 +559,11 @@ export class ClassificationService {
     let classified = 0;
     let needsReview = 0;
     let unmatched = 0;
+
+    // Reset the progress counter for this run (best-effort — progress writes must
+    // never fail classification). The web polls processedCount/transactionCount to
+    // drive a real per-transaction progress bar during the "classifying" phase.
+    await this.writeProgress(batchId, 0);
 
     const CHUNK = 200;
     for (let i = 0; i < transactions.length; i += CHUNK) {
@@ -614,6 +637,9 @@ export class ClassificationService {
         }),
       );
       await this.prisma.$transaction(updates);
+
+      // Publish progress after each chunk so the web poll sees a smooth advance.
+      await this.writeProgress(batchId, Math.min(i + chunk.length, transactions.length));
     }
 
     await this.upsertMonthlySummaries(condominiumId, batchId);

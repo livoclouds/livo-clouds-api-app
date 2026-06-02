@@ -745,6 +745,7 @@ model ImportBatch {
   totalExpenses    Decimal      @default(0) @db.Decimal(15, 2)
   finalBalance     Decimal      @default(0) @db.Decimal(15, 2)
   transactionCount Int          @default(0)
+  processedCount   Int          @default(0)
   warnings         Json         @default("[]")
   errorMessage     String?
   storageKey       String?
