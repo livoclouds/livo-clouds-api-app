@@ -1,5 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { NotificationType, RootScope } from '@prisma/client';
+import { NotificationSound, NotificationType, RootScope } from '@prisma/client';
 import { UserRole } from '../../common/types';
 import { NotificationsService, NotificationEventInput } from './notifications.service';
 import { NOTIFICATION_R1_TYPES } from './notifications.constants';
@@ -29,6 +29,10 @@ interface PrismaMock {
   rootNotificationScope: {
     findUnique: jest.Mock;
     findMany: jest.Mock;
+    upsert: jest.Mock;
+  };
+  userNotificationSoundPreference: {
+    findUnique: jest.Mock;
     upsert: jest.Mock;
   };
   condominium: {
@@ -76,6 +80,10 @@ function makePrismaMock(): PrismaMock {
     rootNotificationScope: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue(null),
+    },
+    userNotificationSoundPreference: {
+      findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue(null),
     },
     condominium: {
@@ -1185,5 +1193,71 @@ describe('NotificationsService.createDirectForUser', () => {
     // Fan-out emits a genuinely new arrival (isAggregateUpdate === false) so the
     // web client shows the toast.
     expect(gateway.emitAfterWrite).toHaveBeenCalledWith(created, false);
+  });
+});
+
+describe('NotificationsService.dismissAll', () => {
+  it('soft-dismisses every not-yet-dismissed notification for the user', async () => {
+    const prisma = makePrismaMock();
+    prisma.notification.updateMany.mockResolvedValueOnce({ count: 4 });
+    const service = makeService(prisma);
+
+    const result = await service.dismissAll(CONDOMINIUM_ID, USER_ID);
+
+    expect(result).toEqual({ updatedCount: 4 });
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { condominiumId: CONDOMINIUM_ID, userId: USER_ID, dismissedAt: null },
+      data: { dismissedAt: expect.any(Date) },
+    });
+  });
+});
+
+describe('NotificationsService sound preference', () => {
+  it('returns the default (enabled, CHIME) when no row exists', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationSoundPreference.findUnique.mockResolvedValueOnce(null);
+    const service = makeService(prisma);
+
+    expect(await service.getSoundPreference(USER_ID)).toEqual({
+      soundEnabled: true,
+      soundChoice: NotificationSound.CHIME,
+    });
+  });
+
+  it('returns the stored preference when a row exists', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationSoundPreference.findUnique.mockResolvedValueOnce({
+      soundEnabled: false,
+      soundChoice: NotificationSound.PEBBLE,
+    });
+    const service = makeService(prisma);
+
+    expect(await service.getSoundPreference(USER_ID)).toEqual({
+      soundEnabled: false,
+      soundChoice: NotificationSound.PEBBLE,
+    });
+  });
+
+  it('upserts the preference and returns the saved value', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationSoundPreference.upsert.mockResolvedValueOnce({
+      soundEnabled: true,
+      soundChoice: NotificationSound.SHIMMER,
+    });
+    const service = makeService(prisma);
+
+    const result = await service.updateSoundPreference(USER_ID, {
+      soundEnabled: true,
+      soundChoice: NotificationSound.SHIMMER,
+    });
+
+    expect(result).toEqual({ soundEnabled: true, soundChoice: NotificationSound.SHIMMER });
+    expect(prisma.userNotificationSoundPreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: USER_ID },
+        create: expect.objectContaining({ userId: USER_ID, soundChoice: NotificationSound.SHIMMER }),
+        update: expect.objectContaining({ soundChoice: NotificationSound.SHIMMER }),
+      }),
+    );
   });
 });

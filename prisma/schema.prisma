@@ -180,6 +180,17 @@ enum RootScope {
   SPECIFIC
 }
 
+/// Synthesized arrival-sound presets a user can pick for new notifications.
+/// Mirrored on the web as NOTIFICATION_SOUND_CHOICES; "off" is represented by
+/// UserNotificationSoundPreference.soundEnabled = false (no enum member).
+enum NotificationSound {
+  CHIME
+  DING
+  POP
+  SHIMMER
+  PEBBLE
+}
+
 enum RequiresReviewReason {
   UNIT_NOT_FOUND
   UNIT_AMBIGUOUS
@@ -440,6 +451,7 @@ model User {
   whatsAppNotificationPrefs WhatsAppNotificationPreference[]
   notificationPreferences   UserNotificationPreference[]
   rootNotificationScope     RootNotificationScope?
+  notificationSoundPref     UserNotificationSoundPreference?
   r2AccessLogs              R2AccessLog[]
   pushSubscriptions         PushSubscription[]
 
@@ -949,6 +961,20 @@ model RootNotificationScope {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("root_notification_scopes")
+}
+
+/// Per-user, single-row arrival-sound preference (one row per user, upsert
+/// semantics — same shape as RootNotificationScope). soundEnabled=false means
+/// the user opted out of sound entirely ("Ninguno").
+model UserNotificationSoundPreference {
+  userId       String            @id
+  soundEnabled Boolean           @default(true)
+  soundChoice  NotificationSound @default(CHIME)
+  updatedAt    DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_notification_sound_preferences")
 }
 
 model FinancialMonthlySummary {

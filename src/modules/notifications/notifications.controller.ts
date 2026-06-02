@@ -20,6 +20,7 @@ import { JwtPayload } from '../../common/types';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
 import { SnoozeNotificationDto } from './dto/snooze-notification.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
+import { UpdateNotificationSoundDto } from './dto/update-notification-sound.dto';
 import { NotificationsService } from './notifications.service';
 
 @ApiTags('Notifications')
@@ -84,6 +85,22 @@ export class NotificationsController {
     );
   }
 
+  @Get('sound')
+  @ApiOperation({ summary: 'Get the arrival-sound preference for the current user' })
+  getSoundPreference(@CurrentUser() user: JwtPayload) {
+    return this.notificationsService.getSoundPreference(user.sub);
+  }
+
+  @Patch('sound')
+  @RequirePermission('notifications.read')
+  @ApiOperation({ summary: 'Update the arrival-sound preference for the current user' })
+  updateSoundPreference(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateNotificationSoundDto,
+  ) {
+    return this.notificationsService.updateSoundPreference(user.sub, dto);
+  }
+
   @Post('read-all')
   @RequirePermission('notifications.read')
   @HttpCode(HttpStatus.OK)
@@ -93,6 +110,17 @@ export class NotificationsController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.notificationsService.markAllRead(req.condominiumId, user.sub);
+  }
+
+  @Post('dismiss-all')
+  @RequirePermission('notifications.read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Dismiss all notifications' })
+  dismissAll(
+    @Request() req: { condominiumId: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.notificationsService.dismissAll(req.condominiumId, user.sub);
   }
 
   @Post(':id/read')
