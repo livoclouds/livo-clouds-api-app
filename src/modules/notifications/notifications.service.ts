@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   Notification,
+  NotificationSound,
   NotificationType,
   Prisma,
   RootScope,
@@ -236,6 +237,20 @@ export class NotificationsService {
     return { updatedCount: result.count };
   }
 
+  /**
+   * Dismisses every not-yet-dismissed notification the user owns in the tenant
+   * in one shot — the bulk counterpart of {@link dismiss}, mirroring
+   * {@link markAllRead}. Soft delete: rows keep their data and are purged later
+   * by the retention cron; they simply leave the inbox, bell and unread count.
+   */
+  async dismissAll(condominiumId: string, userId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: { condominiumId, userId, dismissedAt: null },
+      data: { dismissedAt: new Date() },
+    });
+    return { updatedCount: result.count };
+  }
+
   async dismiss(condominiumId: string, id: string, userId: string) {
     const notification = await this.findOwnedOrThrow(condominiumId, id, userId);
     if (notification.dismissedAt) {
@@ -372,6 +387,41 @@ export class NotificationsService {
       update: { scope: dto.scope, condominiumIds },
     });
     return { scope: row.scope, condominiumIds: row.condominiumIds };
+  }
+
+  /**
+   * The user's arrival-sound preference (one row per user). Returns the default
+   * (enabled, CHIME) when no row exists yet — same defaults-if-missing shape as
+   * {@link getRootScope}.
+   */
+  async getSoundPreference(userId: string) {
+    const row = await this.prisma.userNotificationSoundPreference.findUnique({
+      where: { userId },
+    });
+    if (!row) {
+      return { soundEnabled: true, soundChoice: NotificationSound.CHIME };
+    }
+    return { soundEnabled: row.soundEnabled, soundChoice: row.soundChoice };
+  }
+
+  /** Upserts the user's arrival-sound preference. */
+  async updateSoundPreference(
+    userId: string,
+    dto: { soundEnabled: boolean; soundChoice: NotificationSound },
+  ) {
+    const row = await this.prisma.userNotificationSoundPreference.upsert({
+      where: { userId },
+      create: {
+        userId,
+        soundEnabled: dto.soundEnabled,
+        soundChoice: dto.soundChoice,
+      },
+      update: {
+        soundEnabled: dto.soundEnabled,
+        soundChoice: dto.soundChoice,
+      },
+    });
+    return { soundEnabled: row.soundEnabled, soundChoice: row.soundChoice };
   }
 
   /**

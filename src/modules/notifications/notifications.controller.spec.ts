@@ -55,3 +55,40 @@ describe('NotificationsController inbox endpoint', () => {
     );
   });
 });
+
+describe('NotificationsController dismiss-all + sound', () => {
+  const REQ = { condominiumId: 'cond-1' };
+
+  it('dismissAll delegates to the service with tenant + user', async () => {
+    const service = { dismissAll: jest.fn().mockResolvedValue({ updatedCount: 3 }) };
+    const controller = new NotificationsController(service as never);
+    const result = await controller.dismissAll(REQ, USER);
+    expect(result).toEqual({ updatedCount: 3 });
+    expect(service.dismissAll).toHaveBeenCalledWith('cond-1', 'user-1');
+  });
+
+  it('getSoundPreference delegates to the service', async () => {
+    const service = {
+      getSoundPreference: jest
+        .fn()
+        .mockResolvedValue({ soundEnabled: true, soundChoice: 'CHIME' }),
+    };
+    const controller = new NotificationsController(service as never);
+    const result = await controller.getSoundPreference(USER);
+    expect(result).toEqual({ soundEnabled: true, soundChoice: 'CHIME' });
+    expect(service.getSoundPreference).toHaveBeenCalledWith('user-1');
+  });
+
+  it('updateSoundPreference forwards the DTO to the service', async () => {
+    const service = {
+      updateSoundPreference: jest
+        .fn()
+        .mockResolvedValue({ soundEnabled: false, soundChoice: 'PEBBLE' }),
+    };
+    const controller = new NotificationsController(service as never);
+    const dto = { soundEnabled: false, soundChoice: 'PEBBLE' } as never;
+    const result = await controller.updateSoundPreference(USER, dto);
+    expect(result).toEqual({ soundEnabled: false, soundChoice: 'PEBBLE' });
+    expect(service.updateSoundPreference).toHaveBeenCalledWith('user-1', dto);
+  });
+});
