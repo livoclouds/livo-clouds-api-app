@@ -60,6 +60,15 @@ const RECONCILED_EXPORT_HEADER_LABEL: Record<ReconciledExportColumnId, string> =
   importFile:           'Import File',
 };
 
+// Maps the `importedWithin` filter token to a lookback window in milliseconds.
+const IMPORTED_WITHIN_MS: Record<string, number> = {
+  '1h': 3_600_000,
+  '24h': 86_400_000,
+  '7d': 604_800_000,
+  '30d': 2_592_000_000,
+  '1y': 31_536_000_000,
+};
+
 function escapeCsvValue(input: unknown): string {
   if (input === null || input === undefined) return '';
   const str = String(input);
@@ -75,7 +84,7 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findAll(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description } = dto;
+    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description, amountMin, amountMax, importedWithin } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = { condominiumId };
@@ -94,6 +103,18 @@ export class TransactionsService {
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     if (description) where.description = { contains: description, mode: 'insensitive' };
+    // Amount range filter by absolute magnitude: credits (income) and charges
+    // (expense) are stored positive, and a row has exactly one of them set, so
+    // matching the range on either column equals "magnitude within range".
+    if (amountMin != null || amountMax != null) {
+      const range: Prisma.DecimalNullableFilter = {};
+      if (amountMin != null) range.gte = amountMin;
+      if (amountMax != null) range.lte = amountMax;
+      where.OR = [{ credits: range }, { charges: range }];
+    }
+    if (importedWithin && IMPORTED_WITHIN_MS[importedWithin]) {
+      where.createdAt = { gte: new Date(Date.now() - IMPORTED_WITHIN_MS[importedWithin]) };
+    }
 
     const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
     const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput | Prisma.TransactionOrderByWithRelationInput[]> = {
