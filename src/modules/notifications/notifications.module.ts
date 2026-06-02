@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { WebPushModule } from '../web-push/web-push.module';
 import { MeNotificationsController } from './me-notifications.controller';
 import { NotificationsController } from './notifications.controller';
+import { NotificationsDevController } from './notifications.dev.controller';
 import { NotificationsRetentionCron } from './notifications.cron';
 import { NotificationsSseController } from './notifications.sse.controller';
 import { NotificationsSseGateway } from './notifications.gateway';
@@ -19,6 +20,8 @@ import { UsersNotificationsListener } from './listeners/users-notifications.list
     NotificationsController,
     MeNotificationsController,
     NotificationsSseController,
+    // Dev-only; its handlers self-gate to non-production (return 404 in prod).
+    NotificationsDevController,
   ],
   providers: [
     NotificationsService,
