@@ -434,12 +434,14 @@ export class StorageAdminService {
 
     const condominiumIds = new Set<string>();
     const batchIds = new Set<string>();
+    const userIds = new Set<string>();
     for (const { parsed: p } of parsed) {
       if (p.condominiumId) condominiumIds.add(p.condominiumId);
       if (p.batchId) batchIds.add(p.batchId);
+      if (p.userId) userIds.add(p.userId);
     }
 
-    const [condominiums, batches, accessAggregates, accessLatest] =
+    const [condominiums, batches, users, accessAggregates, accessLatest] =
       await Promise.all([
         condominiumIds.size > 0
           ? this.prisma.condominium.findMany({
@@ -468,6 +470,17 @@ export class StorageAdminService {
               },
             })
           : Promise.resolve([]),
+        userIds.size > 0
+          ? this.prisma.user.findMany({
+              where: { id: { in: [...userIds] } },
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+              },
+            })
+          : Promise.resolve([]),
         this.prisma.r2AccessLog.groupBy({
           by: ['objectKey'],
           _count: { _all: true },
@@ -483,6 +496,7 @@ export class StorageAdminService {
 
     const condoMap = new Map(condominiums.map((c) => [c.id, c]));
     const batchMap = new Map(batches.map((b) => [b.id, b]));
+    const userMap = new Map(users.map((u) => [u.id, u]));
     const accessCountMap = new Map(
       accessAggregates.map((row) => [row.objectKey, row._count._all]),
     );
@@ -496,8 +510,10 @@ export class StorageAdminService {
     return parsed.map(({ raw, parsed: p }) => {
       const condo = p.condominiumId ? condoMap.get(p.condominiumId) ?? null : null;
       const batch = p.batchId ? batchMap.get(p.batchId) ?? null : null;
-      const uploader = batch?.importedBy ?? null;
-      const isOrphan = Boolean(p.batchId && !batch);
+      const keyUser = p.userId ? userMap.get(p.userId) ?? null : null;
+      const uploader = batch?.importedBy ?? keyUser;
+      const isOrphan =
+        Boolean(p.batchId && !batch) || Boolean(p.userId && !keyUser);
       const latest = accessLatestMap.get(raw.key);
       return {
         key: raw.key,
