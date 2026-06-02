@@ -366,6 +366,7 @@ export class ImportsService {
         where,
         include: {
           importedBy: { select: { id: true, firstName: true, lastName: true } },
+          fileDeletedBy: { select: { id: true, firstName: true, lastName: true } },
           _count: { select: { transactions: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -391,6 +392,7 @@ export class ImportsService {
       where: { id, condominiumId },
       include: {
         importedBy: { select: { id: true, firstName: true, lastName: true } },
+        fileDeletedBy: { select: { id: true, firstName: true, lastName: true } },
         transactions: { take: 50, orderBy: { transactionDate: 'desc' } },
       },
     });
@@ -400,6 +402,48 @@ export class ImportsService {
     }
 
     return batch;
+  }
+
+  /**
+   * Issue a short-lived presigned URL to download the original imported file.
+   *
+   * The file lives in R2 and is independent from the batch's DB record: a ROOT
+   * may delete it via the storage-admin module, which stamps `fileDeletedAt`.
+   * We surface a typed FILE_NOT_AVAILABLE error in that case (and when no file
+   * was ever retained) so the web can disable/explain the download affordance.
+   */
+  async getDownloadUrl(condominiumId: string, id: string, user: JwtPayload) {
+    const batch = await this.prisma.importBatch.findFirst({
+      where: { id, condominiumId },
+      select: {
+        fileName: true,
+        fileSizeBytes: true,
+        storageKey: true,
+        storageProvider: true,
+        fileDeletedAt: true,
+      },
+    });
+
+    if (!batch) {
+      throw new NotFoundException('Import batch not found');
+    }
+
+    if (!batch.storageKey || batch.storageProvider !== 'r2' || batch.fileDeletedAt) {
+      throw new BadRequestException({
+        code: 'FILE_NOT_AVAILABLE',
+        reason: batch.fileDeletedAt
+          ? 'The original file has been deleted from storage'
+          : 'No retained file in storage for this import',
+      });
+    }
+
+    const url = await this.storage.getPresignedUrl(batch.storageKey, 3600, {
+      userId: user.sub,
+      condominiumId,
+      byteSize: batch.fileSizeBytes,
+    });
+
+    return { url, fileName: batch.fileName, expiresIn: 3600 };
   }
 
   async upload(
