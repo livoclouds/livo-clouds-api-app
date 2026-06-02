@@ -53,9 +53,12 @@ export class RolesService {
       },
       select: {
         ...this.roleSelect(),
-        // First few assigned users so the UI can show an avatar cluster per role.
+        // First few users of THIS condominium so the UI can show an avatar
+        // cluster per role. Scoped to condominiumId so the cluster matches the
+        // condominium-scoped user list the edit modal shows (system roles are
+        // global, but a role's members are always counted per condominium).
         users: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, condominiumId },
           select: {
             id: true,
             firstName: true,
@@ -68,10 +71,17 @@ export class RolesService {
       },
       orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
     });
-    // Attach assigned-user counts so the UI can warn before deletion.
+    // Attach assigned-user counts so the UI can warn before deletion. Scoped to
+    // condominiumId so the badge count equals what the edit modal lists (which
+    // reads the condominium-scoped users endpoint). Platform roles whose users
+    // are condominium-less (e.g. Root, condominiumId=null) correctly show 0 here.
     const counts = await this.prisma.user.groupBy({
       by: ['roleId'],
-      where: { deletedAt: null, roleId: { in: roles.map((r) => r.id) } },
+      where: {
+        deletedAt: null,
+        condominiumId,
+        roleId: { in: roles.map((r) => r.id) },
+      },
       _count: { _all: true },
     });
     const countByRole = new Map(

@@ -4,7 +4,7 @@ import { UsersService } from './users.service';
 
 function makeDeps() {
   const prisma = {
-    user: { findFirst: jest.fn(), updateMany: jest.fn() },
+    user: { findFirst: jest.fn(), updateMany: jest.fn(), findMany: jest.fn() },
     role: { findFirst: jest.fn() },
   };
   const events = { emit: jest.fn() };
@@ -13,7 +13,11 @@ function makeDeps() {
     hasAny: jest.fn(),
     getEffectivePermissions: jest.fn(),
   };
-  return { prisma, events, rbac };
+  const storage = {
+    isConfigured: jest.fn().mockReturnValue(true),
+    getPresignedUrl: jest.fn(),
+  };
+  return { prisma, events, rbac, storage };
 }
 
 const requester = { sub: 'actor', role: 'ROOT' } as never;
@@ -28,7 +32,8 @@ describe('UsersService.update — permission overrides (RBAC Phase 3)', () => {
       deps.prisma as never,
       deps.events as never,
       deps.rbac as never,
-    );
+      deps.storage as never,
+      );
     // Same role before/after (no role change) so no permissions event fires.
     const row = {
       id: 'u1',
@@ -94,6 +99,58 @@ describe('UsersService.update — permission overrides (RBAC Phase 3)', () => {
   });
 });
 
+describe('UsersService.findAll — avatar resolution', () => {
+  let deps: ReturnType<typeof makeDeps>;
+  let service: UsersService;
+
+  beforeEach(() => {
+    deps = makeDeps();
+    service = new UsersService(
+      deps.prisma as never,
+      deps.events as never,
+      deps.rbac as never,
+      deps.storage as never,
+    );
+  });
+
+  it('presigns R2 avatar keys (no access-logging) and passes through absolute URLs', async () => {
+    deps.prisma.user.findMany.mockResolvedValue([
+      { id: 'u1', firstName: 'Carlos', lastName: 'Mendoza', avatarUrl: 'condominiums/c/users/u1/avatar.png' },
+      { id: 'u2', firstName: 'Alan', lastName: 'Turing', avatarUrl: 'https://cdn.example.com/u2.png' },
+      { id: 'u3', firstName: 'Grace', lastName: 'Hopper', avatarUrl: null },
+    ]);
+    deps.storage.getPresignedUrl.mockResolvedValue('https://signed.example.com/u1.png');
+
+    const result = await service.findAll('condo-1');
+
+    expect(result.map((u) => u.avatarUrl)).toEqual([
+      'https://signed.example.com/u1.png',
+      'https://cdn.example.com/u2.png',
+      null,
+    ]);
+    // Only the R2 key is presigned, scoped to the condominium, with logging off.
+    expect(deps.storage.getPresignedUrl).toHaveBeenCalledTimes(1);
+    expect(deps.storage.getPresignedUrl).toHaveBeenCalledWith(
+      'condominiums/c/users/u1/avatar.png',
+      3600,
+      { condominiumId: 'condo-1' },
+      false,
+    );
+  });
+
+  it('returns null avatarUrl for R2 keys when storage is not configured', async () => {
+    deps.storage.isConfigured.mockReturnValue(false);
+    deps.prisma.user.findMany.mockResolvedValue([
+      { id: 'u1', firstName: 'Carlos', lastName: 'Mendoza', avatarUrl: 'key/u1.png' },
+    ]);
+
+    const result = await service.findAll('condo-1');
+
+    expect(result[0].avatarUrl).toBeNull();
+    expect(deps.storage.getPresignedUrl).not.toHaveBeenCalled();
+  });
+});
+
 describe('RBAC-001: permissionOverrides security gates', () => {
   let deps: ReturnType<typeof makeDeps>;
   let service: UsersService;
@@ -107,7 +164,8 @@ describe('RBAC-001: permissionOverrides security gates', () => {
       deps.prisma as never,
       deps.events as never,
       deps.rbac as never,
-    );
+      deps.storage as never,
+      );
     const row = { id: 'u1', roleRef: { key: 'TENANT_ADMIN' }, permissionOverrides: null };
     deps.prisma.user.findFirst.mockResolvedValue(row);
     deps.prisma.user.updateMany.mockResolvedValue({ count: 1 });
@@ -186,7 +244,8 @@ describe('RBAC-002: role assignment security gates', () => {
       deps.prisma as never,
       deps.events as never,
       deps.rbac as never,
-    );
+      deps.storage as never,
+      );
   });
 
   it('rejects creating ROOT when actor lacks platform.users.manage', async () => {
@@ -258,7 +317,8 @@ describe('cross-tenant isolation (users)', () => {
       deps.prisma as never,
       deps.events as never,
       deps.rbac as never,
-    );
+      deps.storage as never,
+      );
     // Simulate the condominiumId-scoped WHERE clause returning nothing.
     deps.prisma.user.findFirst.mockResolvedValue(null);
     deps.prisma.user.updateMany.mockResolvedValue({ count: 0 });

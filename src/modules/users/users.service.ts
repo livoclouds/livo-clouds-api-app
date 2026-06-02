@@ -12,6 +12,7 @@ import { JwtPayload, UserRole } from '../../common/types';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { isPlatformPermission, sanitizePermissions } from '../../common/rbac/permission-catalog';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import {
@@ -22,6 +23,8 @@ import {
 } from './events/user-notification-events';
 
 const SALT_ROUNDS = 12;
+/** Avatar thumbnails in the user list are low-sensitivity, high-frequency reads. */
+const AVATAR_PRESIGN_TTL_SECONDS = 3600;
 
 @Injectable()
 export class UsersService {
@@ -31,6 +34,7 @@ export class UsersService {
     private prisma: PrismaService,
     private readonly events: EventEmitter2,
     private readonly rbac: RbacService,
+    private readonly storage: StorageService,
   ) {}
 
   /** Best-effort notification emit — never breaks the user write. */
@@ -81,11 +85,49 @@ export class UsersService {
   }
 
   async findAll(condominiumId: string) {
-    return this.prisma.user.findMany({
+    const users = await this.prisma.user.findMany({
       where: { condominiumId, deletedAt: null },
       select: this.safeSelect(),
       orderBy: { createdAt: 'desc' },
     });
+    // Resolve each stored avatar (R2 key) into a renderable presigned URL so the
+    // user list / role modal can show real profile photos instead of initials.
+    return Promise.all(
+      users.map(async (u) => ({
+        ...u,
+        avatarUrl: await this.resolveAvatarUrl(u.avatarUrl, condominiumId),
+      })),
+    );
+  }
+
+  /**
+   * Resolve a stored avatar value into a renderable URL: pass through legacy
+   * absolute URLs, presign R2 object keys (without access-logging, since these
+   * are list-view thumbnails), or return null when unavailable (UI falls back
+   * to initials). Mirrors the resolver in roles.service / auth.service.
+   */
+  private async resolveAvatarUrl(
+    value: string | null,
+    condominiumId: string | null,
+  ): Promise<string | null> {
+    if (!value) return null;
+    if (/^https?:\/\//i.test(value)) return value;
+    if (!this.storage.isConfigured()) return null;
+    try {
+      return await this.storage.getPresignedUrl(
+        value,
+        AVATAR_PRESIGN_TTL_SECONDS,
+        { condominiumId },
+        false,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[avatar] failed to presign ${value}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
   }
 
   async findOne(condominiumId: string, id: string) {
