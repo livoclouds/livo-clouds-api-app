@@ -111,9 +111,20 @@ export class ListTransactionsDto {
   @Min(0)
   amountMax?: number;
 
-  // Filter by how recently the record was imported (createdAt cutoff).
+  // Filter by import recency, expressed as an age window in minutes against
+  // createdAt. minAge → "older than" (createdAt <= now - min); maxAge → "within
+  // the last" (createdAt >= now - max). Both together = a band. Max cap ~10y.
   @IsOptional()
-  @IsString()
-  @IsIn(['1h', '24h', '7d', '30d', '1y'])
-  importedWithin?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5_256_000)
+  importedMinAgeMinutes?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5_256_000)
+  importedMaxAgeMinutes?: number;
 }
