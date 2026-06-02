@@ -1,4 +1,4 @@
-import { IsEnum, IsIn, IsInt, IsISO8601, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsISO8601, IsNumber, IsOptional, IsPositive, IsString, IsUUID, Matches, MaxLength, Max, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { ClassificationStatus, FlowType } from '@prisma/client';
 
@@ -97,4 +97,23 @@ export class ListTransactionsDto {
   @IsString()
   @IsIn(['HIGH', 'MEDIUM', 'LOW'])
   confidenceLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
+
+  // Filter by absolute transaction magnitude (matches credits OR charges).
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  amountMin?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  amountMax?: number;
+
+  // Filter by how recently the record was imported (createdAt cutoff).
+  @IsOptional()
+  @IsString()
+  @IsIn(['1h', '24h', '7d', '30d', '1y'])
+  importedWithin?: string;
 }

@@ -9,6 +9,8 @@ const USER_ID = 'user-42';
 interface PrismaMock {
   transaction: {
     findFirst: jest.Mock;
+    findMany: jest.Mock;
+    count: jest.Mock;
   };
   auditLog: {
     findMany: jest.Mock;
@@ -19,6 +21,8 @@ function makePrismaMock(): PrismaMock {
   return {
     transaction: {
       findFirst: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
     },
     auditLog: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -52,6 +56,66 @@ function baseAuditEntry(overrides: Record<string, unknown> = {}): Record<string,
     ...overrides,
   };
 }
+
+describe('TransactionsService.findAll filters', () => {
+  function whereOf(prisma: PrismaMock): Record<string, unknown> {
+    return prisma.transaction.findMany.mock.calls[0][0].where as Record<string, unknown>;
+  }
+
+  it('filters by absolute amount magnitude across credits and charges (between)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.findAll(CONDOMINIUM_ID, { amountMin: 1, amountMax: 5000 });
+
+    expect(whereOf(prisma).OR).toEqual([
+      { credits: { gte: 1, lte: 5000 } },
+      { charges: { gte: 1, lte: 5000 } },
+    ]);
+  });
+
+  it('supports greater-than (only amountMin) and less-than (only amountMax)', async () => {
+    const gtPrisma = makePrismaMock();
+    await makeService(gtPrisma).findAll(CONDOMINIUM_ID, { amountMin: 5000 });
+    expect(whereOf(gtPrisma).OR).toEqual([
+      { credits: { gte: 5000 } },
+      { charges: { gte: 5000 } },
+    ]);
+
+    const ltPrisma = makePrismaMock();
+    await makeService(ltPrisma).findAll(CONDOMINIUM_ID, { amountMax: 5000 });
+    expect(whereOf(ltPrisma).OR).toEqual([
+      { credits: { lte: 5000 } },
+      { charges: { lte: 5000 } },
+    ]);
+  });
+
+  it('does not add an amount filter when neither bound is provided', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, {});
+    expect(whereOf(prisma).OR).toBeUndefined();
+  });
+
+  it('maps importedWithin to a createdAt lookback cutoff', async () => {
+    const NOW = new Date('2026-06-01T12:00:00Z').getTime();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      const prisma = makePrismaMock();
+      await makeService(prisma).findAll(CONDOMINIUM_ID, { importedWithin: '24h' });
+
+      const createdAt = whereOf(prisma).createdAt as { gte: Date };
+      expect(createdAt.gte.getTime()).toBe(NOW - 86_400_000);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('ignores an unknown importedWithin token', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { importedWithin: 'bogus' });
+    expect(whereOf(prisma).createdAt).toBeUndefined();
+  });
+});
 
 describe('TransactionsService.getAuditChain', () => {
   it('returns audit rows in chronological order for a transaction with history', async () => {
