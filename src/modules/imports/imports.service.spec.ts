@@ -97,6 +97,69 @@ describe('ImportsService.checkHashesForCondominium', () => {
   });
 });
 
+describe('ImportsService.confirm — fileHash fallback ordering', () => {
+  // When confirm arrives WITHOUT an explicit batchId it falls back to a
+  // fileHash lookup. That lookup must order by createdAt desc so the most
+  // recently retained batch wins — an unordered findFirst could return an older
+  // PENDING/FAILED batch with no storageKey and 409 spuriously.
+  function makeConfirmService(findFirst: jest.Mock): ImportsService {
+    const prisma = { importBatch: { findFirst } };
+    const settings = {
+      validateFeesConfigured: jest.fn().mockResolvedValue({ valid: true }),
+    };
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    return new ImportsService(
+      prisma as never, // prisma
+      {} as never, // storage
+      {} as never, // classification
+      settings as never, // settings
+      audit as never, // audit
+      {} as never, // parser
+      {} as never, // config
+      {} as never, // bankProfiles
+      {} as never, // events
+    );
+  }
+
+  const confirmDto = {
+    files: [
+      {
+        fileName: 'movimientos.xlsx',
+        fileType: 'xlsx',
+        fileHash: HASH_A,
+        fileSizeBytes: 1024,
+        warnings: [],
+        transactions: [{ date: '2025-11-01', description: 'x', charges: 0, credits: 1, balance: 1 }],
+      },
+    ],
+  };
+
+  it('queries the most recent batch (orderBy createdAt desc) on the no-batchId path', async () => {
+    // A batch with no retained storage — confirm throws IMPORT_BATCH_NO_STORAGE
+    // right after the lookup, which is all we need to assert the ordering.
+    const findFirst = jest.fn().mockResolvedValue({
+      id: 'batch-stale',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      storageKey: null,
+      storageProvider: null,
+      _count: { transactions: 0 },
+    });
+    const service = makeConfirmService(findFirst);
+
+    await expect(
+      service.confirm(CONDOMINIUM_ID, confirmDto as never, { sub: 'user-1' } as never),
+    ).rejects.toThrow();
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { condominiumId: CONDOMINIUM_ID, fileHash: HASH_A },
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
+  });
+});
+
 describe('ImportsService.findAll filters', () => {
   it('applies importedByName as case-insensitive contains on firstName or lastName', async () => {
     const prisma = makePrismaMock();
