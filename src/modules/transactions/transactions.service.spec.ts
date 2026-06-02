@@ -96,23 +96,54 @@ describe('TransactionsService.findAll filters', () => {
     expect(whereOf(prisma).OR).toBeUndefined();
   });
 
-  it('maps importedWithin to a createdAt lookback cutoff', async () => {
+  it('maps importedMaxAgeMinutes to a "within the last N" createdAt cutoff (gte)', async () => {
     const NOW = new Date('2026-06-01T12:00:00Z').getTime();
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
     try {
       const prisma = makePrismaMock();
-      await makeService(prisma).findAll(CONDOMINIUM_ID, { importedWithin: '24h' });
+      await makeService(prisma).findAll(CONDOMINIUM_ID, { importedMaxAgeMinutes: 1440 });
 
-      const createdAt = whereOf(prisma).createdAt as { gte: Date };
-      expect(createdAt.gte.getTime()).toBe(NOW - 86_400_000);
+      const createdAt = whereOf(prisma).createdAt as { gte: Date; lte?: Date };
+      expect(createdAt.gte.getTime()).toBe(NOW - 1440 * 60_000);
+      expect(createdAt.lte).toBeUndefined();
     } finally {
       nowSpy.mockRestore();
     }
   });
 
-  it('ignores an unknown importedWithin token', async () => {
+  it('maps importedMinAgeMinutes to an "older than N" createdAt cutoff (lte)', async () => {
+    const NOW = new Date('2026-06-01T12:00:00Z').getTime();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      const prisma = makePrismaMock();
+      await makeService(prisma).findAll(CONDOMINIUM_ID, { importedMinAgeMinutes: 2880 });
+
+      const createdAt = whereOf(prisma).createdAt as { gte?: Date; lte: Date };
+      expect(createdAt.lte.getTime()).toBe(NOW - 2880 * 60_000);
+      expect(createdAt.gte).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('combines min + max age into a createdAt band', async () => {
+    const NOW = new Date('2026-06-01T12:00:00Z').getTime();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      const prisma = makePrismaMock();
+      await makeService(prisma).findAll(CONDOMINIUM_ID, { importedMinAgeMinutes: 60, importedMaxAgeMinutes: 10080 });
+
+      const createdAt = whereOf(prisma).createdAt as { gte: Date; lte: Date };
+      expect(createdAt.gte.getTime()).toBe(NOW - 10080 * 60_000);
+      expect(createdAt.lte.getTime()).toBe(NOW - 60 * 60_000);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not add a createdAt filter when no age bound is provided', async () => {
     const prisma = makePrismaMock();
-    await makeService(prisma).findAll(CONDOMINIUM_ID, { importedWithin: 'bogus' });
+    await makeService(prisma).findAll(CONDOMINIUM_ID, {});
     expect(whereOf(prisma).createdAt).toBeUndefined();
   });
 });
