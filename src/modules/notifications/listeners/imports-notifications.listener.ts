@@ -46,6 +46,9 @@ export class ImportsNotificationsListener {
         },
         linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
         actorUserId: payload.actorUserId,
+        // Notify the importer of their own import result (the actor is the
+        // person who ran the import and wants to know how it went).
+        includeActor: true,
       });
     } catch (err) {
       this.logFailure(IMPORT_COMPLETED_EVENT, err);
@@ -69,6 +72,9 @@ export class ImportsNotificationsListener {
         },
         linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
         actorUserId: payload.actorUserId,
+        // Notify the importer of their own import result (the actor is the
+        // person who ran the import and wants to know how it went).
+        includeActor: true,
       });
     } catch (err) {
       this.logFailure(IMPORT_FAILED_EVENT, err);
@@ -91,6 +97,9 @@ export class ImportsNotificationsListener {
         },
         linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
         actorUserId: payload.actorUserId,
+        // Notify the importer of their own import result (the actor is the
+        // person who ran the import and wants to know how it went).
+        includeActor: true,
       });
     } catch (err) {
       this.logFailure(IMPORT_WARNING_EVENT, err);
@@ -115,6 +124,9 @@ export class ImportsNotificationsListener {
         },
         linkUrl: slug ? importBatchLink(slug, payload.originalBatchId) : null,
         actorUserId: payload.actorUserId,
+        // Notify the importer of their own import result (the actor is the
+        // person who ran the import and wants to know how it went).
+        includeActor: true,
       });
     } catch (err) {
       this.logFailure(IMPORT_DUPLICATE_EVENT, err);
