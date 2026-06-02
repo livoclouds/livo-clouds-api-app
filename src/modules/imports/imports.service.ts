@@ -960,9 +960,15 @@ export class ImportsService {
         }
         existing = byId;
       } else {
+        // When confirm arrives without an explicit batchId, fall back to the
+        // most RECENT batch for this fileHash. Ordering is required: an older
+        // PENDING/FAILED batch (e.g. an interrupted earlier attempt) may have no
+        // storageKey, and an unordered findFirst could return it instead of the
+        // freshly retained one — producing a spurious IMPORT_BATCH_NO_STORAGE.
         existing = await this.prisma.importBatch.findFirst({
           where: { condominiumId, fileHash: file.fileHash },
           include: { _count: { select: { transactions: true } } },
+          orderBy: { createdAt: 'desc' },
         });
       }
 
