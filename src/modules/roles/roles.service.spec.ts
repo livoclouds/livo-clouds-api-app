@@ -109,6 +109,33 @@ describe('RolesService', () => {
       );
     });
 
+    it('scopes the user count and sample users to the requested condominium', async () => {
+      prisma.role.findMany.mockResolvedValue([
+        { id: 'r-sys', isSystem: true, name: 'Administrator', users: [] },
+      ]);
+      prisma.user.groupBy.mockResolvedValue([{ roleId: 'r-sys', _count: { _all: 1 } }]);
+
+      await service.findAll(CONDO);
+
+      // Count is filtered by condominiumId so the badge matches the modal's
+      // condominium-scoped user list (Root etc. with condominiumId=null → 0).
+      expect(prisma.user.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ condominiumId: CONDO }),
+        }),
+      );
+      // The sampleUsers relation is filtered by condominiumId too.
+      expect(prisma.role.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            users: expect.objectContaining({
+              where: expect.objectContaining({ condominiumId: CONDO }),
+            }),
+          }),
+        }),
+      );
+    });
+
     it('returns null avatarUrl for R2 keys when storage is not configured', async () => {
       storage.isConfigured.mockReturnValue(false);
       prisma.role.findMany.mockResolvedValue([
