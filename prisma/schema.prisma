@@ -437,7 +437,8 @@ model User {
   passwordResetTokens       PasswordResetToken[]
   pettyCashRegistered       PettyCashMovement[]              @relation("RegisteredBy")
   pettyCashUpdated          PettyCashMovement[]              @relation("UpdatedBy")
-  importBatches             ImportBatch[]
+  importBatches             ImportBatch[]                    @relation("ImportedBy")
+  importFilesDeleted        ImportBatch[]                    @relation("ImportFileDeletedBy")
   auditLogs                 AuditLog[]
   notifications             Notification[]
   reconciledTransactions    Transaction[]                    @relation("ReconciledBy")
@@ -750,21 +751,28 @@ model ImportBatch {
   errorMessage     String?
   storageKey       String?
   storageProvider  String?
+  // Set when the original file is deleted from object storage (e.g. by a ROOT
+  // via the storage-admin module). The batch and its transactions are retained
+  // as financial history; only the downloadable source file is gone.
+  fileDeletedAt    DateTime?
+  fileDeletedById  String?
   startedAt        DateTime     @default(now())
   completedAt      DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
-  condominium  Condominium   @relation(fields: [condominiumId], references: [id])
-  importedBy   User          @relation(fields: [importedById], references: [id])
-  bankProfile  BankProfile?  @relation(fields: [bankProfileId], references: [id], onDelete: SetNull)
-  transactions Transaction[]
+  condominium   Condominium   @relation(fields: [condominiumId], references: [id])
+  importedBy    User          @relation("ImportedBy", fields: [importedById], references: [id])
+  fileDeletedBy User?         @relation("ImportFileDeletedBy", fields: [fileDeletedById], references: [id])
+  bankProfile   BankProfile?  @relation(fields: [bankProfileId], references: [id], onDelete: SetNull)
+  transactions  Transaction[]
 
   @@index([condominiumId])
   @@index([fileHash])
   @@index([status])
   @@index([createdAt])
   @@index([bankProfileId])
+  @@index([fileDeletedById])
   @@map("import_batches")
 }
 

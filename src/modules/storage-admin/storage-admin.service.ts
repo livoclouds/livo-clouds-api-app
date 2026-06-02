@@ -376,6 +376,27 @@ export class StorageAdminService {
       condominiumId: match.condominium?.id ?? null,
       byteSize: match.size,
     });
+
+    // If this object is an import's source file, stamp the batch so the admin's
+    // imports list reflects that the original file is gone. The batch and its
+    // transactions stay intact (financial history); only the download is lost.
+    // Non-blocking: the R2 object is already deleted, so a marking failure must
+    // not surface as a delete error.
+    if (match.batch) {
+      try {
+        await this.prisma.importBatch.update({
+          where: { id: match.batch.id },
+          data: { fileDeletedAt: new Date(), fileDeletedById: user.sub },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `deleteObject: failed to mark batch ${match.batch.id} as file-deleted: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     this.invalidateCache();
     return { ok: true, key };
   }

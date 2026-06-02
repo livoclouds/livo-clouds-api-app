@@ -98,6 +98,18 @@ export class ImportsController {
     return this.importsService.findOne(req.condominiumId, id);
   }
 
+  @Get(':id/download')
+  @ApiOperation({
+    summary: 'Get a presigned URL to download the original imported file',
+  })
+  download(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.importsService.getDownloadUrl(req.condominiumId, id, user);
+  }
+
   @Post('upload')
   @RequirePermission('imports.create')
   @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
