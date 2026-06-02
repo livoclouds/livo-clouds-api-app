@@ -1120,3 +1120,31 @@ describe('NotificationsService.resolveCondominiumSlug', () => {
     expect(await service.resolveCondominiumSlug('missing')).toBeNull();
   });
 });
+
+describe('NotificationsService.createDirectForUser', () => {
+  it('creates a fresh non-aggregated row and fans it out as a new arrival', async () => {
+    const prisma = makePrismaMock();
+    const created = { id: 'notif-direct', userId: USER_ID, type: 'IMPORT_COMPLETED' };
+    prisma.notification.create.mockResolvedValueOnce(created);
+    const gateway = makeGatewayMock();
+    const service = makeService(prisma, gateway);
+
+    const result = await service.createDirectForUser(eventInput());
+
+    expect(result).toBe(created);
+    // Never goes through the aggregation transaction.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.notification.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: USER_ID,
+          type: NotificationType.IMPORT_COMPLETED,
+          aggregateCount: 1,
+        }),
+      }),
+    );
+    // Fan-out emits a genuinely new arrival (isAggregateUpdate === false) so the
+    // web client shows the toast.
+    expect(gateway.emitAfterWrite).toHaveBeenCalledWith(created, false);
+  });
+});
