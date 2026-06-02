@@ -60,15 +60,6 @@ const RECONCILED_EXPORT_HEADER_LABEL: Record<ReconciledExportColumnId, string> =
   importFile:           'Import File',
 };
 
-// Maps the `importedWithin` filter token to a lookback window in milliseconds.
-const IMPORTED_WITHIN_MS: Record<string, number> = {
-  '1h': 3_600_000,
-  '24h': 86_400_000,
-  '7d': 604_800_000,
-  '30d': 2_592_000_000,
-  '1y': 31_536_000_000,
-};
-
 function escapeCsvValue(input: unknown): string {
   if (input === null || input === undefined) return '';
   const str = String(input);
@@ -84,7 +75,7 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findAll(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description, amountMin, amountMax, importedWithin } = dto;
+    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description, amountMin, amountMax, importedMinAgeMinutes, importedMaxAgeMinutes } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = { condominiumId };
@@ -112,8 +103,14 @@ export class TransactionsService {
       if (amountMax != null) range.lte = amountMax;
       where.OR = [{ credits: range }, { charges: range }];
     }
-    if (importedWithin && IMPORTED_WITHIN_MS[importedWithin]) {
-      where.createdAt = { gte: new Date(Date.now() - IMPORTED_WITHIN_MS[importedWithin]) };
+    // Import-recency window over createdAt, expressed as age in minutes.
+    // maxAge → "within the last N" (createdAt >= now - max); minAge → "older
+    // than N" (createdAt <= now - min). Both → a band [now-max, now-min].
+    if (importedMinAgeMinutes != null || importedMaxAgeMinutes != null) {
+      const now = Date.now();
+      where.createdAt = {};
+      if (importedMaxAgeMinutes != null) where.createdAt.gte = new Date(now - importedMaxAgeMinutes * 60_000);
+      if (importedMinAgeMinutes != null) where.createdAt.lte = new Date(now - importedMinAgeMinutes * 60_000);
     }
 
     const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
