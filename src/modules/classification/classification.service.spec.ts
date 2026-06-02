@@ -27,6 +27,7 @@ interface PrismaMock {
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
   reconciliationCorrectionPattern: { upsert: jest.Mock };
+  importBatch: { update: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -54,6 +55,7 @@ function makePrismaMock(): PrismaMock {
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue(null) },
     reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
+    importBatch: { update: jest.fn().mockResolvedValue(null) },
     // REV-003 / REV-017: support both forms — array (chunk classifyBatch) and
     // callback (single-row overrides). The callback receives the same mock as `tx`.
     $transaction: jest.fn(),
@@ -986,5 +988,57 @@ describe('ClassificationService.classifyTransaction — payment period date fall
     );
     expect(r.paymentPeriodMonth).toBe(3);
     expect(r.paymentPeriodYear).toBe(2026);
+  });
+});
+
+describe('ClassificationService.classifyBatch — progress counter', () => {
+  it('resets processedCount to 0 and advances it to the total across chunks', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    // 450 transactions → 3 chunks of 200/200/50.
+    const txs = Array.from({ length: 450 }, (_v, i) => ({
+      id: `tx-${i}`,
+      description: 'pago generico',
+      transactionDate: daysBefore(EVENT_DATE, 5),
+      credits: 100,
+      charges: null,
+      flowType: 'INCOME' as const,
+    }));
+    prisma.transaction.findMany.mockResolvedValue(txs);
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const processed = prisma.importBatch.update.mock.calls.map(
+      (args) => (args[0].data as { processedCount: number }).processedCount,
+    );
+    // First write is the reset, last reaches the total, monotonically non-decreasing.
+    expect(processed[0]).toBe(0);
+    expect(processed[processed.length - 1]).toBe(450);
+    expect(processed).toEqual([0, 200, 400, 450]);
+    prisma.importBatch.update.mock.calls.forEach((args) => {
+      expect(args[0].where).toEqual({ id: BATCH_ID });
+    });
+  });
+
+  it('does not fail classification when the progress write throws', async () => {
+    const prisma = makePrismaMock();
+    prisma.importBatch.update.mockRejectedValue(new Error('row gone'));
+    const service = makeService(prisma);
+
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description: 'pago generico',
+        transactionDate: daysBefore(EVENT_DATE, 5),
+        credits: 100,
+        charges: null,
+        flowType: 'INCOME',
+      },
+    ]);
+
+    await expect(service.classifyBatch(CONDOMINIUM_ID, BATCH_ID)).resolves.toMatchObject({
+      total: 1,
+    });
   });
 });
