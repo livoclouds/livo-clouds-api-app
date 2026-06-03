@@ -36,7 +36,7 @@ const CONDO_DEFINITIONS = [
       contactEmail: 'contacto@cotoalameda.com',
       businessHours: { weekdays: '9:00 AM - 6:00 PM', saturday: '9:00 AM - 2:00 PM', sunday: 'Closed' },
       timezone: 'America/Monterrey', currency: 'MXN', country: 'MX', defaultLocale: 'es',
-      totalUnits: 370, ordinaryFeeAmount: 2400, lateFeeAmount: 200,
+      totalUnits: 370, ordinaryFeeAmount: 500, lateFeeAmount: 100,
       ordinaryPaymentDayStart: 1, ordinaryPaymentDayEnd: 10, lateFeeStartDay: 11, paymentFrequency: 'monthly',
     },
   },
