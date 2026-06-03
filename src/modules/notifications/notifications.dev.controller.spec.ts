@@ -78,7 +78,7 @@ describe('NotificationsDevController', () => {
         // Sample reuses the production i18n keys + a placeholder-matching blob.
         title: 'notifications.types.IMPORT_COMPLETED.title',
         message: 'notifications.types.IMPORT_COMPLETED.body',
-        linkUrl: '/condominiums/cond-slug/imports/dev-batch-0001',
+        linkUrl: '/imports/dev-batch-0001',
         data: expect.objectContaining({ rowCount: 42, currency: 'MXN' }),
       }),
     );

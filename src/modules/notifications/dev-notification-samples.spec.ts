@@ -31,7 +31,7 @@ describe('buildDevNotificationSample', () => {
       NOW,
     );
     expect(sample.linkUrl).toBe(
-      '/condominiums/cond-slug/imports/dev-batch-0001',
+      '/imports/dev-batch-0001',
     );
   });
 

@@ -37,7 +37,7 @@ export class ClassificationNotificationsListener {
           batchId: payload.batchId,
           transactionCount: payload.transactionCount,
         },
-        linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
+        linkUrl: slug ? importBatchLink(payload.batchId) : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {

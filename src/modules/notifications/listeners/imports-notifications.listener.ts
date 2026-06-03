@@ -44,7 +44,7 @@ export class ImportsNotificationsListener {
           rowCount: payload.rowCount,
           currency: payload.currency,
         },
-        linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
+        linkUrl: slug ? importBatchLink(payload.batchId) : null,
         actorUserId: payload.actorUserId,
         // Notify the importer of their own import result (the actor is the
         // person who ran the import and wants to know how it went).
@@ -70,7 +70,7 @@ export class ImportsNotificationsListener {
           stage: payload.stage,
           errorCode: payload.errorCode,
         },
-        linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
+        linkUrl: slug ? importBatchLink(payload.batchId) : null,
         actorUserId: payload.actorUserId,
         // Notify the importer of their own import result (the actor is the
         // person who ran the import and wants to know how it went).
@@ -95,7 +95,7 @@ export class ImportsNotificationsListener {
           batchId: payload.batchId,
           warningCount: payload.warningCount,
         },
-        linkUrl: slug ? importBatchLink(slug, payload.batchId) : null,
+        linkUrl: slug ? importBatchLink(payload.batchId) : null,
         actorUserId: payload.actorUserId,
         // Notify the importer of their own import result (the actor is the
         // person who ran the import and wants to know how it went).
@@ -122,7 +122,7 @@ export class ImportsNotificationsListener {
           originalBatchId: payload.originalBatchId,
           attemptedFileName: payload.attemptedFileName,
         },
-        linkUrl: slug ? importBatchLink(slug, payload.originalBatchId) : null,
+        linkUrl: slug ? importBatchLink(payload.originalBatchId) : null,
         actorUserId: payload.actorUserId,
         // Notify the importer of their own import result (the actor is the
         // person who ran the import and wants to know how it went).

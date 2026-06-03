@@ -33,7 +33,7 @@ describe('ClassificationNotificationsListener', () => {
         title: 'notifications.types.CLASSIFICATION_REVIEW.title',
         message: 'notifications.types.CLASSIFICATION_REVIEW.body',
         data: { batchId: 'batch-1', transactionCount: 12 },
-        linkUrl: `/condominiums/${SLUG}/imports/batch-1`,
+        linkUrl: '/imports/batch-1',
         actorUserId: 'user-9',
       }),
     );
