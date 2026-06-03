@@ -1531,6 +1531,8 @@ describe('extractFromText — maintenance abbreviations', () => {
     ['Mmto Anual 2026', 'MAINTENANCE'],
     ['Mantto octubre', 'MAINTENANCE'],
     ['mantenimiento octubre', 'MAINTENANCE'],
+    ['Pago mto 344', 'MAINTENANCE'],
+    ['mto noviembre', 'MAINTENANCE'],
   ])('tags "%s" as %s', (desc, concept) => {
     expect(extractFromText(desc).paymentConcept).toBe(concept);
   });
@@ -1544,6 +1546,7 @@ describe('extractFromBanBajio — maintenance concept + bare unit (Mtto / months
     ['Mtto Oct 357', '357'],
     ['Mtto 357 Sep', '357'],
     ['MTTO COTO ALAMEDA 218 NOVIEMBRE', '218'],
+    ['mto 344', '344'],
   ])('detects a maintenance bare unit in "%s" -> %s', (concept, unit) => {
     const r = extractFromBanBajio(wrap(concept), 370);
     expect(r.paymentConcept).toBe('MAINTENANCE');
@@ -1589,6 +1592,18 @@ describe('ClassificationService.classifyTransaction — maintenance concept pain
     );
     expect(result.paymentConcept).toBe('MAINTENANCE');
     expect(result.unitNumberDetected).toBe('357');
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+
+  it('paints "mto 344" as maintenance + unit 344, stays NEEDS_REVIEW (amount below the fee)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      'SPEI Recibido: | Concepto del Pago: mto 344 | Recibo # 224562369',
+      TX_DATE, residents, [], undefined, bankCtx, feeCtx(400), // $400, out of [500,600], no resident 344
+    );
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    expect(result.unitNumberDetected).toBe('344');
     expect(result.residentId).toBeNull();
     expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
   });
