@@ -701,9 +701,9 @@ async function main() {
   console.log(`✅ Users: ${totalUsers}`);
 
   // ─── Residents ─────────────────────────────────────────────────────────────
-  // cotoalameda (ci=0): loaded from prisma/seed-data/cotoalameda/residents.csv (Principal rows only)
+  // cotoalameda (ci=0): loaded from prisma/seed-data/condominiums/cotoalameda/residents.csv (Principal rows only)
   // all other condominiums: 5 synthetic residents each
-  const csvPath = path.join(process.cwd(), 'prisma', 'seed-data', 'cotoalameda', 'residents.csv');
+  const csvPath = path.join(process.cwd(), 'prisma', 'seed-data', 'condominiums', 'cotoalameda', 'residents.csv');
   const csvRows = parseResidentsCsv(csvPath).filter((r) => r.tipoUsuario === 'Principal');
   const seenUnits = new Set<string>();
   const csvResidents = csvRows.filter((r) => {
