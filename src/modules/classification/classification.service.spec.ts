@@ -3,6 +3,8 @@ import {
   ClassificationService,
   extractFromText,
   extractFromBanBajio,
+  parseMaintenanceConcept,
+  resolveNearestCycle,
 } from './classification.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
@@ -1171,5 +1173,114 @@ describe('ClassificationService.classifyTransaction — bank-aware extraction', 
     expect(result.unitNumberDetected).toBe('200');
     expect(result.residentId).toBeNull();
     expect(result.requiresReviewReason).toBe(RequiresReviewReason.UNIT_NOT_FOUND);
+  });
+});
+
+describe('parseMaintenanceConcept — month + unit in any order', () => {
+  const seg = (s: string) => `SPEI Recibido | Concepto del Pago: ${s} | Recibo # 1`;
+
+  it('reads "DIC 355" (month before bare unit)', () => {
+    expect(parseMaintenanceConcept(seg('DIC 355'), 370)).toEqual({ unit: '355', month: 12 });
+  });
+
+  it('reads "Enero casa 120" (prefixed unit)', () => {
+    expect(parseMaintenanceConcept(seg('Enero casa 120'), 370)).toEqual({ unit: '120', month: 1 });
+  });
+
+  it('reads "Mantenimiento febrero 88"', () => {
+    expect(parseMaintenanceConcept(seg('Mantenimiento febrero 88'), 370)).toEqual({ unit: '88', month: 2 });
+  });
+
+  it('reads "355 noviembre" (unit before month)', () => {
+    expect(parseMaintenanceConcept(seg('355 noviembre'), 370)).toEqual({ unit: '355', month: 11 });
+  });
+
+  it('rejects a unit above totalUnits but keeps the month', () => {
+    expect(parseMaintenanceConcept(seg('DIC 999'), 370)).toEqual({ unit: null, month: 12 });
+  });
+
+  it('returns nulls when there is no "Concepto del Pago" segment', () => {
+    expect(parseMaintenanceConcept('SPEI Recibido casa 12', 370)).toEqual({ unit: null, month: null });
+  });
+});
+
+describe('resolveNearestCycle — advance / late year resolution', () => {
+  it('DIC paid in Nov-2025 → Dec-2025 (advance, same year)', () => {
+    expect(resolveNearestCycle(12, new Date('2025-11-29T12:00:00Z'))).toEqual({
+      paymentPeriodMonth: 12,
+      paymentPeriodYear: 2025,
+    });
+  });
+
+  it('ENE paid in Dec-2025 → Jan-2026 (advance, next year)', () => {
+    expect(resolveNearestCycle(1, new Date('2025-12-15T12:00:00Z'))).toEqual({
+      paymentPeriodMonth: 1,
+      paymentPeriodYear: 2026,
+    });
+  });
+
+  it('OCT paid in Nov-2025 → Oct-2025 (late, same year)', () => {
+    expect(resolveNearestCycle(10, new Date('2025-11-29T12:00:00Z'))).toEqual({
+      paymentPeriodMonth: 10,
+      paymentPeriodYear: 2025,
+    });
+  });
+});
+
+describe('ClassificationService.classifyTransaction — amount-range maintenance pass', () => {
+  const residents = [
+    { id: 'res-355', unitNumber: '355', firstName: 'Athziri', lastName: 'Longoria' },
+  ];
+  const DESC = 'SPEI Recibido | Concepto del Pago: DIC 355 | Recibo # 228564576';
+  const TX_DATE = new Date('2025-11-29T12:00:00Z');
+  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
+
+  it('auto-links the resident, sets concept + named-month period (advance payment)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(500),
+    );
+    expect(result.unitNumberDetected).toBe('355');
+    expect(result.residentId).toBe('res-355');
+    expect(result.matchSource).toBe(MatchSource.AUTO_AMOUNT_DATE);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    // Named month "DIC" → Dec 2025, NOT the Nov transaction month.
+    expect(result.paymentPeriodMonth).toBe(12);
+    expect(result.paymentPeriodYear).toBe(2025);
+  });
+
+  it('accepts the upper bound (ordinary + late surcharge = 600)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(600),
+    );
+    expect(result.residentId).toBe('res-355');
+    expect(result.matchSource).toBe(MatchSource.AUTO_AMOUNT_DATE);
+  });
+
+  it('skips the pass when the amount is outside the fee range', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(15),
+    );
+    // Out of range → no maintenance pass → "DIC 355" leading token isn't a number,
+    // so no unit is extracted and the row stays in review.
+    expect(result.matchSource).not.toBe(MatchSource.AUTO_AMOUNT_DATE);
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+
+  it('leaves the row in review with concept + period hints when no resident matches', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, [], [], undefined, bankCtx, feeCtx(500),
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    // Hints are pre-filled for a one-click approval.
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    expect(result.paymentPeriodMonth).toBe(12);
+    expect(result.paymentPeriodYear).toBe(2025);
   });
 });

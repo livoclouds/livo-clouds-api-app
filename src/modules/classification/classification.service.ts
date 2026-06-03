@@ -228,6 +228,91 @@ export function extractFromBanBajio(
   return { ...base, unitNumberDetected, unitConfidence };
 }
 
+/**
+ * Parses the BanBajío "Concepto del Pago:" segment for the maintenance-fee pass,
+ * extracting the unit number and the named month in ANY order. Handles formats
+ * the leading-number extractor misses: "DIC 355", "Enero casa 120",
+ * "Mantenimiento febrero 88", "355 noviembre". A bare number is only accepted
+ * when it is unambiguous and within 1..totalUnits — and the caller only invokes
+ * this when the amount already falls in the expected fee range, which is what
+ * makes grabbing a bare number safe.
+ */
+export function parseMaintenanceConcept(
+  description: string,
+  totalUnits: number,
+): { unit: string | null; month: number | null } {
+  const segMatch = description.match(/concepto del pago:\s*([^|]*)/i);
+  if (!segMatch) return { unit: null, month: null };
+  const segment = normalizeText(segMatch[1]);
+
+  // Month: any MONTH_MAP key as a whole word, longest-first so "may" never
+  // matches inside a longer token.
+  let month: number | null = null;
+  const monthNames = Object.keys(MONTH_MAP)
+    .map((k) => (k === 'may_' ? 'may' : k))
+    .sort((a, b) => b.length - a.length);
+  const monthMatch = segment.match(new RegExp(`\\b(${monthNames.join('|')})\\b`));
+  if (monthMatch) {
+    const key = monthMatch[1] === 'may' ? 'may_' : monthMatch[1];
+    month = MONTH_MAP[key] ?? MONTH_MAP[monthMatch[1]] ?? null;
+  }
+
+  // Unit: prefer a prefixed match (casa/unidad/lote/depto/c). The "#" pattern is
+  // harmless here because "| Recibo #" lives outside this segment.
+  let unit: string | null = null;
+  for (const { regex } of UNIT_PATTERNS) {
+    const m = segment.match(regex);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits) {
+        unit = String(n);
+      }
+      break;
+    }
+  }
+  // Otherwise the lone in-range number, skipping 4-digit years.
+  if (!unit) {
+    const inRange = new Set<number>();
+    const numRe = /\b0*(\d+)\b/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = numRe.exec(segment)) !== null) {
+      const raw = mm[1];
+      if (/^20\d{2}$/.test(raw)) continue;
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits) {
+        inRange.add(n);
+      }
+    }
+    if (inRange.size === 1) unit = String([...inRange][0]);
+  }
+
+  return { unit, month };
+}
+
+/**
+ * Resolves the payment period for a named month that carries no explicit year.
+ * Residents pay in advance ("DIC" in November → December) or late ("OCT" in
+ * November → October), so we pick the year (tx year ±1) that places the period
+ * in the cycle closest to the transaction date.
+ */
+export function resolveNearestCycle(
+  month: number,
+  transactionDate: Date,
+): { paymentPeriodMonth: number; paymentPeriodYear: number } {
+  const txYear = transactionDate.getUTCFullYear();
+  const txIndex = txYear * 12 + (transactionDate.getUTCMonth() + 1);
+  let bestYear = txYear;
+  let bestDist = Infinity;
+  for (const y of [txYear - 1, txYear, txYear + 1]) {
+    const dist = Math.abs(y * 12 + month - txIndex);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestYear = y;
+    }
+  }
+  return { paymentPeriodMonth: month, paymentPeriodYear: bestYear };
+}
+
 function applyDbRules(
   description: string,
   rules: DbRule[],
@@ -423,6 +508,8 @@ export class ClassificationService {
     terraceEvents: TerraceCandidate[];
     terraceGlobalKeywords: string[];
     totalUnits: number;
+    ordinaryFeeAmount: number;
+    lateFeeAmount: number;
   }> {
     const [residents, activeRules, rawTerraceEvents, settings] = await Promise.all([
       this.loadAllByCursor<ResidentData>((cursor, take) =>
@@ -457,6 +544,8 @@ export class ClassificationService {
 
     const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
     const totalUnits = settings?.totalUnits ?? 0;
+    const ordinaryFeeAmount = Number(settings?.ordinaryFeeAmount ?? 0);
+    const lateFeeAmount = Number(settings?.lateFeeAmount ?? 0);
 
     // Parse terrace metadata and filter to events with PENDING payment.
     const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
@@ -472,7 +561,15 @@ export class ClassificationService {
       }];
     });
 
-    return { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits };
+    return {
+      residents,
+      activeRules,
+      terraceEvents,
+      terraceGlobalKeywords,
+      totalUnits,
+      ordinaryFeeAmount,
+      lateFeeAmount,
+    };
   }
 
   classifyTransaction(
@@ -492,6 +589,13 @@ export class ClassificationService {
     // Bank identity + unit bound for bank-specific extraction. `bankName` comes
     // from the batch's bank profile; `totalUnits` from CondominiumSettings.
     bankContext?: { bankName: string | null; totalUnits: number },
+    // Maintenance-fee pass inputs. Provided only for INCOME transactions on a
+    // BanBajío batch; `amount` is the credit, the fees come from CondominiumSettings.
+    maintenanceContext?: {
+      amount: number | null;
+      ordinaryFeeAmount: number;
+      lateFeeAmount: number;
+    },
   ): ClassificationResult {
     const extraction =
       bankContext && isBanBajio(bankContext.bankName)
@@ -582,6 +686,66 @@ export class ClassificationService {
       }
     }
 
+    // Pass 0.6: amount-range maintenance fee. Gated on the credit landing in the
+    // configured fee range [ordinaryFee, ordinaryFee + lateFee] — a strong signal
+    // that the income is a maintenance payment, which is what makes a flexible
+    // month+unit concept parse safe. Resolves advance/late payments via the named
+    // month, links the resident when the unit is unambiguous, and otherwise
+    // leaves the row in review with the concept + period pre-filled as hints.
+    if (
+      maintenanceContext &&
+      maintenanceContext.amount !== null &&
+      maintenanceContext.ordinaryFeeAmount > 0
+    ) {
+      const min = maintenanceContext.ordinaryFeeAmount;
+      const max = maintenanceContext.ordinaryFeeAmount + maintenanceContext.lateFeeAmount;
+      if (maintenanceContext.amount >= min && maintenanceContext.amount <= max) {
+        const { unit, month } = parseMaintenanceConcept(
+          description,
+          bankContext?.totalUnits ?? 0,
+        );
+        if (month !== null) {
+          const period = resolveNearestCycle(month, transactionDate);
+          extraction.paymentPeriodMonth = period.paymentPeriodMonth;
+          extraction.paymentPeriodYear = period.paymentPeriodYear;
+        }
+        if (unit) {
+          extraction.unitNumberDetected = unit;
+          extraction.unitConfidence = 0.9;
+        }
+        // Pre-fill the concept as a hint even when we cannot link a resident.
+        const paymentConcept = extraction.paymentConcept ?? 'MAINTENANCE';
+
+        if (extraction.unitNumberDetected) {
+          const residentMatch = matchToResident(extraction, residents);
+          return {
+            ...extraction,
+            ...residentMatch,
+            paymentConcept,
+            // The amount + date corroborated this link.
+            matchSource: residentMatch.residentId
+              ? MatchSource.AUTO_AMOUNT_DATE
+              : residentMatch.matchSource,
+          };
+        }
+
+        // Amount in range but no unit to match → leave in review with the
+        // concept + period pre-filled as hints for a one-click approval.
+        return {
+          ...extraction,
+          paymentConcept,
+          residentId: null,
+          matchSource: null,
+          confidenceScore: 0,
+          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+          requiresReviewReason: RequiresReviewReason.NO_MATCH,
+          matchedRuleId: null,
+          matchedCalendarEventId: null,
+          matchedAt: null,
+        };
+      }
+    }
+
     const match = matchToResident(extraction, residents);
     return { ...extraction, ...match };
   }
@@ -613,7 +777,7 @@ export class ClassificationService {
     // cursor-batched and terrace keywords come from the settings cache; the
     // batch's own transactions are bounded by the import file.
     const [
-      { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits },
+      { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits, ordinaryFeeAmount, lateFeeAmount },
       transactions,
       batchInfo,
     ] = await Promise.all([
@@ -661,6 +825,13 @@ export class ClassificationService {
             }
           : undefined;
 
+        // Maintenance-fee pass runs only for BanBajío INCOME (the concept format
+        // is bank-specific). Fees come from the condominium settings.
+        const maintenanceContext =
+          tx.flowType === 'INCOME' && isBanBajio(bankName)
+            ? { amount: tx.credits ? Number(tx.credits) : null, ordinaryFeeAmount, lateFeeAmount }
+            : undefined;
+
         const result = this.classifyTransaction(
           tx.description,
           new Date(tx.transactionDate),
@@ -668,6 +839,7 @@ export class ClassificationService {
           activeRules,
           terraceContext,
           { bankName, totalUnits },
+          maintenanceContext,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -816,8 +988,10 @@ export class ClassificationService {
     // Phase 6 (A4 + A5): shared cursor-batched candidate loading + cached
     // terrace keywords; only the PENDING-review transactions query is specific
     // to this re-apply path.
-    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits }, transactions] =
-      await Promise.all([
+    const [
+      { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits, ordinaryFeeAmount, lateFeeAmount },
+      transactions,
+    ] = await Promise.all([
         this.loadCandidates(condominiumId),
         this.prisma.transaction.findMany({
           where: {
@@ -866,13 +1040,20 @@ export class ClassificationService {
               }
             : undefined;
 
+        const txBankName = tx.importBatch?.bankProfile?.bankName ?? null;
+        const maintenanceContext =
+          tx.flowType === 'INCOME' && isBanBajio(txBankName)
+            ? { amount: tx.credits ? Number(tx.credits) : null, ordinaryFeeAmount, lateFeeAmount }
+            : undefined;
+
         const result = this.classifyTransaction(
           tx.description,
           new Date(tx.transactionDate),
           residents,
           activeRules,
           terraceContext,
-          { bankName: tx.importBatch?.bankProfile?.bankName ?? null, totalUnits },
+          { bankName: txBankName, totalUnits },
+          maintenanceContext,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
