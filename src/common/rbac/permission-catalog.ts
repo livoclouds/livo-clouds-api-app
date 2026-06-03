@@ -68,6 +68,9 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   p('inventory.read', 'inventory', 'read', 'tenant'),
   p('inventory.manage', 'inventory', 'manage', 'tenant'),
 
+  p('suppliers.read', 'suppliers', 'read', 'tenant'),
+  p('suppliers.manage', 'suppliers', 'manage', 'tenant'),
+
   p('pettyCash.read', 'pettyCash', 'read', 'tenant'),
   p('pettyCash.manage', 'pettyCash', 'manage', 'tenant'),
 

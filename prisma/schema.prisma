@@ -98,6 +98,25 @@ enum InventoryCondition {
   DISPOSED
 }
 
+enum SupplierType {
+  MAINTENANCE
+  SECURITY
+  ELECTRICAL
+  PLUMBING
+  LANDSCAPING
+  CLEANING
+  PAINTING
+  ELEVATOR
+  TECHNOLOGY
+  ADMINISTRATION
+}
+
+enum SupplierStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
 enum FlowType {
   INCOME
   EXPENSE
@@ -315,6 +334,7 @@ model Condominium {
   pettyCashMovements               PettyCashMovement[]
   commonAreas                      CommonArea[]
   inventoryItems                   InventoryItem[]
+  suppliers                        Supplier[]
   importBatches                    ImportBatch[]
   transactions                     Transaction[]
   collectionRecords                CollectionRecord[]
@@ -729,6 +749,37 @@ model InventoryItem {
   @@index([condition])
   @@index([deletedAt])
   @@map("inventory_items")
+}
+
+model Supplier {
+  id               String         @id @default(uuid())
+  condominiumId    String
+  supplierName     String
+  type             SupplierType
+  contactName      String?
+  email            String?
+  phone            String?
+  address          String?
+  taxId            String?
+  registrationDate DateTime?      @db.Date
+  status           SupplierStatus @default(ACTIVE)
+  notes            String?
+  deletedAt        DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  // Audit-trail actor ids (the JWT `sub` of the acting user). API-owned: set
+  // from the session on create/update, never accepted from the request body.
+  // Nullable so rows created before this column existed remain valid.
+  createdBy        String?
+  updatedBy        String?
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+
+  @@index([condominiumId])
+  @@index([condominiumId, status])
+  @@index([condominiumId, type])
+  @@index([deletedAt])
+  @@map("suppliers")
 }
 
 model ImportBatch {
