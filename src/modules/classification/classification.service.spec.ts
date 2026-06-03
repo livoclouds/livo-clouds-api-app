@@ -1284,3 +1284,68 @@ describe('ClassificationService.classifyTransaction — amount-range maintenance
     expect(result.paymentPeriodYear).toBe(2025);
   });
 });
+
+describe('extractFromBanBajio — explicit "casa NNN" unit detection', () => {
+  const wrap = (s: string) =>
+    `SPEI Recibido: | Institucion contraparte: BBVA MEXICO Concepto del Pago: ${s} | Recibo # 228615598`;
+
+  it.each([
+    ['casa 176 dic', '176'],
+    ['CASA 176 dic', '176'],
+    ['mantenimiento casa 191', '191'],
+    ['Mantto casa 95 coto Alameda', '95'],
+    ['Mmto Anual 2026 Casa 93', '93'], // 93 (the unit), not 2026 (the year)
+    ['176 dic', '176'], // leading number still works
+  ])('detects the unit in "%s" -> %s', (concept, expected) => {
+    expect(extractFromBanBajio(wrap(concept), 370).unitNumberDetected).toBe(expected);
+  });
+
+  it('does not invent a unit when "casa" is glued to the month with no number', () => {
+    expect(extractFromBanBajio(wrap('CASADiciembre2025'), 370).unitNumberDetected).toBeNull();
+  });
+
+  it('rejects a prefixed number above totalUnits', () => {
+    expect(extractFromBanBajio(wrap('casa 999 dic'), 370).unitNumberDetected).toBeNull();
+  });
+});
+
+describe('ClassificationService.classifyTransaction — BanBajío unit detection (amount-gated)', () => {
+  const residents = [
+    { id: 'res-176', unitNumber: '176', firstName: 'Nayeli', lastName: 'Sanchez' },
+  ];
+  const DESC = 'SPEI Recibido: | Concepto del Pago: casa 176 dic | Recibo # 228615598';
+  const TX_DATE = new Date('2025-11-30T12:00:00Z');
+  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
+
+  it('shows the unit but stays in review when the amount is unusual (regla 2)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(100), // $100, out of [500,600]
+    );
+    expect(result.unitNumberDetected).toBe('176'); // column populated
+    expect(result.residentId).toBeNull();           // NOT auto-linked
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+
+  it('auto-classifies via the fee rule when the amount matches (regla 1, no regression)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(500), // $500 = ordinary fee
+    );
+    expect(result.unitNumberDetected).toBe('176');
+    expect(result.residentId).toBe('res-176');
+    expect(result.matchSource).toBe(MatchSource.AUTO_AMOUNT_DATE);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('stays in review with no unit when the concept has none (regla 3)', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      'SPEI Recibido: | Concepto del Pago: pago | Recibo # 1',
+      TX_DATE, residents, [], undefined, bankCtx, feeCtx(100),
+    );
+    expect(result.unitNumberDetected).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+});

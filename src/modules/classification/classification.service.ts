@@ -190,6 +190,47 @@ export function extractFromText(description: string): TextExtraction {
   };
 }
 
+/** Leading number of the segment ("176 dic", "06" -> 6), validated against totalUnits. */
+function findLeadingUnit(segment: string, totalUnits: number): string | null {
+  const leading = segment.match(/^\s*0*(\d+)/);
+  if (!leading) return null;
+  const n = parseInt(leading[1], 10);
+  return Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits ? String(n) : null;
+}
+
+/**
+ * Prefixed unit ("casa 176", "CASA 176", "mantenimiento casa 191", "Mmto ... Casa 93"),
+ * validated against totalUnits. The first matching prefix wins; an out-of-range match
+ * yields null (so "Casa 999" with totalUnits 370 is rejected). The "#"/Recibo prefix is
+ * harmless because "| Recibo #" lives outside this segment.
+ */
+function findPrefixedUnit(segment: string, totalUnits: number): string | null {
+  const normalized = normalizeText(segment);
+  for (const { regex } of UNIT_PATTERNS) {
+    const m = normalized.match(regex);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits ? String(n) : null;
+    }
+  }
+  return null;
+}
+
+/** The lone in-range bare number, skipping 4-digit years. Amount-gated callers only. */
+function findBareUnit(segment: string, totalUnits: number): string | null {
+  const normalized = normalizeText(segment);
+  const inRange = new Set<number>();
+  const numRe = /\b0*(\d+)\b/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = numRe.exec(normalized)) !== null) {
+    const raw = mm[1];
+    if (/^20\d{2}$/.test(raw)) continue;
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits) inRange.add(n);
+  }
+  return inRange.size === 1 ? String([...inRange][0]) : null;
+}
+
 /**
  * BanBajío-specific unit extraction. Their SPEI descriptions carry the unit in a
  * "Concepto del Pago: <unit> <month> | Recibo # <n>" segment (e.g.
@@ -209,20 +250,20 @@ export function extractFromBanBajio(
   // segment. We deliberately ignore the generic extractor's unit guess here —
   // its "#"-prefixed pattern would otherwise grab "Recibo # <n>" and other digit
   // groups. Concept, payer and period still reuse the generic extractor.
+  //
+  // We accept two safe shapes: the leading number ("176 dic") and an explicit
+  // prefixed unit anywhere in the segment ("casa 176", "mantenimiento casa 191",
+  // "Mmto Anual 2026 Casa 93" -> 93). A bare number that is NOT at the start is
+  // intentionally NOT taken here — that needs the amount corroboration and lives
+  // in the maintenance pass (parseMaintenanceConcept / Pass 0.6).
   let unitNumberDetected: string | null = null;
   let unitConfidence = 0;
 
   const segment = description.match(/concepto del pago:\s*([^|]*)/i);
   if (segment) {
-    // Leading number of the segment, tolerating leading zeros ("06" -> 6).
-    const leading = segment[1].match(/^\s*0*(\d+)/);
-    if (leading) {
-      const unit = parseInt(leading[1], 10);
-      if (Number.isFinite(unit) && unit >= 1 && totalUnits > 0 && unit <= totalUnits) {
-        unitNumberDetected = String(unit);
-        unitConfidence = 0.95;
-      }
-    }
+    const seg = segment[1];
+    unitNumberDetected = findLeadingUnit(seg, totalUnits) ?? findPrefixedUnit(seg, totalUnits);
+    if (unitNumberDetected) unitConfidence = 0.95;
   }
 
   return { ...base, unitNumberDetected, unitConfidence };
@@ -257,34 +298,9 @@ export function parseMaintenanceConcept(
     month = MONTH_MAP[key] ?? MONTH_MAP[monthMatch[1]] ?? null;
   }
 
-  // Unit: prefer a prefixed match (casa/unidad/lote/depto/c). The "#" pattern is
-  // harmless here because "| Recibo #" lives outside this segment.
-  let unit: string | null = null;
-  for (const { regex } of UNIT_PATTERNS) {
-    const m = segment.match(regex);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits) {
-        unit = String(n);
-      }
-      break;
-    }
-  }
-  // Otherwise the lone in-range number, skipping 4-digit years.
-  if (!unit) {
-    const inRange = new Set<number>();
-    const numRe = /\b0*(\d+)\b/g;
-    let mm: RegExpExecArray | null;
-    while ((mm = numRe.exec(segment)) !== null) {
-      const raw = mm[1];
-      if (/^20\d{2}$/.test(raw)) continue;
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= 1 && totalUnits > 0 && n <= totalUnits) {
-        inRange.add(n);
-      }
-    }
-    if (inRange.size === 1) unit = String([...inRange][0]);
-  }
+  // Unit: prefer a prefixed match (casa/unidad/lote/depto), else the lone in-range
+  // bare number. The amount gate (Pass 0.6) is what makes the bare case safe.
+  const unit = findPrefixedUnit(segment, totalUnits) ?? findBareUnit(segment, totalUnits);
 
   return { unit, month };
 }
@@ -744,6 +760,27 @@ export class ClassificationService {
           matchedAt: null,
         };
       }
+    }
+
+    // BanBajío detection fallback: a BanBajío INCOME whose amount did NOT match
+    // the fee rule above does NOT auto-classify — only the amount rule (Pass 0.6)
+    // moves a payment to Clasificadas. We still surface the unit detected from the
+    // concept ("casa NNN") so it shows in the "Unidad detectada" column, and keep
+    // the row pending review. matchToResident is consulted only to derive an
+    // accurate review reason (UNIT_NOT_FOUND / UNIT_AMBIGUOUS / …).
+    if (maintenanceContext) {
+      const review = matchToResident(extraction, residents);
+      return {
+        ...extraction,
+        residentId: null,
+        matchSource: null,
+        confidenceScore: review.confidenceScore,
+        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: review.requiresReviewReason ?? RequiresReviewReason.LOW_CONFIDENCE,
+        matchedRuleId: null,
+        matchedCalendarEventId: null,
+        matchedAt: null,
+      };
     }
 
     const match = matchToResident(extraction, residents);
