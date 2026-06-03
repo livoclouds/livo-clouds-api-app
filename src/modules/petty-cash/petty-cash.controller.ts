@@ -32,6 +32,19 @@ export class PettyCashController {
     return this.pettyCashService.findAll(req.condominiumId, query);
   }
 
+  @Get('category-breakdown')
+  @ApiOperation({ summary: 'Expense breakdown by category for a period' })
+  getCategoryBreakdown(
+    @Request() req: { condominiumId: string },
+    @Query('year') year?: string,
+    @Query('month') month?: string,
+  ) {
+    const now = new Date();
+    const y = year ? parseInt(year, 10) : now.getFullYear();
+    const m = month ? parseInt(month, 10) : now.getMonth() + 1;
+    return this.pettyCashService.getCategoryBreakdown(req.condominiumId, y, m);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get movement by id' })
   findOne(

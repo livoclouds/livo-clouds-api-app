@@ -7,14 +7,21 @@ import {
 import { Prisma } from '@prisma/client';
 import { JwtPayload, PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SettingsCacheService } from '../settings/settings-cache.service';
 import { CreateMovementDto } from './dto/create-movement.dto';
 import { ListPettyCashDto } from './dto/list-petty-cash.dto';
 
 const MAX_FOLIO_RETRIES = 5;
 
+// Outflow movement types — these are the ones that represent real expenses.
+const EXPENSE_MOVEMENT_TYPES = ['EXIT', 'REIMBURSEMENT'] as const;
+
 @Injectable()
 export class PettyCashService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsCache: SettingsCacheService,
+  ) {}
 
   async findAll(
     condominiumId: string,
@@ -46,6 +53,56 @@ export class PettyCashService {
         limit,
         totalPages: Math.max(1, Math.ceil(total / limit)),
       },
+    };
+  }
+
+  /**
+   * Expense breakdown by category for a single month, aggregated from petty
+   * cash outflows (EXIT / REIMBURSEMENT). Rejected movements are excluded.
+   * Powers the dashboard "Petty cash expenses by category" chart — bank
+   * transactions carry no real category, so petty cash is the only source of
+   * truly categorized expense data.
+   */
+  async getCategoryBreakdown(
+    condominiumId: string,
+    year: number,
+    month: number,
+  ) {
+    const [grouped, settings] = await Promise.all([
+      this.prisma.pettyCashMovement.groupBy({
+        by: ['category'],
+        where: {
+          condominiumId,
+          movementType: { in: [...EXPENSE_MOVEMENT_TYPES] },
+          status: { not: 'REJECTED' },
+          date: {
+            gte: new Date(year, month - 1, 1),
+            lt: new Date(year, month, 1),
+          },
+        },
+        _sum: { amount: true },
+      }),
+      this.settingsCache.getSettings(condominiumId),
+    ]);
+
+    const items = grouped
+      .map((g) => ({ category: g.category, amount: Number(g._sum.amount ?? 0) }))
+      .filter((i) => i.amount > 0);
+    const total = items.reduce((acc, i) => acc + i.amount, 0);
+
+    const breakdown = items
+      .map((i) => ({
+        category: i.category,
+        amount: i.amount,
+        percentage: total > 0 ? Math.round((i.amount / total) * 1000) / 10 : 0,
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    return {
+      currency: settings?.currency ?? 'MXN',
+      period: { year, month },
+      total,
+      breakdown,
     };
   }
 
