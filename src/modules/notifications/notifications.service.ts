@@ -399,9 +399,17 @@ export class NotificationsService {
       where: { userId },
     });
     if (!row) {
-      return { soundEnabled: true, soundChoice: NotificationSound.CHIME };
+      return {
+        soundEnabled: true,
+        soundChoice: NotificationSound.CHIME,
+        dnd: false,
+      };
     }
-    return { soundEnabled: row.soundEnabled, soundChoice: row.soundChoice };
+    return {
+      soundEnabled: row.soundEnabled,
+      soundChoice: row.soundChoice,
+      dnd: row.dnd,
+    };
   }
 
   /** Upserts the user's arrival-sound preference. */
@@ -421,7 +429,25 @@ export class NotificationsService {
         soundChoice: dto.soundChoice,
       },
     });
-    return { soundEnabled: row.soundEnabled, soundChoice: row.soundChoice };
+    return {
+      soundEnabled: row.soundEnabled,
+      soundChoice: row.soundChoice,
+      dnd: row.dnd,
+    };
+  }
+
+  /**
+   * Upserts ONLY the user's "Do Not Disturb" flag on the same single-row
+   * settings record, leaving the sound fields at their existing/default values.
+   * Persisted so the web's muted state survives refresh, lock-unlock, re-login.
+   */
+  async updateDndPreference(userId: string, dnd: boolean) {
+    const row = await this.prisma.userNotificationSoundPreference.upsert({
+      where: { userId },
+      create: { userId, dnd },
+      update: { dnd },
+    });
+    return { dnd: row.dnd };
   }
 
   /**

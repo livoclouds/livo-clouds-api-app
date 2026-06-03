@@ -21,6 +21,7 @@ import { ListNotificationsDto } from './dto/list-notifications.dto';
 import { SnoozeNotificationDto } from './dto/snooze-notification.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import { UpdateNotificationSoundDto } from './dto/update-notification-sound.dto';
+import { UpdateNotificationDndDto } from './dto/update-notification-dnd.dto';
 import { NotificationsService } from './notifications.service';
 
 @ApiTags('Notifications')
@@ -99,6 +100,18 @@ export class NotificationsController {
     @Body() dto: UpdateNotificationSoundDto,
   ) {
     return this.notificationsService.updateSoundPreference(user.sub, dto);
+  }
+
+  @Patch('sound/dnd')
+  @RequirePermission('notifications.read')
+  @ApiOperation({
+    summary: 'Update the "Do Not Disturb" flag for the current user',
+  })
+  updateDndPreference(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateNotificationDndDto,
+  ) {
+    return this.notificationsService.updateDndPreference(user.sub, dto.dnd);
   }
 
   @Post('read-all')
