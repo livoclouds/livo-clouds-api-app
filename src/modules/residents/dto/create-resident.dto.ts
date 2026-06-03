@@ -66,5 +66,10 @@ export class CreateResidentDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  houseModel?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   notes?: string;
 }

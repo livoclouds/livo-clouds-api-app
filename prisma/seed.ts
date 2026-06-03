@@ -320,6 +320,8 @@ interface CsvResident {
   email: string;
   telefono: string;
   celular: string;
+  parkingSpots: string;
+  houseModel: string;
 }
 
 function parseResidentsCsv(filePath: string): CsvResident[] {
@@ -328,13 +330,15 @@ function parseResidentsCsv(filePath: string): CsvResident[] {
   return lines.slice(1).map((line) => {
     const cols = line.split(',');
     return {
-      nombre:      cols[0]?.trim() ?? '',
-      perfil:      cols[1]?.trim() ?? '',
-      tipoUsuario: cols[2]?.trim() ?? '',
-      unidad:      cols[3]?.trim() ?? '',
-      email:       cols[4]?.trim() ?? '',
-      telefono:    cols[5]?.trim() ?? '',
-      celular:     cols[6]?.trim() ?? '',
+      nombre:       cols[0]?.trim() ?? '',
+      perfil:       cols[1]?.trim() ?? '',
+      tipoUsuario:  cols[2]?.trim() ?? '',
+      unidad:       cols[3]?.trim() ?? '',
+      email:        cols[4]?.trim() ?? '',
+      telefono:     cols[5]?.trim() ?? '',
+      celular:      cols[6]?.trim() ?? '',
+      parkingSpots: cols[7]?.trim() ?? '',
+      houseModel:   cols[8]?.trim() ?? '',
     };
   }).filter((r) => r.unidad && r.nombre);
 }
@@ -697,9 +701,9 @@ async function main() {
   console.log(`✅ Users: ${totalUsers}`);
 
   // ─── Residents ─────────────────────────────────────────────────────────────
-  // cotoalameda (ci=0): loaded from prisma/seed-data/residents.csv (Principal rows only)
+  // cotoalameda (ci=0): loaded from prisma/seed-data/cotoalameda/residents.csv (Principal rows only)
   // all other condominiums: 5 synthetic residents each
-  const csvPath = path.join(process.cwd(), 'prisma', 'seed-data', 'residents.csv');
+  const csvPath = path.join(process.cwd(), 'prisma', 'seed-data', 'cotoalameda', 'residents.csv');
   const csvRows = parseResidentsCsv(csvPath).filter((r) => r.tipoUsuario === 'Principal');
   const seenUnits = new Set<string>();
   const csvResidents = csvRows.filter((r) => {
@@ -727,7 +731,8 @@ async function main() {
           paymentStatus: 'CURRENT' as PaymentStatus,
           debt: 0,
           monthlyFee: fee,
-          parkingSpots: 0,
+          parkingSpots: parseInt(row.parkingSpots, 10) || 0,
+          houseModel: row.houseModel || null,
           phone: row.celular ? row.celular.replace(/\s+/g, '') : null,
           secondaryPhone: row.telefono ? row.telefono.replace(/\s+/g, '') : null,
           email: row.email || null,
