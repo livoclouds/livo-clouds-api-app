@@ -530,6 +530,48 @@ export class AuthService {
   }
 
   /**
+   * Persist the in-app screen lock for the current session. The web client calls
+   * this the moment its lock engages (idle timer, a 423, or any client-side
+   * lock), so the lock survives a page reload and token rotation instead of
+   * living only in client memory. Without it, `lastActivityAt` stays recent and
+   * a reload reports `locked:false`, letting the user back into the dashboard.
+   * Idempotent: a no-op when the session is already locked, revoked, or missing.
+   */
+  async lock(
+    sid: string | undefined,
+    ctx?: AuthContext,
+  ): Promise<{ locked: boolean }> {
+    if (!sid) return { locked: false };
+
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { id: sid },
+      select: {
+        lockedAt: true,
+        revokedAt: true,
+        userId: true,
+        user: { select: { condominiumId: true } },
+      },
+    });
+
+    if (!session || session.revokedAt) return { locked: false };
+    if (session.lockedAt) return { locked: true };
+
+    await this.prisma.refreshToken.update({
+      where: { id: sid },
+      data: { lockedAt: new Date() },
+    });
+    await this.safeAudit({
+      userId: session.userId,
+      condominiumId: session.user.condominiumId ?? undefined,
+      action: 'AUTH_SESSION_LOCK',
+      result: 'SUCCESS',
+      description: 'Screen lock engaged by client (inactivity or manual)',
+      ctx,
+    });
+    return { locked: true };
+  }
+
+  /**
    * Refresh the session's activity timestamp. Driven by genuine user
    * interaction (the client throttles it), so background polling never keeps a
    * session alive. A locked session is not refreshed — it must be unlocked.

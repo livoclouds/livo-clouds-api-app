@@ -876,4 +876,76 @@ describe('AuthService', () => {
       expect(createData).not.toHaveProperty('failedUnlockAttempts');
     });
   });
+
+  // lock() — client-initiated lock persisted server-side so it survives reload.
+  describe('lock', () => {
+    const SID = 'session-id-1';
+
+    it('sets lockedAt and returns locked:true when the session is active and unlocked', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lockedAt: null,
+        revokedAt: null,
+        userId: USER_ID,
+        user: { condominiumId: CONDOMINIUM_ID },
+      });
+
+      const result = await service.lock(SID);
+
+      expect(result).toEqual({ locked: true });
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({ lockedAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it('is idempotent — no DB write when already locked', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lockedAt: new Date(),
+        revokedAt: null,
+        userId: USER_ID,
+        user: { condominiumId: CONDOMINIUM_ID },
+      });
+
+      const result = await service.lock(SID);
+
+      expect(result).toEqual({ locked: true });
+      expect(prisma.refreshToken.update).not.toHaveBeenCalled();
+    });
+
+    it('returns locked:false and writes nothing when the session is revoked', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lockedAt: null,
+        revokedAt: new Date(),
+        userId: USER_ID,
+        user: { condominiumId: CONDOMINIUM_ID },
+      });
+
+      const result = await service.lock(SID);
+
+      expect(result).toEqual({ locked: false });
+      expect(prisma.refreshToken.update).not.toHaveBeenCalled();
+    });
+
+    it('returns locked:false when there is no session id', async () => {
+      const result = await service.lock(undefined);
+      expect(result).toEqual({ locked: false });
+      expect(prisma.refreshToken.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('getSessionState reports locked:true once lockedAt is set, even with recent activity', async () => {
+      // This is the bug the lock endpoint fixes: a recent lastActivityAt would
+      // otherwise compute locked:false on reload.
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lastActivityAt: new Date(),
+        lockedAt: new Date(),
+        revokedAt: null,
+        user: { inactivityLockMinutes: 15 },
+      });
+
+      const result = await service.getSessionState(SID);
+      expect(result).toEqual({ locked: true });
+    });
+  });
 });

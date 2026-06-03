@@ -91,6 +91,20 @@ export class AuthController {
     });
   }
 
+  @Post('lock')
+  @SkipInactivityLock()
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 30, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Persist the in-app screen lock for the current session' })
+  lock(
+    @CurrentUser() user: JwtPayload,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    return this.authService.lock(user.sid, { ipAddress, userAgent, requestId });
+  }
+
   @Post('heartbeat')
   @SkipInactivityLock()
   @HttpCode(HttpStatus.OK)
