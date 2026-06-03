@@ -584,6 +584,7 @@ model Resident {
   debt           Decimal       @default(0) @db.Decimal(12, 2)
   monthlyFee     Decimal       @default(0) @db.Decimal(12, 2)
   parkingSpots   Int           @default(0)
+  houseModel     String?
   documentation  Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
   notes          String?
   deletedAt      DateTime?
