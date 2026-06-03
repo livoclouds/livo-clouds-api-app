@@ -75,7 +75,7 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findAll(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, description, amountMin, amountMax, importedMinAgeMinutes, importedMaxAgeMinutes } = dto;
+    const { page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, concept, conceptPresence, unitDetected, description, amountMin, amountMax, importedMinAgeMinutes, importedMaxAgeMinutes } = dto;
     const skip = (page - 1) * limit;
 
     const where: Prisma.TransactionWhereInput = { condominiumId };
@@ -93,6 +93,11 @@ export class TransactionsService {
       }
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
+    else if (conceptPresence === 'absent') where.paymentConcept = null;
+    // Detected-unit presence filter. Direct assignment (not where.OR) so it
+    // composes via AND with the amount filter below, which owns where.OR.
+    if (unitDetected === 'detected') where.unitNumberDetected = { not: null };
+    else if (unitDetected === 'undetected') where.unitNumberDetected = null;
     if (description) where.description = { contains: description, mode: 'insensitive' };
     // Amount range filter by absolute magnitude: credits (income) and charges
     // (expense) are stored positive, and a row has exactly one of them set, so

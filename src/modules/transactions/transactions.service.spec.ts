@@ -146,6 +146,46 @@ describe('TransactionsService.findAll filters', () => {
     await makeService(prisma).findAll(CONDOMINIUM_ID, {});
     expect(whereOf(prisma).createdAt).toBeUndefined();
   });
+
+  it('filters rows with no payment concept when conceptPresence is "absent"', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { conceptPresence: 'absent' });
+    expect(whereOf(prisma).paymentConcept).toBeNull();
+  });
+
+  it('lets a concept substring search win over conceptPresence when both are sent', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { concept: 'maint', conceptPresence: 'absent' });
+    expect(whereOf(prisma).paymentConcept).toEqual({ contains: 'maint', mode: 'insensitive' });
+  });
+
+  it('filters rows with a detected unit when unitDetected is "detected"', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { unitDetected: 'detected' });
+    expect(whereOf(prisma).unitNumberDetected).toEqual({ not: null });
+  });
+
+  it('filters rows with no detected unit when unitDetected is "undetected"', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { unitDetected: 'undetected' });
+    expect(whereOf(prisma).unitNumberDetected).toBeNull();
+  });
+
+  it('does not add concept/unit presence filters when neither is provided', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, {});
+    const where = whereOf(prisma);
+    expect(where.paymentConcept).toBeUndefined();
+    expect(where.unitNumberDetected).toBeUndefined();
+  });
+
+  it('composes the absent-concept filter with the amount filter without clobbering where.OR', async () => {
+    const prisma = makePrismaMock();
+    await makeService(prisma).findAll(CONDOMINIUM_ID, { conceptPresence: 'absent', amountMin: 100 });
+    const where = whereOf(prisma);
+    expect(where.paymentConcept).toBeNull();
+    expect(where.OR).toEqual([{ credits: { gte: 100 } }, { charges: { gte: 100 } }]);
+  });
 });
 
 describe('TransactionsService.getAuditChain', () => {
