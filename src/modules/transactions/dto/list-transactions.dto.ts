@@ -98,6 +98,21 @@ export class ListTransactionsDto {
   @IsIn(['HIGH', 'MEDIUM', 'LOW'])
   confidenceLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
 
+  // Filter by whether a payment concept was assigned. 'absent' → no concept set
+  // (paymentConcept is null). Mutually exclusive with `concept` (substring search);
+  // when both are sent, `concept` wins.
+  @IsOptional()
+  @IsString()
+  @IsIn(['absent'])
+  conceptPresence?: 'absent';
+
+  // Filter by whether a unit was auto-detected. 'detected' → unitNumberDetected is
+  // set; 'undetected' → it is null (the "—" rows in the review queue).
+  @IsOptional()
+  @IsString()
+  @IsIn(['detected', 'undetected'])
+  unitDetected?: 'detected' | 'undetected';
+
   // Filter by absolute transaction magnitude (matches credits OR charges).
   @IsOptional()
   @Type(() => Number)
