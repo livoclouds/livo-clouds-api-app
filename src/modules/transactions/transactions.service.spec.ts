@@ -159,16 +159,22 @@ describe('TransactionsService.findAll filters', () => {
     expect(whereOf(prisma).paymentConcept).toEqual({ contains: 'maint', mode: 'insensitive' });
   });
 
-  it('filters rows with a detected unit when unitDetected is "detected"', async () => {
+  it('filters detected rows by the scalar OR the multi-house array (composes via AND)', async () => {
     const prisma = makePrismaMock();
     await makeService(prisma).findAll(CONDOMINIUM_ID, { unitDetected: 'detected' });
-    expect(whereOf(prisma).unitNumberDetected).toEqual({ not: null });
+    // Nested OR inside where.AND so it doesn't clobber the amount filter's where.OR.
+    expect(whereOf(prisma).AND).toEqual([
+      { OR: [{ unitNumberDetected: { not: null } }, { unitNumbersDetected: { isEmpty: false } }] },
+    ]);
+    expect(whereOf(prisma).OR).toBeUndefined();
   });
 
-  it('filters rows with no detected unit when unitDetected is "undetected"', async () => {
+  it('filters undetected rows requiring BOTH the scalar null AND an empty array', async () => {
+    // A multi-house row (scalar null, array ["307","43"]) must NOT leak into "Sin detectar".
     const prisma = makePrismaMock();
     await makeService(prisma).findAll(CONDOMINIUM_ID, { unitDetected: 'undetected' });
     expect(whereOf(prisma).unitNumberDetected).toBeNull();
+    expect(whereOf(prisma).unitNumbersDetected).toEqual({ isEmpty: true });
   });
 
   it('does not add concept/unit presence filters when neither is provided', async () => {

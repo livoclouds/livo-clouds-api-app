@@ -1523,3 +1523,73 @@ describe('ClassificationService.manualClassify — multi-unit allocations', () =
     });
   });
 });
+
+describe('extractFromText — maintenance abbreviations', () => {
+  it.each([
+    ['Pago Mtto noviembre', 'MAINTENANCE'],
+    ['MTTO casa 12', 'MAINTENANCE'],
+    ['Mmto Anual 2026', 'MAINTENANCE'],
+    ['Mantto octubre', 'MAINTENANCE'],
+    ['mantenimiento octubre', 'MAINTENANCE'],
+  ])('tags "%s" as %s', (desc, concept) => {
+    expect(extractFromText(desc).paymentConcept).toBe(concept);
+  });
+});
+
+describe('extractFromBanBajio — maintenance concept + bare unit (Mtto / months)', () => {
+  const wrap = (s: string) =>
+    `SPEI Recibido: | Institucion contraparte: NU MEXICO Concepto del Pago: ${s} | Recibo # 225199849`;
+
+  it.each([
+    ['Mtto Oct 357', '357'],
+    ['Mtto 357 Sep', '357'],
+    ['MTTO COTO ALAMEDA 218 NOVIEMBRE', '218'],
+  ])('detects a maintenance bare unit in "%s" -> %s', (concept, unit) => {
+    const r = extractFromBanBajio(wrap(concept), 370);
+    expect(r.paymentConcept).toBe('MAINTENANCE');
+    expect(r.unitNumberDetected).toBe(unit);
+    expect(r.unitNumbersDetected).toEqual([unit]);
+  });
+
+  it('tags a months-only concept as maintenance with no unit ("agosto y octubre")', () => {
+    const r = extractFromBanBajio(wrap('agosto y octubre'), 370);
+    expect(r.paymentConcept).toBe('MAINTENANCE');
+    expect(r.unitNumberDetected).toBeNull();
+    expect(r.unitNumbersDetected).toEqual([]);
+  });
+
+  it('does NOT take a bare number when the concept is not maintenance (no regression)', () => {
+    // "deposito 50" -> DEPOSIT; the bare number must stay un-extracted.
+    const r = extractFromBanBajio(wrap('deposito 50'), 370);
+    expect(r.paymentConcept).toBe('DEPOSIT');
+    expect(r.unitNumberDetected).toBeNull();
+  });
+
+  it('does not let a month override a stronger concept keyword', () => {
+    // "garantia noviembre 50" -> DEPOSIT (garantia), so the bare 50 is not taken.
+    const r = extractFromBanBajio(wrap('garantia noviembre 50'), 370);
+    expect(r.paymentConcept).toBe('DEPOSIT');
+    expect(r.unitNumberDetected).toBeNull();
+  });
+});
+
+describe('ClassificationService.classifyTransaction — maintenance concept paints unit, stays in review', () => {
+  const residents = [
+    { id: 'res-357', unitNumber: '357', firstName: 'Andrea', lastName: 'Bravo' },
+  ];
+  const TX_DATE = new Date('2025-11-30T12:00:00Z');
+  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
+
+  it('paints concept + unit but stays NEEDS_REVIEW when the amount is unusual', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      'SPEI Recibido: | Concepto del Pago: Mtto Oct 357 | Recibo # 225199849',
+      TX_DATE, residents, [], undefined, bankCtx, feeCtx(357), // $357, out of [500,600]
+    );
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    expect(result.unitNumberDetected).toBe('357');
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+});

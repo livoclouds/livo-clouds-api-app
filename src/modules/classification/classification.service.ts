@@ -87,7 +87,10 @@ const UNIT_PATTERNS: { regex: RegExp; confidence: number }[] = [
 ];
 
 const CONCEPT_PATTERNS: { regex: RegExp; concept: string }[] = [
-  { regex: /mantenimiento|cuota\s+mensual|mensualidad|mant\b/i, concept: 'MAINTENANCE' },
+  // Maintenance abbreviations residents actually write: "mtto", "mmto", "manto",
+  // "mantto", "mant" — the old `mant\b` missed "Mtto"/"MTTO"/"Mmto" (no word
+  // boundary after "mant"). `\bm(?:antenimiento|antto|anto|tto|mto|ant)\b` covers them.
+  { regex: /mantenimiento|cuota\s+mensual|mensualidad|\bm(?:antenimiento|antto|anto|tto|mto|ant)\b/i, concept: 'MAINTENANCE' },
   { regex: /deposito|dep[oó]sito|garant[ií]a/i, concept: 'DEPOSIT' },
   { regex: /multa|sanci[oó]n|infracci[oó]n/i, concept: 'FINE' },
   { regex: /\bagua\b|\bluz\b|electricidad|internet|\bgas\b/i, concept: 'UTILITY' },
@@ -283,6 +286,22 @@ function findMultipleUnits(segment: string, totalUnits: number): string[] {
 }
 
 /**
+ * The first named month in a segment ("agosto y octubre" -> 8, "Mtto Oct 357" -> 10),
+ * matched as a whole word, longest-first so "may" never matches inside a longer token.
+ * Shared by extractFromBanBajio (month -> maintenance concept) and parseMaintenanceConcept.
+ */
+function detectMonth(segment: string): number | null {
+  const normalized = normalizeText(segment);
+  const monthNames = Object.keys(MONTH_MAP)
+    .map((k) => (k === 'may_' ? 'may' : k))
+    .sort((a, b) => b.length - a.length);
+  const m = normalized.match(new RegExp(`\\b(${monthNames.join('|')})\\b`));
+  if (!m) return null;
+  const key = m[1] === 'may' ? 'may_' : m[1];
+  return MONTH_MAP[key] ?? MONTH_MAP[m[1]] ?? null;
+}
+
+/**
  * BanBajío-specific unit extraction. Their SPEI descriptions carry the unit in a
  * "Concepto del Pago: <unit> <month> | Recibo # <n>" segment (e.g.
  * "...Concepto del Pago: 106 noviembre | Recibo # 227120243..."). We read the
@@ -310,10 +329,19 @@ export function extractFromBanBajio(
   let unitNumberDetected: string | null = null;
   let unitNumbersDetected: string[] = [];
   let unitConfidence = 0;
+  let paymentConcept = base.paymentConcept;
 
   const segment = description.match(/concepto del pago:\s*([^|]*)/i);
   if (segment) {
     const seg = segment[1];
+
+    // A named month in the concept ("agosto y octubre", "Mtto Oct 357") signals a
+    // maintenance payment when no stronger concept keyword was found. Only fills a
+    // missing concept — a deposit/fine that happens to name a month keeps its own.
+    if (!paymentConcept && detectMonth(seg) !== null) {
+      paymentConcept = 'MAINTENANCE';
+    }
+
     // A concept naming several houses ("casas 307 y 43") is a multi-unit payment:
     // surface ALL units in the array and leave the scalar null so nothing tries
     // to auto-link a single resident — the split is decided by the operator.
@@ -326,8 +354,15 @@ export function extractFromBanBajio(
       // A single house — whether written "casa 176", glued "casa34", as a leading
       // number "176 dic", or as a multi-form that left only one in-range unit
       // ("casas 307 y 999"). multi[0] already captured the casa-anchored case.
-      const single =
+      let single: string | null =
         multi[0] ?? findLeadingUnit(seg, totalUnits) ?? findPrefixedUnit(seg, totalUnits);
+      // Maintenance-gated bare number: "Mtto Oct 357" -> 357, "MTTO ... 218 NOV" -> 218.
+      // The maintenance concept is what makes a bare number safe here (the same role
+      // the amount gate plays in Pass 0.6); findBareUnit still requires a single
+      // in-range number and skips 20XX years.
+      if (!single && paymentConcept === 'MAINTENANCE') {
+        single = findBareUnit(seg, totalUnits);
+      }
       if (single) {
         unitNumberDetected = single;
         unitNumbersDetected = [single];
@@ -336,7 +371,7 @@ export function extractFromBanBajio(
     }
   }
 
-  return { ...base, unitNumberDetected, unitNumbersDetected, unitConfidence };
+  return { ...base, paymentConcept, unitNumberDetected, unitNumbersDetected, unitConfidence };
 }
 
 /**
@@ -356,17 +391,8 @@ export function parseMaintenanceConcept(
   if (!segMatch) return { unit: null, month: null };
   const segment = normalizeText(segMatch[1]);
 
-  // Month: any MONTH_MAP key as a whole word, longest-first so "may" never
-  // matches inside a longer token.
-  let month: number | null = null;
-  const monthNames = Object.keys(MONTH_MAP)
-    .map((k) => (k === 'may_' ? 'may' : k))
-    .sort((a, b) => b.length - a.length);
-  const monthMatch = segment.match(new RegExp(`\\b(${monthNames.join('|')})\\b`));
-  if (monthMatch) {
-    const key = monthMatch[1] === 'may' ? 'may_' : monthMatch[1];
-    month = MONTH_MAP[key] ?? MONTH_MAP[monthMatch[1]] ?? null;
-  }
+  // Month: shared detector (whole-word, longest-first).
+  const month = detectMonth(segMatch[1]);
 
   // Unit: prefer a prefixed match (casa/unidad/lote/depto), else the lone in-range
   // bare number. The amount gate (Pass 0.6) is what makes the bare case safe.
