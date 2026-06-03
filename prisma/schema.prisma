@@ -884,6 +884,10 @@ model Transaction {
   payerName              String?
   classificationStatus   ClassificationStatus  @default(NEEDS_REVIEW)
   unitNumberDetected     String?
+  // All units when one payment covers several houses ("casas 307 y 43"). The
+  // scalar above stays the 1:1 primary (null for multi); this array surfaces the
+  // full set for the "Unidad detectada" column and drives manual allocations.
+  unitNumbersDetected    String[]              @default([])
   payerNameDetected      String?
   paymentConcept         String?
   paymentPeriodYear      Int?
@@ -1153,6 +1157,9 @@ model PaymentAllocation {
   condominiumId      String
   transactionId      String
   residentId         String
+  // The house this slice of the payment is for ("307"). Mirrors the resident's
+  // unit; persisted for display (chips) and audit without a resident join.
+  unitNumber         String?
   paymentPeriodYear  Int
   paymentPeriodMonth Int
   allocatedAmount    Decimal  @db.Decimal(12, 2)

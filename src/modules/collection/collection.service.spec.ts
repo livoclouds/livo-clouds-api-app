@@ -18,6 +18,9 @@ interface PrismaMock {
     count: jest.Mock;
     groupBy: jest.Mock;
   };
+  paymentAllocation: {
+    aggregate: jest.Mock;
+  };
 }
 
 function makePrismaMock(): PrismaMock {
@@ -34,6 +37,9 @@ function makePrismaMock(): PrismaMock {
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
       groupBy: jest.fn().mockResolvedValue([]),
+    },
+    paymentAllocation: {
+      aggregate: jest.fn().mockResolvedValue({ _sum: { allocatedAmount: null } }),
     },
   };
 }
@@ -161,6 +167,26 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       expect(result.summary.totalPaid).toBe(7000);
       // balance = totalPaid − totalExpected = 7000 − 27500
       expect(result.summary.balance).toBe(7000 - 27500);
+    });
+
+    it('adds this resident\'s allocation shares to totalPaid without double-counting', async () => {
+      // Direct income (own transactions, NOT split): $7000.
+      prisma.transaction.aggregate.mockResolvedValue({ _sum: { credits: 7000 } });
+      // Their slice of split payments ("casas 307 y 43"): $500.
+      prisma.paymentAllocation.aggregate.mockResolvedValue({
+        _sum: { allocatedAmount: 500 },
+      });
+
+      const result = await service.getAccountStatement(CONDOMINIUM_ID, RESIDENT_ID);
+
+      // totalPaid = direct credits + allocation shares = 7000 + 500.
+      expect(result.summary.totalPaid).toBe(7500);
+      // The direct income bucket must EXCLUDE transactions that were split into
+      // allocations, so their amount is never counted twice.
+      expect(prisma.transaction.aggregate.mock.calls[0][0].where).toMatchObject({
+        flowType: 'INCOME',
+        paymentAllocations: { none: {} },
+      });
     });
 
     it('excludes PARTIAL / ADJUSTMENT / EXTRAORDINARY / AGREEMENT from both month counts (status semantics preserved)', async () => {

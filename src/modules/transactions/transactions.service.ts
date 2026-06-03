@@ -210,6 +210,19 @@ export class TransactionsService {
               resident: { select: { firstName: true, lastName: true } },
             },
           },
+          // Multi-unit split payments carry their per-house allocations; the web
+          // pre-fills the allocation editor from these when re-editing.
+          paymentAllocations: {
+            select: {
+              id: true,
+              unitNumber: true,
+              residentId: true,
+              allocatedAmount: true,
+              paymentPeriodYear: true,
+              paymentPeriodMonth: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
         },
       }),
       this.prisma.transaction.count({ where }),
@@ -334,6 +347,19 @@ export class TransactionsService {
               title: true,
               startDate: true,
               unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
+          // Per-house allocations of a split payment, rendered as chips + the
+          // amount each resident was credited.
+          paymentAllocations: {
+            select: {
+              id: true,
+              unitNumber: true,
+              residentId: true,
+              allocatedAmount: true,
+              paymentPeriodYear: true,
+              paymentPeriodMonth: true,
               resident: { select: { firstName: true, lastName: true } },
             },
           },

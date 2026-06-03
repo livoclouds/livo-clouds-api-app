@@ -38,6 +38,10 @@ interface DbRule {
 
 interface TextExtraction {
   unitNumberDetected: string | null;
+  // All units named when a single payment covers MORE than one house
+  // ("casas 307 y 43"). Single-unit detection populates this with one element;
+  // the scalar `unitNumberDetected` stays as the 1:1 primary (null for multi).
+  unitNumbersDetected: string[];
   unitConfidence: number;
   payerNameDetected: string | null;
   paymentConcept: string | null;
@@ -65,13 +69,21 @@ export interface ClassificationSummary {
   unmatched: number;
 }
 
+// The unit keyword may run straight into the number with no space ("casa34",
+// "CASA233Noviembre2025") or into trailing text ("casa77manttonoviembre2025").
+// So the separator is `\s*` (optional) and we capture up to 4 digits that are NOT
+// followed by another digit — `0*(\d{1,4})(?!\d)`. The `(?!\d)` replaces the old
+// trailing `\b` (a digit→letter transition is not a word boundary, so `\b`
+// mis-anchored glued forms): it still stops at the first letter ("casa77mantto"
+// -> 77, "CASA233Noviembre" -> 233) but refuses a 4-digit PREFIX of a longer run
+// ("Recibo # 227120243" never yields "2271").
 const UNIT_PATTERNS: { regex: RegExp; confidence: number }[] = [
-  { regex: /\bcasa\s+(\d{1,4}[a-z]?)\b/i, confidence: 0.95 },
-  { regex: /\bunidad\s+(\d{1,4}[a-z]?)\b/i, confidence: 0.95 },
-  { regex: /\blote\s+(\d{1,4}[a-z]?)\b/i, confidence: 0.9 },
-  { regex: /\bc\.?\s*(\d{1,4}[a-z]?)\b/i, confidence: 0.85 },
-  { regex: /\bdepto?\.?\s*(\d{1,4}[a-z]?)\b/i, confidence: 0.85 },
-  { regex: /#\s*(\d{1,4}[a-z]?)\b/i, confidence: 0.8 },
+  { regex: /\bcasa\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95 },
+  { regex: /\bunidad\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95 },
+  { regex: /\blote\s*0*(\d{1,4})(?!\d)/i, confidence: 0.9 },
+  { regex: /\bc\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85 },
+  { regex: /\bdepto?\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85 },
+  { regex: /#\s*0*(\d{1,4})(?!\d)/i, confidence: 0.8 },
 ];
 
 const CONCEPT_PATTERNS: { regex: RegExp; concept: string }[] = [
@@ -182,6 +194,9 @@ export function extractFromText(description: string): TextExtraction {
 
   return {
     unitNumberDetected,
+    // The generic extractor never resolves multi-unit; only the BanBajío path
+    // (findMultipleUnits) does. Single detected unit is mirrored by the caller.
+    unitNumbersDetected: unitNumberDetected ? [unitNumberDetected] : [],
     unitConfidence,
     payerNameDetected,
     paymentConcept,
@@ -232,6 +247,42 @@ function findBareUnit(segment: string, totalUnits: number): string | null {
 }
 
 /**
+ * All in-range units named when a single BanBajío payment covers MORE than one
+ * house, e.g. "casas 307 y 43", "casa 307 y 43", "casa 307, 43",
+ * "casa 307 y casa 43" -> ["307","43"]. Anchored on a leading "casa(s) <n>" so
+ * reference / account / RFC digits elsewhere are never swept in; siblings are
+ * picked up after a connector (y / , / & / + / casa(s)). Each number is validated
+ * 1..totalUnits, 4-digit years are skipped, and first-seen order is preserved
+ * (deduped). Returns [] when there is no "casa(s) <n>" head; a single-house
+ * concept yields a one-element array, which the caller treats as the normal case.
+ */
+function findMultipleUnits(segment: string, totalUnits: number): string[] {
+  const normalized = normalizeText(segment);
+  const head = normalized.match(/\bcasas?\s*0*(\d{1,4})(?!\d)/);
+  if (!head || head.index === undefined) return [];
+
+  const units: string[] = [];
+  const seen = new Set<number>();
+  const pushIfValid = (raw: string) => {
+    if (/^20\d{2}$/.test(raw)) return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1 || totalUnits <= 0 || n > totalUnits) return;
+    if (seen.has(n)) return;
+    seen.add(n);
+    units.push(String(n));
+  };
+
+  pushIfValid(head[1]);
+  const tailRe = /(?:y|,|&|\+|casas?)\s*0*(\d{1,4})(?!\d)/g;
+  tailRe.lastIndex = head.index + head[0].length;
+  let m: RegExpExecArray | null;
+  while ((m = tailRe.exec(normalized)) !== null) {
+    pushIfValid(m[1]);
+  }
+  return units;
+}
+
+/**
  * BanBajío-specific unit extraction. Their SPEI descriptions carry the unit in a
  * "Concepto del Pago: <unit> <month> | Recibo # <n>" segment (e.g.
  * "...Concepto del Pago: 106 noviembre | Recibo # 227120243..."). We read the
@@ -257,16 +308,35 @@ export function extractFromBanBajio(
   // intentionally NOT taken here — that needs the amount corroboration and lives
   // in the maintenance pass (parseMaintenanceConcept / Pass 0.6).
   let unitNumberDetected: string | null = null;
+  let unitNumbersDetected: string[] = [];
   let unitConfidence = 0;
 
   const segment = description.match(/concepto del pago:\s*([^|]*)/i);
   if (segment) {
     const seg = segment[1];
-    unitNumberDetected = findLeadingUnit(seg, totalUnits) ?? findPrefixedUnit(seg, totalUnits);
-    if (unitNumberDetected) unitConfidence = 0.95;
+    // A concept naming several houses ("casas 307 y 43") is a multi-unit payment:
+    // surface ALL units in the array and leave the scalar null so nothing tries
+    // to auto-link a single resident — the split is decided by the operator.
+    const multi = findMultipleUnits(seg, totalUnits);
+    if (multi.length >= 2) {
+      unitNumbersDetected = multi;
+      unitNumberDetected = null;
+      unitConfidence = 0.95;
+    } else {
+      // A single house — whether written "casa 176", glued "casa34", as a leading
+      // number "176 dic", or as a multi-form that left only one in-range unit
+      // ("casas 307 y 999"). multi[0] already captured the casa-anchored case.
+      const single =
+        multi[0] ?? findLeadingUnit(seg, totalUnits) ?? findPrefixedUnit(seg, totalUnits);
+      if (single) {
+        unitNumberDetected = single;
+        unitNumbersDetected = [single];
+        unitConfidence = 0.95;
+      }
+    }
   }
 
-  return { ...base, unitNumberDetected, unitConfidence };
+  return { ...base, unitNumberDetected, unitNumbersDetected, unitConfidence };
 }
 
 /**
@@ -627,6 +697,27 @@ export class ClassificationService {
       extraction.paymentPeriodYear = transactionDate.getUTCFullYear();
     }
 
+    // Multi-unit BanBajío payment ("casas 307 y 43"): one credit covering several
+    // houses. We surface ALL detected units (the array) but NEVER auto-classify —
+    // a single residentId cannot represent N units, and how the amount splits
+    // across them is the operator's call (manual PaymentAllocation rows). Short-
+    // circuit BEFORE every matching pass so neither a DB rule nor the amount pass
+    // (which would otherwise grab the first "casa NNN") can link a resident.
+    if (extraction.unitNumbersDetected.length >= 2) {
+      return {
+        ...extraction,
+        unitNumberDetected: null,
+        residentId: null,
+        matchSource: null,
+        confidenceScore: 0,
+        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: RequiresReviewReason.NO_MATCH,
+        matchedRuleId: null,
+        matchedCalendarEventId: null,
+        matchedAt: null,
+      };
+    }
+
     // Pass 0: DB-driven rules (priority order, first match wins)
     const ruleMatch = applyDbRules(description, rules);
     if (ruleMatch) {
@@ -727,6 +818,7 @@ export class ClassificationService {
         }
         if (unit) {
           extraction.unitNumberDetected = unit;
+          extraction.unitNumbersDetected = [unit];
           extraction.unitConfidence = 0.9;
         }
         // Pre-fill the concept as a hint even when we cannot link a resident.
@@ -881,6 +973,7 @@ export class ClassificationService {
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
           unitNumberDetected: result.unitNumberDetected,
+          unitNumbersDetected: result.unitNumbersDetected,
           payerNameDetected: result.payerNameDetected,
           paymentConcept: result.paymentConcept,
           paymentPeriodYear: result.paymentPeriodYear,
@@ -1095,6 +1188,7 @@ export class ClassificationService {
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
           unitNumberDetected: result.unitNumberDetected,
+          unitNumbersDetected: result.unitNumbersDetected,
           payerNameDetected: result.payerNameDetected,
           paymentConcept: result.paymentConcept,
           paymentPeriodYear: result.paymentPeriodYear,
@@ -1261,6 +1355,11 @@ export class ClassificationService {
     transactionId: string,
     dto: {
       unitNumber?: string;
+      allocations?: {
+        unitNumber: string;
+        residentId: string;
+        allocatedAmount: number;
+      }[];
       paymentConcept?: string;
       paymentPeriodMonth?: number;
       paymentPeriodYear?: number;
@@ -1269,6 +1368,12 @@ export class ClassificationService {
     },
     userId: string,
   ): Promise<void> {
+    // Multi-house payment: split the credit across several units via
+    // PaymentAllocation rows instead of a single resident link.
+    if (dto.allocations && dto.allocations.length > 0) {
+      return this.manualClassifyWithAllocations(condominiumId, transactionId, dto, userId);
+    }
+
     // REV-004: strict resident resolution.
     // `residentId === undefined` means the dto did not touch the unit (no update),
     // `null` means admin explicitly cleared the unit, a string means resolved match.
@@ -1402,6 +1507,189 @@ export class ClassificationService {
             classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
             requiresReviewReason: null,
             matchedRuleId: null,
+          },
+          result: 'SUCCESS',
+        },
+      });
+    });
+  }
+
+  /**
+   * Splits a single credit across several houses (PaymentAllocation rows). Used
+   * for BanBajío payments whose concept names more than one unit ("casas 307 y
+   * 43"). The transaction itself keeps no single residentId — each resident is
+   * credited their slice via an allocation, and per-resident balances read those
+   * allocations (see CollectionService.getAccountStatement). Re-editing replaces
+   * the prior allocations wholesale (delete-and-recreate) so it stays idempotent.
+   */
+  private async manualClassifyWithAllocations(
+    condominiumId: string,
+    transactionId: string,
+    dto: {
+      allocations?: {
+        unitNumber: string;
+        residentId: string;
+        allocatedAmount: number;
+      }[];
+      paymentConcept?: string;
+      paymentPeriodMonth?: number;
+      paymentPeriodYear?: number;
+      transactionDate?: string;
+      description?: string;
+    },
+    userId: string,
+  ): Promise<void> {
+    const allocations = dto.allocations ?? [];
+    const settings = await this.settingsCache.getSettings(condominiumId);
+    const totalUnits = settings?.totalUnits ?? 0;
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingTx = await tx.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          updatedAt: true,
+          description: true,
+          credits: true,
+          residentId: true,
+          unitNumberDetected: true,
+          unitNumbersDetected: true,
+          paymentConcept: true,
+          paymentPeriodMonth: true,
+          paymentPeriodYear: true,
+          transactionDate: true,
+          matchSource: true,
+          classificationStatus: true,
+          requiresReviewReason: true,
+          matchedRuleId: true,
+          paymentAllocations: {
+            select: { unitNumber: true, residentId: true, allocatedAmount: true },
+          },
+        },
+      });
+      if (!existingTx) throw new NotFoundException('Transaction not found');
+
+      const credit = existingTx.credits ? Number(existingTx.credits) : 0;
+      if (credit <= 0) {
+        throw new BadRequestException({
+          code: 'ALLOCATION_NOT_INCOME',
+          reason: 'Only an income transaction with a credit amount can be split across units.',
+        });
+      }
+
+      // Amounts must sum to the credit (cents tolerance for rounding).
+      const sum = allocations.reduce((acc, a) => acc + Number(a.allocatedAmount), 0);
+      if (Math.abs(sum - credit) > 0.01) {
+        throw new BadRequestException({
+          code: 'ALLOCATION_SUM_MISMATCH',
+          reason: `Allocations must sum to the transaction credit (${credit.toFixed(2)}); got ${sum.toFixed(2)}.`,
+          field: 'allocations',
+          expected: credit,
+          received: sum,
+        });
+      }
+
+      // Each unit must be in range and each resident must actually live in it.
+      for (const a of allocations) {
+        const n = parseInt(a.unitNumber, 10);
+        if (!Number.isFinite(n) || n < 1 || totalUnits <= 0 || n > totalUnits) {
+          throw new BadRequestException({
+            code: 'ALLOCATION_UNIT_OUT_OF_RANGE',
+            reason: `Unit "${a.unitNumber}" is outside the configured range (1..${totalUnits}).`,
+            field: 'allocations',
+            unitNumber: a.unitNumber,
+          });
+        }
+        const resident = await tx.resident.findFirst({
+          where: { id: a.residentId, condominiumId, unitNumber: a.unitNumber, deletedAt: null },
+          select: { id: true },
+        });
+        if (!resident) {
+          throw new BadRequestException({
+            code: 'ALLOCATION_RESIDENT_UNIT_MISMATCH',
+            reason: `Resident does not match unit "${a.unitNumber}" in this condominium.`,
+            field: 'allocations',
+            unitNumber: a.unitNumber,
+            residentId: a.residentId,
+          });
+        }
+      }
+
+      const periodMonth = dto.paymentPeriodMonth ?? existingTx.paymentPeriodMonth;
+      const periodYear = dto.paymentPeriodYear ?? existingTx.paymentPeriodYear;
+      const txDate = dto.transactionDate ? new Date(dto.transactionDate) : existingTx.transactionDate;
+      const units = allocations.map((a) => a.unitNumber);
+
+      const result = await tx.transaction.updateMany({
+        where: { id: transactionId, condominiumId, updatedAt: existingTx.updatedAt },
+        data: {
+          // No single resident owns a split payment; the array carries the houses.
+          residentId: null,
+          unitNumberDetected: null,
+          unitNumbersDetected: units,
+          ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
+          ...(dto.paymentPeriodMonth !== undefined && { paymentPeriodMonth: dto.paymentPeriodMonth }),
+          ...(dto.paymentPeriodYear !== undefined && { paymentPeriodYear: dto.paymentPeriodYear }),
+          ...(dto.transactionDate !== undefined && { transactionDate: new Date(dto.transactionDate) }),
+          ...(dto.description !== undefined && { description: dto.description }),
+          matchSource: MatchSource.MANUAL,
+          confidenceScore: new Prisma.Decimal('1.0000'),
+          matchedAt: new Date(),
+          classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+          requiresReviewReason: null,
+          matchedRuleId: null,
+        },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      // Delete-and-recreate keeps re-edits idempotent.
+      await tx.paymentAllocation.deleteMany({ where: { transactionId } });
+      await tx.paymentAllocation.createMany({
+        data: allocations.map((a) => ({
+          condominiumId,
+          transactionId,
+          residentId: a.residentId,
+          unitNumber: a.unitNumber,
+          paymentPeriodYear: periodYear ?? txDate.getUTCFullYear(),
+          paymentPeriodMonth: periodMonth ?? txDate.getUTCMonth() + 1,
+          allocatedAmount: new Prisma.Decimal(Number(a.allocatedAmount).toFixed(2)),
+        })),
+      });
+
+      await tx.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_CLASSIFIED_MANUALLY',
+          actionCategory: 'CLASSIFICATION',
+          module: 'classification',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: {
+            residentId: existingTx.residentId,
+            unitNumberDetected: existingTx.unitNumberDetected,
+            unitNumbersDetected: existingTx.unitNumbersDetected,
+            classificationStatus: existingTx.classificationStatus,
+            allocations: existingTx.paymentAllocations.map((a) => ({
+              unitNumber: a.unitNumber,
+              residentId: a.residentId,
+              allocatedAmount: Number(a.allocatedAmount),
+            })),
+          },
+          afterState: {
+            residentId: null,
+            unitNumberDetected: null,
+            unitNumbersDetected: units,
+            classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+            allocations: allocations.map((a) => ({
+              unitNumber: a.unitNumber,
+              residentId: a.residentId,
+              allocatedAmount: Number(a.allocatedAmount),
+            })),
           },
           result: 'SUCCESS',
         },

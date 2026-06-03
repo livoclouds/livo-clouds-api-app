@@ -132,7 +132,14 @@ export class CollectionService {
     const crLimit = dto.crLimit ?? 24;
     const crSkip = (crPage - 1) * crLimit;
 
-    const [transactions, txTotal, incomeAgg, collectionRecords, crStatusGroups] = await Promise.all([
+    // Split payments ("casas 307 y 43") carry no single residentId; each resident
+    // is credited their slice via a PaymentAllocation. To avoid double-counting we
+    // PARTITION the paid total: a transaction WITH allocations contributes only
+    // through its allocations; a transaction WITHOUT allocations contributes via
+    // credits + residentId as before. The two buckets are mutually exclusive.
+    const txDateFilter = txWhere.transactionDate;
+
+    const [transactions, txTotal, incomeAgg, allocationAgg, collectionRecords, crStatusGroups] = await Promise.all([
       this.prisma.transaction.findMany({
         where: txWhere,
         orderBy: { transactionDate: 'desc' },
@@ -156,9 +163,20 @@ export class CollectionService {
         take: txLimit,
       }),
       this.prisma.transaction.count({ where: txWhere }),
+      // Direct bucket: income directly linked to this resident, excluding any
+      // transaction that was split into allocations.
       this.prisma.transaction.aggregate({
-        where: { ...txWhere, flowType: 'INCOME' },
+        where: { ...txWhere, flowType: 'INCOME', paymentAllocations: { none: {} } },
         _sum: { credits: true },
+      }),
+      // Allocation bucket: this resident's slices of split payments.
+      this.prisma.paymentAllocation.aggregate({
+        where: {
+          condominiumId,
+          residentId,
+          ...(txDateFilter ? { transaction: { transactionDate: txDateFilter } } : {}),
+        },
+        _sum: { allocatedAmount: true },
       }),
       this.prisma.collectionRecord.findMany({
         where: crWhere,
@@ -177,7 +195,8 @@ export class CollectionService {
       }),
     ]);
 
-    const totalPaid = Number(incomeAgg._sum.credits ?? 0);
+    const totalPaid =
+      Number(incomeAgg._sum.credits ?? 0) + Number(allocationAgg._sum.allocatedAmount ?? 0);
     const totalExpected = crStatusGroups.reduce(
       (sum, g) => sum + Number(g._sum.amountExpected ?? 0),
       0,
