@@ -94,10 +94,20 @@ export class TransactionsService {
     }
     if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
     else if (conceptPresence === 'absent') where.paymentConcept = null;
-    // Detected-unit presence filter. Direct assignment (not where.OR) so it
-    // composes via AND with the amount filter below, which owns where.OR.
-    if (unitDetected === 'detected') where.unitNumberDetected = { not: null };
-    else if (unitDetected === 'undetected') where.unitNumberDetected = null;
+    // Detected-unit presence filter. A unit can be detected as the scalar
+    // (`unitNumberDetected`, 1:1) OR as the multi-house array (`unitNumbersDetected`,
+    // scalar null). So "detected" must check BOTH, and "undetected" requires BOTH
+    // empty — otherwise multi-house rows (scalar null + array populated) leak into
+    // the "Sin detectar" list. The amount filter below owns `where.OR`, so the
+    // detected case nests its OR inside `where.AND` to compose via AND.
+    if (unitDetected === 'detected') {
+      where.AND = [
+        { OR: [{ unitNumberDetected: { not: null } }, { unitNumbersDetected: { isEmpty: false } }] },
+      ];
+    } else if (unitDetected === 'undetected') {
+      where.unitNumberDetected = null;
+      where.unitNumbersDetected = { isEmpty: true };
+    }
     if (description) where.description = { contains: description, mode: 'insensitive' };
     // Amount range filter by absolute magnitude: credits (income) and charges
     // (expense) are stored positive, and a row has exactly one of them set, so
@@ -150,6 +160,19 @@ export class TransactionsService {
               title: true,
               startDate: true,
               unitNumber: true,
+              resident: { select: { firstName: true, lastName: true } },
+            },
+          },
+          // The review tab is backed by findAll; expose split allocations so the
+          // edit modal can hydrate them when re-editing a multi-house payment.
+          paymentAllocations: {
+            select: {
+              id: true,
+              unitNumber: true,
+              residentId: true,
+              allocatedAmount: true,
+              paymentPeriodYear: true,
+              paymentPeriodMonth: true,
               resident: { select: { firstName: true, lastName: true } },
             },
           },
