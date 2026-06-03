@@ -847,6 +847,10 @@ export class NotificationsService {
               // while a re-aggregated row reuses its tag to update in place.
               tag: `notification-${row.id}`,
               url: row.linkUrl ?? '/notifications',
+              // The web derives the click route from type + data (the linkUrl is
+              // a canonical pointer, not a literal route).
+              type: row.type,
+              data: (row.data as Record<string, unknown> | null) ?? undefined,
             },
           ),
         ),

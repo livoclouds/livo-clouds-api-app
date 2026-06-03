@@ -26,8 +26,20 @@ export interface PushNotificationPayload {
   body: string;
   /** Stable tag so re-notifications replace rather than stack. */
   tag: string;
-  /** Same-origin deep-link path for the notification click target. */
+  /**
+   * Same-origin click target. Used as-is for pushes that already point at a real
+   * route (e.g. WhatsApp → `/communications/:id`), and as the fallback when the
+   * client cannot derive a route from `type`/`data`.
+   */
   url: string;
+  /**
+   * Optional notification type + data blob. When present, the client (web
+   * service worker) derives the click route from these — the API owns domain
+   * identity, not the web's routes. Absent for non-notification pushes, which
+   * rely on `url`.
+   */
+  type?: string;
+  data?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -122,6 +134,8 @@ export class WebPushService {
       body: payload.body,
       tag: payload.tag,
       url: payload.url,
+      type: payload.type,
+      data: payload.data,
     });
     try {
       await webpush.sendNotification(subscription, body, { TTL: 600 });
