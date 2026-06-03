@@ -69,6 +69,25 @@ export interface ClassificationSummary {
   unmatched: number;
 }
 
+/**
+ * Read-only, condominium-agnostic description of the engine's *hardcoded* logic —
+ * the part that does NOT live in the editable `ReconciliationRule` table (Pass 0).
+ * Surfaced via GET …/reconciliation-rules/system so the UI can render the engine's
+ * built-in rules read-only ("reglas del sistema") next to the editable ones, ending
+ * the black-box gap. Everything here is derived from the engine's own constants, so
+ * editing a pattern automatically updates this catalog.
+ */
+export interface SystemRulesCatalog {
+  /** Concept keyword detection (CONCEPT_PATTERNS): which terms tag which concept. */
+  conceptPatterns: { concept: string; terms: string[] }[];
+  /** Unit-number prefixes the engine recognizes (UNIT_PATTERNS). */
+  unitPatterns: { label: string; example: string; confidence: number }[];
+  /** Month names/abbreviations recognized for the payment period (MONTH_MAP). */
+  months: { month: number; forms: string[] }[];
+  /** Hardcoded non-keyword passes; title/description localized in the web by `key`. */
+  behavioralPasses: { key: string; order: number }[];
+}
+
 // The unit keyword may run straight into the number with no space ("casa34",
 // "CASA233Noviembre2025") or into trailing text ("casa77manttonoviembre2025").
 // So the separator is `\s*` (optional) and we capture up to 4 digits that are NOT
@@ -77,27 +96,56 @@ export interface ClassificationSummary {
 // mis-anchored glued forms): it still stops at the first letter ("casa77mantto"
 // -> 77, "CASA233Noviembre" -> 233) but refuses a 4-digit PREFIX of a longer run
 // ("Recibo # 227120243" never yields "2271").
-const UNIT_PATTERNS: { regex: RegExp; confidence: number }[] = [
-  { regex: /\bcasa\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95 },
-  { regex: /\bunidad\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95 },
-  { regex: /\blote\s*0*(\d{1,4})(?!\d)/i, confidence: 0.9 },
-  { regex: /\bc\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85 },
-  { regex: /\bdepto?\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85 },
-  { regex: /#\s*0*(\d{1,4})(?!\d)/i, confidence: 0.8 },
+// `label` + `example` are human-readable documentation of each pattern, surfaced
+// read-only by getSystemRulesCatalog() so admins can see how the engine detects a
+// unit. A guard test (classification.service.spec) asserts every `example` matches
+// its own `regex`, so the docs can never drift away from the live pattern.
+const UNIT_PATTERNS: {
+  regex: RegExp;
+  confidence: number;
+  label: string;
+  example: string;
+}[] = [
+  { regex: /\bcasa\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95, label: 'casa', example: 'casa 34' },
+  { regex: /\bunidad\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95, label: 'unidad', example: 'unidad 12' },
+  { regex: /\blote\s*0*(\d{1,4})(?!\d)/i, confidence: 0.9, label: 'lote', example: 'lote 8' },
+  { regex: /\bc\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85, label: 'c.', example: 'c. 45' },
+  { regex: /\bdepto?\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85, label: 'depto', example: 'depto 21' },
+  { regex: /#\s*0*(\d{1,4})(?!\d)/i, confidence: 0.8, label: '#', example: '#233' },
 ];
 
-const CONCEPT_PATTERNS: { regex: RegExp; concept: string }[] = [
+// `terms` is the human-readable list of keywords/abbreviations each regex matches,
+// surfaced read-only by getSystemRulesCatalog() so admins can see exactly what the
+// hardcoded concept detection recognizes. A guard test (classification.service.spec)
+// asserts every `term` matches its own `regex` — the docs cannot drift from the code.
+const CONCEPT_PATTERNS: { regex: RegExp; concept: string; terms: string[] }[] = [
   // Maintenance abbreviations residents actually write: "mtto", "mmto", "manto",
   // "mantto", "mant", "mto" — the old `mant\b` missed "Mtto"/"MTTO"/"Mmto" (no word
   // boundary after "mant"), and the inner group missed the bare "mto" (single t,
   // e.g. "Concepto del Pago: mto 344"). `\bm(?:antenimiento|antto|anto|tto|mto|to|ant)\b`
   // covers them: the `to` alternative yields the standalone token "mto".
-  { regex: /mantenimiento|cuota\s+mensual|mensualidad|\bm(?:antenimiento|antto|anto|tto|mto|to|ant)\b/i, concept: 'MAINTENANCE' },
-  { regex: /deposito|dep[oó]sito|garant[ií]a/i, concept: 'DEPOSIT' },
-  { regex: /multa|sanci[oó]n|infracci[oó]n/i, concept: 'FINE' },
-  { regex: /\bagua\b|\bluz\b|electricidad|internet|\bgas\b/i, concept: 'UTILITY' },
-  { regex: /estacionamiento|parking|caj[oó]n/i, concept: 'PARKING' },
-  { regex: /terraza|alberca|sal[oó]n|amenidad/i, concept: 'AMENITY' },
+  {
+    regex: /mantenimiento|cuota\s+mensual|mensualidad|\bm(?:antenimiento|antto|anto|tto|mto|to|ant)\b/i,
+    concept: 'MAINTENANCE',
+    terms: ['mantenimiento', 'cuota mensual', 'mensualidad', 'mtto', 'mmto', 'manto', 'mantto', 'mant', 'mto'],
+  },
+  { regex: /deposito|dep[oó]sito|garant[ií]a/i, concept: 'DEPOSIT', terms: ['depósito', 'deposito', 'garantía'] },
+  { regex: /multa|sanci[oó]n|infracci[oó]n/i, concept: 'FINE', terms: ['multa', 'sanción', 'infracción'] },
+  { regex: /\bagua\b|\bluz\b|electricidad|internet|\bgas\b/i, concept: 'UTILITY', terms: ['agua', 'luz', 'electricidad', 'internet', 'gas'] },
+  { regex: /estacionamiento|parking|caj[oó]n/i, concept: 'PARKING', terms: ['estacionamiento', 'parking', 'cajón'] },
+  { regex: /terraza|alberca|sal[oó]n|amenidad/i, concept: 'AMENITY', terms: ['terraza', 'alberca', 'salón', 'amenidad'] },
+];
+
+// Stable keys for the hardcoded (non-keyword) passes. Their human-facing title and
+// description are localized in the web app by `key`; here we only expose the catalog
+// of keys + execution order so the UI can render the engine's full pipeline read-only.
+const SYSTEM_BEHAVIORAL_PASSES: { key: string; order: number }[] = [
+  { key: 'terraceBooking', order: 1 },
+  { key: 'amountGate', order: 2 },
+  { key: 'banbajioSegment', order: 3 },
+  { key: 'multiHouseSplit', order: 4 },
+  { key: 'monthToMaintenance', order: 5 },
+  { key: 'fuzzyName', order: 6 },
 ];
 
 const MONTH_MAP: Record<string, number> = {
@@ -586,6 +634,41 @@ export class ClassificationService {
     private readonly events: EventEmitter2,
     private readonly settingsCache: SettingsCacheService,
   ) {}
+
+  /**
+   * Returns a read-only catalog of the engine's hardcoded logic (concept keywords,
+   * unit prefixes, recognized months, behavioral passes), derived directly from the
+   * engine constants. Consumed by GET …/reconciliation-rules/system so the UI can
+   * show the "reglas del sistema" (built-in, non-editable) next to the editable
+   * Pass-0 rules — making the classification engine fully transparent.
+   */
+  getSystemRulesCatalog(): SystemRulesCatalog {
+    const byMonth = new Map<number, string[]>();
+    for (const [rawKey, month] of Object.entries(MONTH_MAP)) {
+      // `may_` is an internal key that avoids colliding with the English "may";
+      // surface it as the real form "may".
+      const form = rawKey === 'may_' ? 'may' : rawKey;
+      const forms = byMonth.get(month) ?? [];
+      if (!forms.includes(form)) forms.push(form);
+      byMonth.set(month, forms);
+    }
+
+    return {
+      conceptPatterns: CONCEPT_PATTERNS.map((p) => ({
+        concept: p.concept,
+        terms: [...p.terms],
+      })),
+      unitPatterns: UNIT_PATTERNS.map((p) => ({
+        label: p.label,
+        example: p.example,
+        confidence: p.confidence,
+      })),
+      months: Array.from(byMonth.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([month, forms]) => ({ month, forms })),
+      behavioralPasses: SYSTEM_BEHAVIORAL_PASSES.map((p) => ({ ...p })),
+    };
+  }
 
   /**
    * Phase 6 (A4): loads a full result set in id-ordered cursor pages, bounding

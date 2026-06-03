@@ -1608,3 +1608,62 @@ describe('ClassificationService.classifyTransaction — maintenance concept pain
     expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
   });
 });
+
+describe('ClassificationService.getSystemRulesCatalog — transparency catalog', () => {
+  const service = makeService(makePrismaMock());
+  const catalog = service.getSystemRulesCatalog();
+
+  it('exposes the six concepts in engine order, MAINTENANCE listing "mto"', () => {
+    expect(catalog.conceptPatterns.map((c) => c.concept)).toEqual([
+      'MAINTENANCE',
+      'DEPOSIT',
+      'FINE',
+      'UTILITY',
+      'PARKING',
+      'AMENITY',
+    ]);
+    const maintenance = catalog.conceptPatterns.find((c) => c.concept === 'MAINTENANCE');
+    expect(maintenance?.terms).toEqual(
+      expect.arrayContaining(['mantenimiento', 'mtto', 'mmto', 'mant', 'mto']),
+    );
+  });
+
+  it('exposes the unit prefixes and behavioral passes the engine actually runs', () => {
+    expect(catalog.unitPatterns.map((u) => u.label)).toEqual(['casa', 'unidad', 'lote', 'c.', 'depto', '#']);
+    expect(catalog.behavioralPasses.map((p) => p.key)).toEqual([
+      'terraceBooking',
+      'amountGate',
+      'banbajioSegment',
+      'multiHouseSplit',
+      'monthToMaintenance',
+      'fuzzyName',
+    ]);
+  });
+
+  it('surfaces 12 months and cleans the internal "may_" key to "may"', () => {
+    expect(catalog.months).toHaveLength(12);
+    const may = catalog.months.find((m) => m.month === 5);
+    expect(may?.forms).toContain('may');
+    expect(may?.forms).not.toContain('may_');
+  });
+
+  // GUARD (anti-drift): every documented concept term, run through the REAL
+  // extractor, must still resolve to its concept. If someone edits a CONCEPT_PATTERNS
+  // regex and breaks a term the catalog advertises, this fails in CI — the catalog
+  // can never silently lie about what the engine recognizes.
+  it('every documented concept term is actually detected by the engine', () => {
+    for (const { concept, terms } of catalog.conceptPatterns) {
+      for (const term of terms) {
+        expect(extractFromText(term).paymentConcept).toBe(concept);
+      }
+    }
+  });
+
+  // GUARD (anti-drift): every documented unit example must yield a detected unit
+  // through the real extractor.
+  it('every documented unit example is actually detected by the engine', () => {
+    for (const { example } of catalog.unitPatterns) {
+      expect(extractFromText(example).unitNumberDetected).not.toBeNull();
+    }
+  });
+});

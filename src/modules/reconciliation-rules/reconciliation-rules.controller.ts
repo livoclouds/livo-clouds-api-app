@@ -52,6 +52,15 @@ export class ReconciliationRulesController {
     return this.service.getPendingChanges(req.condominiumId);
   }
 
+  @Get('system')
+  @ApiOperation({
+    summary:
+      "Read-only catalog of the classification engine's built-in (hardcoded) rules — concept keywords, unit prefixes, recognized months and behavioral passes. Lets the UI surface the engine's 'system rules' next to the editable Pass-0 rules. Informational; no manage permission required.",
+  })
+  getSystemRules() {
+    return this.classification.getSystemRulesCatalog();
+  }
+
   @Post('apply-pending')
   @RequirePermission('paymentRules.manage')
   @ApiOperation({
