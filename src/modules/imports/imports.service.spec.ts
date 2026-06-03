@@ -160,6 +160,59 @@ describe('ImportsService.confirm — fileHash fallback ordering', () => {
   });
 });
 
+describe('ImportsService.confirm — bank-profile guard', () => {
+  function makeGuardService(bankProfileFindFirst: jest.Mock): ImportsService {
+    const prisma = {
+      importBatch: { findFirst: jest.fn() },
+      bankProfile: { findFirst: bankProfileFindFirst },
+    };
+    const settings = {
+      validateFeesConfigured: jest.fn().mockResolvedValue({ valid: true }),
+    };
+    return new ImportsService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      settings as never,
+      { log: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+  }
+
+  const dtoWithProfile = {
+    files: [
+      {
+        fileName: 'movimientos.xlsx',
+        fileType: 'xlsx',
+        fileHash: HASH_A,
+        fileSizeBytes: 1024,
+        warnings: [],
+        transactions: [{ date: '2025-11-01', description: 'x', charges: 0, credits: 1, balance: 1 }],
+      },
+    ],
+    bankProfileId: 'bp-1',
+  };
+
+  it('rejects when the selected profile has no bank assigned', async () => {
+    const service = makeGuardService(
+      jest.fn().mockResolvedValue({ id: 'bp-1', bankName: null }),
+    );
+    await expect(
+      service.confirm(CONDOMINIUM_ID, dtoWithProfile as never, { sub: 'user-1' } as never),
+    ).rejects.toMatchObject({ response: { code: 'BANK_PROFILE_MISSING_BANK' } });
+  });
+
+  it('rejects when the selected profile does not exist', async () => {
+    const service = makeGuardService(jest.fn().mockResolvedValue(null));
+    await expect(
+      service.confirm(CONDOMINIUM_ID, dtoWithProfile as never, { sub: 'user-1' } as never),
+    ).rejects.toMatchObject({ response: { code: 'BANK_PROFILE_NOT_FOUND' } });
+  });
+});
+
 describe('ImportsService.findAll filters', () => {
   it('applies importedByName as case-insensitive contains on firstName or lastName', async () => {
     const prisma = makePrismaMock();

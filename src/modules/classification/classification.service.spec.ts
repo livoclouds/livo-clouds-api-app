@@ -1,5 +1,9 @@
-import { ClassificationStatus, RequiresReviewReason } from '@prisma/client';
-import { ClassificationService, extractFromText } from './classification.service';
+import { ClassificationStatus, MatchSource, RequiresReviewReason } from '@prisma/client';
+import {
+  ClassificationService,
+  extractFromText,
+  extractFromBanBajio,
+} from './classification.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -27,7 +31,7 @@ interface PrismaMock {
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
   reconciliationCorrectionPattern: { upsert: jest.Mock };
-  importBatch: { update: jest.Mock };
+  importBatch: { update: jest.Mock; findUnique: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -55,7 +59,12 @@ function makePrismaMock(): PrismaMock {
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue(null) },
     reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
-    importBatch: { update: jest.fn().mockResolvedValue(null) },
+    importBatch: {
+      update: jest.fn().mockResolvedValue(null),
+      // classifyBatch reads the batch's bank profile to drive bank-specific
+      // extraction. Default to no profile so existing tests stay bank-agnostic.
+      findUnique: jest.fn().mockResolvedValue({ bankProfile: null }),
+    },
     // REV-003 / REV-017: support both forms — array (chunk classifyBatch) and
     // callback (single-row overrides). The callback receives the same mock as `tx`.
     $transaction: jest.fn(),
@@ -1040,5 +1049,127 @@ describe('ClassificationService.classifyBatch — progress counter', () => {
     await expect(service.classifyBatch(CONDOMINIUM_ID, BATCH_ID)).resolves.toMatchObject({
       total: 1,
     });
+  });
+});
+
+describe('extractFromBanBajio — BanBajío unit extraction', () => {
+  const BANBAJIO_DESC =
+    'SPEI Recibido | Concepto del Pago: 106 noviembre | Recibo # 227120243';
+
+  it('extracts the leading unit number from the "Concepto del Pago" segment', () => {
+    const result = extractFromBanBajio(BANBAJIO_DESC, 370);
+    expect(result.unitNumberDetected).toBe('106');
+    expect(result.unitConfidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('tolerates leading zeros ("06" -> "6")', () => {
+    const result = extractFromBanBajio(
+      'Concepto del Pago: 06 diciembre | Recibo # 1',
+      370,
+    );
+    expect(result.unitNumberDetected).toBe('6');
+  });
+
+  it('rejects a number above the condominium unit count (totalUnits)', () => {
+    // 999 > 370 → not a valid unit, must not be detected.
+    const result = extractFromBanBajio(
+      'Concepto del Pago: 999 enero | Recibo # 5',
+      370,
+    );
+    expect(result.unitNumberDetected).toBeNull();
+  });
+
+  it('does not extract when totalUnits is not configured (0)', () => {
+    const result = extractFromBanBajio(BANBAJIO_DESC, 0);
+    expect(result.unitNumberDetected).toBeNull();
+  });
+
+  it('does not borrow the generic unit guess (e.g. casa N / Recibo #) when there is no segment', () => {
+    // For BanBajío the unit comes ONLY from the "Concepto del Pago" segment, so a
+    // stray "casa 12" must NOT be treated as the unit — but the concept still is.
+    const desc = 'SPEI Recibido casa 12 mantenimiento';
+    const result = extractFromBanBajio(desc, 370);
+    expect(result.unitNumberDetected).toBeNull();
+    expect(result.paymentConcept).toBe(extractFromText(desc).paymentConcept);
+  });
+});
+
+describe('ClassificationService.classifyTransaction — bank-aware extraction', () => {
+  const residents = [
+    { id: 'res-106', unitNumber: '106', firstName: 'Ana', lastName: 'Sandoval' },
+  ];
+  const BANBAJIO_DESC =
+    'SPEI Recibido | Concepto del Pago: 106 noviembre | Recibo # 227120243';
+  const banBajioCtx = { bankName: 'BanBajío', totalUnits: 370 };
+
+  it('links the resident when the bank is BanBajío and the unit exists', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      BANBAJIO_DESC,
+      new Date('2025-11-30T12:00:00Z'),
+      residents,
+      [],
+      undefined,
+      banBajioCtx,
+    );
+    expect(result.unitNumberDetected).toBe('106');
+    expect(result.residentId).toBe('res-106');
+    expect(result.matchSource).toBe(MatchSource.AUTO_UNIT_NUMBER);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('does NOT extract a bare number for a non-BanBajío bank', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      BANBAJIO_DESC,
+      new Date('2025-11-30T12:00:00Z'),
+      residents,
+      [],
+      undefined,
+      { bankName: 'BBVA', totalUnits: 370 },
+    );
+    expect(result.unitNumberDetected).toBeNull();
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+
+  it('still links the resident when a concept rule also fires (BanBajío)', () => {
+    const service = makeService(makePrismaMock());
+    const rules = [
+      {
+        id: 'rule-mtto',
+        keywords: ['concepto del pago'],
+        unitPatterns: [],
+        conceptType: 'MAINTENANCE',
+        confidenceThreshold: 0.85,
+      },
+    ] as never;
+    const result = service.classifyTransaction(
+      BANBAJIO_DESC,
+      new Date('2025-11-30T12:00:00Z'),
+      residents,
+      rules,
+      undefined,
+      banBajioCtx,
+    );
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    expect(result.residentId).toBe('res-106');
+    expect(result.matchedRuleId).toBe('rule-mtto');
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('marks UNIT_NOT_FOUND when the BanBajío unit has no matching resident', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      'Concepto del Pago: 200 enero | Recibo # 9',
+      new Date('2025-11-30T12:00:00Z'),
+      residents,
+      [],
+      undefined,
+      banBajioCtx,
+    );
+    expect(result.unitNumberDetected).toBe('200');
+    expect(result.residentId).toBeNull();
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.UNIT_NOT_FOUND);
   });
 });

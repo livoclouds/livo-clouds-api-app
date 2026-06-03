@@ -927,6 +927,29 @@ export class ImportsService {
       });
     }
 
+    // Bank-profile guard: selecting a profile is optional, but when one IS
+    // selected it must have a bank assigned — the classification engine keys
+    // bank-specific parsing off it (e.g. BanBajío unit extraction). The web
+    // blocks the upload earlier; this is defense in depth.
+    if (dto.bankProfileId) {
+      const profile = await this.prisma.bankProfile.findFirst({
+        where: { id: dto.bankProfileId, condominiumId, isActive: true },
+        select: { id: true, bankName: true },
+      });
+      if (!profile) {
+        throw new BadRequestException({
+          code: 'BANK_PROFILE_NOT_FOUND',
+          reason: 'The selected bank profile does not exist or is inactive.',
+        });
+      }
+      if (!profile.bankName || profile.bankName.trim().length === 0) {
+        throw new BadRequestException({
+          code: 'BANK_PROFILE_MISSING_BANK',
+          reason: 'Assign a bank to the selected profile before importing.',
+        });
+      }
+    }
+
     if (!dto.files || dto.files.length === 0) {
       throw new BadRequestException('No files provided');
     }
@@ -1215,6 +1238,9 @@ export class ImportsService {
             finalBalance,
             transactionCount: validTransactions.length,
             warnings: mergedWarnings,
+            // Persist the chosen bank profile so classifyBatch can read the bank
+            // identity (it was dropped before — only used for column mapping).
+            bankProfileId: dto.bankProfileId ?? null,
           },
         });
         if (conditional.count === 0) {
