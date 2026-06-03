@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { UiLocale, UiThemeMode } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
@@ -21,6 +22,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateOnboardingDto } from './dto/update-onboarding.dto';
+import { UpdateUiPreferencesDto } from './dto/update-ui-preferences.dto';
 
 interface AuthContext {
   ipAddress?: string;
@@ -107,8 +109,15 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, deletedAt: null },
       include: {
-        condominium: { select: { slug: true } },
+        condominium: {
+          select: {
+            slug: true,
+            primaryColor: true,
+            settings: { select: { defaultLocale: true } },
+          },
+        },
         roleRef: { select: { key: true, name: true, permissions: true } },
+        uiPreference: true,
       },
     });
 
@@ -229,6 +238,16 @@ export class AuthService {
       refreshToken,
       sessionDuration: user.sessionDuration,
       inactivityLockMinutes: user.inactivityLockMinutes,
+      // Per-user UI preferences + the condominium defaults to fall back on. The
+      // web seeds these into the app_session cookie so the locale/theme/color are
+      // applied server-side on first paint (no FOUC across devices).
+      uiPreferences: {
+        locale: user.uiPreference?.locale ?? null,
+        themeMode: user.uiPreference?.themeMode ?? UiThemeMode.SYSTEM,
+        primaryColor: user.uiPreference?.primaryColor ?? null,
+      },
+      condominiumDefaultLocale: user.condominium?.settings?.defaultLocale ?? null,
+      condominiumPrimaryColor: user.condominium?.primaryColor ?? null,
       // Dynamic RBAC: effective permissions + the assigned role's stable key and
       // display name. Drives the web UI (RequirePermission). The API still
       // enforces authorisation independently. roleKey falls back to the legacy
@@ -264,8 +283,15 @@ export class AuthService {
       include: {
         user: {
           include: {
-            condominium: { select: { slug: true } },
+            condominium: {
+              select: {
+                slug: true,
+                primaryColor: true,
+                settings: { select: { defaultLocale: true } },
+              },
+            },
             roleRef: { select: { key: true, name: true, permissions: true } },
+            uiPreference: true,
           },
         },
       },
@@ -375,6 +401,15 @@ export class AuthService {
       refreshToken,
       sessionDuration: user.sessionDuration,
       inactivityLockMinutes: user.inactivityLockMinutes,
+      // Re-seed UI preferences on rotation so a change made on another device
+      // (server is the source of truth) propagates to this session on next refresh.
+      uiPreferences: {
+        locale: user.uiPreference?.locale ?? null,
+        themeMode: user.uiPreference?.themeMode ?? UiThemeMode.SYSTEM,
+        primaryColor: user.uiPreference?.primaryColor ?? null,
+      },
+      condominiumDefaultLocale: user.condominium?.settings?.defaultLocale ?? null,
+      condominiumPrimaryColor: user.condominium?.primaryColor ?? null,
       // Re-issue RBAC context on rotation so permission/role changes take effect
       // on the next refresh without forcing a full re-login.
       roleKey: user.roleRef?.key ?? null,
@@ -777,10 +812,12 @@ export class AuthService {
             id: true,
             slug: true,
             name: true,
-            settings: { select: { logoUrl: true } },
+            primaryColor: true,
+            settings: { select: { logoUrl: true, defaultLocale: true } },
           },
         },
         roleRef: { select: { key: true } },
+        uiPreference: true,
       },
     });
 
@@ -814,6 +851,15 @@ export class AuthService {
             logoUrl: condominiumLogoUrl,
           }
         : null,
+      // Per-user UI preferences + condominium fallbacks, so the web can re-seed
+      // the session cookie from /auth/me without an extra round trip.
+      uiPreferences: {
+        locale: user.uiPreference?.locale ?? null,
+        themeMode: user.uiPreference?.themeMode ?? UiThemeMode.SYSTEM,
+        primaryColor: user.uiPreference?.primaryColor ?? null,
+      },
+      condominiumDefaultLocale: user.condominium?.settings?.defaultLocale ?? null,
+      condominiumPrimaryColor: user.condominium?.primaryColor ?? null,
     };
   }
 
@@ -1075,6 +1121,50 @@ export class AuthService {
       step: updated.onboardingStep,
       completedAt: updated.onboardingCompletedAt,
       skippedAt: updated.onboardingSkippedAt,
+    };
+  }
+
+  /**
+   * The user's UI preferences (one row per user). Returns defaults-if-missing —
+   * same shape as {@link getOnboarding}. `locale`/`primaryColor` are null when
+   * the user has not overridden them; the web then falls back to the condominium
+   * defaults. `themeMode` defaults to SYSTEM.
+   */
+  async getUiPreferences(userId: string) {
+    const row = await this.prisma.userUiPreference.findUnique({
+      where: { userId },
+    });
+    return {
+      locale: row?.locale ?? null,
+      themeMode: row?.themeMode ?? UiThemeMode.SYSTEM,
+      primaryColor: row?.primaryColor ?? null,
+    };
+  }
+
+  /**
+   * Upserts the user's UI preferences. Only the keys present in the DTO are
+   * written, so a PATCH with a single field leaves the others untouched; passing
+   * `null` for locale/primaryColor clears that override.
+   */
+  async updateUiPreferences(userId: string, dto: UpdateUiPreferencesDto) {
+    const data: {
+      locale?: UiLocale | null;
+      themeMode?: UiThemeMode;
+      primaryColor?: string | null;
+    } = {};
+    if (dto.locale !== undefined) data.locale = dto.locale;
+    if (dto.themeMode !== undefined) data.themeMode = dto.themeMode;
+    if (dto.primaryColor !== undefined) data.primaryColor = dto.primaryColor;
+
+    const row = await this.prisma.userUiPreference.upsert({
+      where: { userId },
+      create: { userId, ...data },
+      update: data,
+    });
+    return {
+      locale: row.locale,
+      themeMode: row.themeMode,
+      primaryColor: row.primaryColor,
     };
   }
 

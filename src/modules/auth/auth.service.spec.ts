@@ -32,6 +32,10 @@ interface PrismaMock {
     findUnique: jest.Mock;
     update: jest.Mock;
   };
+  userUiPreference: {
+    findUnique: jest.Mock;
+    upsert: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -76,6 +80,10 @@ function makePrismaMock(): PrismaMock {
       create: jest.fn().mockResolvedValue(undefined),
       findUnique: jest.fn(),
       update: jest.fn().mockResolvedValue(undefined),
+    },
+    userUiPreference: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      upsert: jest.fn(),
     },
     $transaction: jest.fn().mockImplementation((ops: unknown[]) => Promise.all(ops)),
   };
@@ -585,6 +593,147 @@ describe('AuthService', () => {
       const result = await service.getMe(USER_ID);
 
       expect(result.condominium).toBeNull();
+    });
+
+    it('carries UI preference defaults + condominium fallbacks for SSR seeding', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        activeUser({
+          condominium: {
+            id: CONDOMINIUM_ID,
+            slug: CONDOMINIUM_SLUG,
+            name: 'Test Condo',
+            primaryColor: '#6366f1',
+            settings: { logoUrl: null, defaultLocale: 'es' },
+          },
+        }),
+      );
+
+      const result = await service.getMe(USER_ID);
+
+      expect(result).toMatchObject({
+        uiPreferences: { locale: null, themeMode: 'SYSTEM', primaryColor: null },
+        condominiumDefaultLocale: 'es',
+        condominiumPrimaryColor: '#6366f1',
+      });
+    });
+
+    it('reflects a stored UI preference override in the seed', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        activeUser({
+          uiPreference: { locale: 'en', themeMode: 'DARK', primaryColor: '120 50% 40%' },
+        }),
+      );
+
+      const result = await service.getMe(USER_ID);
+
+      expect(result.uiPreferences).toEqual({
+        locale: 'en',
+        themeMode: 'DARK',
+        primaryColor: '120 50% 40%',
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('UI preferences', () => {
+    it('login response seeds uiPreferences + condominium fallbacks', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        activeUser({
+          condominium: {
+            slug: CONDOMINIUM_SLUG,
+            primaryColor: '#6366f1',
+            settings: { defaultLocale: 'es' },
+          },
+        }),
+      );
+      bcryptCompare.mockResolvedValue(true);
+
+      const result = await service.login({ email: 'user@test.local', password: 'TestPass1!' });
+
+      expect(result).toMatchObject({
+        uiPreferences: { locale: null, themeMode: 'SYSTEM', primaryColor: null },
+        condominiumDefaultLocale: 'es',
+        condominiumPrimaryColor: '#6366f1',
+      });
+    });
+
+    it('refresh response re-seeds uiPreferences from the stored user', async () => {
+      prisma.refreshToken.findFirst.mockResolvedValue(
+        validStoredToken({
+          user: activeUser({
+            condominium: {
+              slug: CONDOMINIUM_SLUG,
+              primaryColor: '#222222',
+              settings: { defaultLocale: 'en' },
+            },
+            uiPreference: { locale: 'en', themeMode: 'LIGHT', primaryColor: '10 90% 50%' },
+          }),
+        }),
+      );
+
+      const result = await service.refresh('valid-refresh-token');
+
+      expect(result).toMatchObject({
+        uiPreferences: { locale: 'en', themeMode: 'LIGHT', primaryColor: '10 90% 50%' },
+        condominiumDefaultLocale: 'en',
+        condominiumPrimaryColor: '#222222',
+      });
+    });
+
+    it('getUiPreferences returns defaults when no row exists', async () => {
+      prisma.userUiPreference.findUnique.mockResolvedValue(null);
+
+      const result = await service.getUiPreferences(USER_ID);
+
+      expect(result).toEqual({ locale: null, themeMode: 'SYSTEM', primaryColor: null });
+    });
+
+    it('getUiPreferences returns the stored row', async () => {
+      prisma.userUiPreference.findUnique.mockResolvedValue({
+        userId: USER_ID,
+        locale: 'es',
+        themeMode: 'DARK',
+        primaryColor: '213 76% 45%',
+      });
+
+      const result = await service.getUiPreferences(USER_ID);
+
+      expect(result).toEqual({ locale: 'es', themeMode: 'DARK', primaryColor: '213 76% 45%' });
+    });
+
+    it('updateUiPreferences upserts only the provided keys', async () => {
+      prisma.userUiPreference.upsert.mockResolvedValue({
+        userId: USER_ID,
+        locale: null,
+        themeMode: 'DARK',
+        primaryColor: null,
+      });
+
+      const result = await service.updateUiPreferences(USER_ID, { themeMode: 'DARK' as never });
+
+      expect(prisma.userUiPreference.upsert).toHaveBeenCalledWith({
+        where: { userId: USER_ID },
+        create: { userId: USER_ID, themeMode: 'DARK' },
+        update: { themeMode: 'DARK' },
+      });
+      expect(result).toEqual({ locale: null, themeMode: 'DARK', primaryColor: null });
+    });
+
+    it('updateUiPreferences clears an override when passed null', async () => {
+      prisma.userUiPreference.upsert.mockResolvedValue({
+        userId: USER_ID,
+        locale: null,
+        themeMode: 'SYSTEM',
+        primaryColor: null,
+      });
+
+      await service.updateUiPreferences(USER_ID, { locale: null, primaryColor: null });
+
+      expect(prisma.userUiPreference.upsert).toHaveBeenCalledWith({
+        where: { userId: USER_ID },
+        create: { userId: USER_ID, locale: null, primaryColor: null },
+        update: { locale: null, primaryColor: null },
+      });
     });
   });
 
