@@ -33,6 +33,7 @@ interface PrismaMock {
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
   reconciliationCorrectionPattern: { upsert: jest.Mock };
+  paymentAllocation: { deleteMany: jest.Mock; createMany: jest.Mock; aggregate: jest.Mock };
   importBatch: { update: jest.Mock; findUnique: jest.Mock };
   $transaction: jest.Mock;
 }
@@ -61,6 +62,11 @@ function makePrismaMock(): PrismaMock {
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue(null) },
     reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
+    paymentAllocation: {
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      aggregate: jest.fn().mockResolvedValue({ _sum: { allocatedAmount: null } }),
+    },
     importBatch: {
       update: jest.fn().mockResolvedValue(null),
       // classifyBatch reads the batch's bank profile to drive bank-specific
@@ -1296,8 +1302,15 @@ describe('extractFromBanBajio — explicit "casa NNN" unit detection', () => {
     ['Mantto casa 95 coto Alameda', '95'],
     ['Mmto Anual 2026 Casa 93', '93'], // 93 (the unit), not 2026 (the year)
     ['176 dic', '176'], // leading number still works
+    ['casa34', '34'], // glued, no space
+    ['casa77manttonoviembre2025', '77'], // glued house + trailing text
+    ['CASA233Noviembre2025', '233'], // glued, stops at the first non-digit
   ])('detects the unit in "%s" -> %s', (concept, expected) => {
     expect(extractFromBanBajio(wrap(concept), 370).unitNumberDetected).toBe(expected);
+  });
+
+  it('mirrors a single detected unit into unitNumbersDetected', () => {
+    expect(extractFromBanBajio(wrap('casa34'), 370).unitNumbersDetected).toEqual(['34']);
   });
 
   it('does not invent a unit when "casa" is glued to the month with no number', () => {
@@ -1347,5 +1360,166 @@ describe('ClassificationService.classifyTransaction — BanBajío unit detection
     );
     expect(result.unitNumberDetected).toBeNull();
     expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+});
+
+describe('extractFromBanBajio — multi-unit detection ("casas 307 y 43")', () => {
+  const wrap = (s: string) =>
+    `SPEI Recibido: | Concepto del Pago: ${s} | Recibo # 225317405`;
+
+  it.each([
+    ['casas 307 y 43', ['307', '43']],
+    ['casa 307 y 43', ['307', '43']],
+    ['casa 307, 43', ['307', '43']],
+    ['casa 307 y casa 43', ['307', '43']],
+    ['casas 307 & 43', ['307', '43']],
+  ])('detects all units in "%s"', (concept, expected) => {
+    const r = extractFromBanBajio(wrap(concept), 370);
+    expect(r.unitNumbersDetected).toEqual(expected);
+  });
+
+  it('leaves the scalar unit null for a multi-unit concept (no 1:1 link)', () => {
+    expect(extractFromBanBajio(wrap('casas 307 y 43'), 370).unitNumberDetected).toBeNull();
+  });
+
+  it('skips out-of-range houses and 4-digit years, dedupes repeats', () => {
+    // 999 > 370 (dropped); 2025 is a year (skipped); the repeat collapses.
+    expect(extractFromBanBajio(wrap('casas 307 y 999'), 370).unitNumbersDetected).toEqual(['307']);
+    expect(extractFromBanBajio(wrap('casa 5 y 5'), 370).unitNumbersDetected).toEqual(['5']);
+  });
+});
+
+describe('ClassificationService.classifyTransaction — multi-unit never auto-classifies', () => {
+  const residents = [
+    { id: 'res-307', unitNumber: '307', firstName: 'Ramon', lastName: 'Banuelos' },
+    { id: 'res-43', unitNumber: '43', firstName: 'Rosa', lastName: 'Martinez' },
+  ];
+  const DESC = 'SPEI Recibido: | Concepto del Pago: casas 307 y 43 | Recibo # 225317405';
+  const TX_DATE = new Date('2025-11-30T12:00:00Z');
+  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
+
+  it('surfaces all units but stays in review even when the amount matches the fee', () => {
+    const service = makeService(makePrismaMock());
+    // $500 = ordinary fee: a single-unit payment WOULD auto-classify here. A
+    // multi-unit one must not — there is no single resident to link.
+    const result = service.classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, bankCtx, feeCtx(500),
+    );
+    expect(result.unitNumbersDetected).toEqual(['307', '43']);
+    expect(result.unitNumberDetected).toBeNull();
+    expect(result.residentId).toBeNull();
+    expect(result.matchSource).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+});
+
+describe('ClassificationService.manualClassify — multi-unit allocations', () => {
+  const ALLOC_TX = 'tx-alloc';
+  const baseTx = {
+    updatedAt: NOW,
+    description: 'casas 307 y 43',
+    credits: 1000,
+    residentId: null,
+    unitNumberDetected: null,
+    unitNumbersDetected: ['307', '43'],
+    paymentConcept: null,
+    paymentPeriodMonth: 11,
+    paymentPeriodYear: 2025,
+    transactionDate: NOW,
+    matchSource: null,
+    classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+    requiresReviewReason: RequiresReviewReason.NO_MATCH,
+    matchedRuleId: null,
+    paymentAllocations: [],
+  };
+
+  function primeSettings(prisma: PrismaMock) {
+    prisma.condominiumSettings.findUnique.mockResolvedValue({
+      terraceGlobalKeywords: [],
+      totalUnits: 370,
+    });
+  }
+
+  it('rejects when the allocations do not sum to the credit', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    prisma.transaction.findFirst.mockResolvedValue(baseTx);
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-307' });
+    const service = makeService(prisma);
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+        allocations: [
+          { unitNumber: '307', residentId: 'res-307', allocatedAmount: 400 },
+          { unitNumber: '43', residentId: 'res-43', allocatedAmount: 400 }, // 800 ≠ 1000
+        ],
+      }, USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { getStatus(): number }).getStatus()).toBe(400);
+    expect((caught as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'ALLOCATION_SUM_MISMATCH',
+    });
+    expect(prisma.paymentAllocation.createMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a resident does not live in the allocated unit', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    prisma.transaction.findFirst.mockResolvedValue(baseTx);
+    prisma.resident.findFirst.mockResolvedValue(null); // resident/unit mismatch
+    const service = makeService(prisma);
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+        allocations: [
+          { unitNumber: '307', residentId: 'res-307', allocatedAmount: 500 },
+          { unitNumber: '43', residentId: 'res-43', allocatedAmount: 500 },
+        ],
+      }, USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { getStatus(): number }).getStatus()).toBe(400);
+    expect((caught as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'ALLOCATION_RESIDENT_UNIT_MISMATCH',
+    });
+  });
+
+  it('writes one allocation per unit and leaves the tx without a single resident', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    prisma.transaction.findFirst.mockResolvedValue(baseTx);
+    prisma.resident.findFirst.mockImplementation(({ where }: { where: { id: string } }) =>
+      Promise.resolve({ id: where.id }),
+    );
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+      allocations: [
+        { unitNumber: '307', residentId: 'res-307', allocatedAmount: 500 },
+        { unitNumber: '43', residentId: 'res-43', allocatedAmount: 500 },
+      ],
+    }, USER_ID);
+
+    // Re-edit safety: prior allocations are wiped before the new set is written.
+    expect(prisma.paymentAllocation.deleteMany).toHaveBeenCalledWith({
+      where: { transactionId: ALLOC_TX },
+    });
+    const created = prisma.paymentAllocation.createMany.mock.calls[0][0].data;
+    expect(created).toHaveLength(2);
+    expect(created.map((a: { unitNumber: string }) => a.unitNumber)).toEqual(['307', '43']);
+    // The transaction itself keeps no single residentId (split across units).
+    expect(prisma.transaction.updateMany.mock.calls[0][0].data).toMatchObject({
+      residentId: null,
+      unitNumberDetected: null,
+      unitNumbersDetected: ['307', '43'],
+      classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
+    });
   });
 });
