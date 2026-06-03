@@ -787,6 +787,25 @@ async function main() {
   console.log(`✅ Common Areas: ${totalAreas}`);
   console.log(`✅ Inventory Items: ${totalItems}`);
 
+  // ─── Suppliers ─────────────────────────────────────────────────────────────
+  const SUPPLIER_SEED: Prisma.SupplierCreateManyInput[] = [
+    { condominiumId: '', supplierName: 'Constructora Vidal Hermanos', type: 'MAINTENANCE', contactName: 'Luis Vidal', email: 'lvidal@vidal.mx', phone: '555-201-4432', address: 'Av. Industrial 330', taxId: 'CVH220801VH3', registrationDate: new Date('2026-05-06'), status: 'ACTIVE' },
+    { condominiumId: '', supplierName: 'Seguridad Privada Escudo', type: 'SECURITY', contactName: 'María Escobedo', email: 'mescobedo@escudo.mx', phone: '555-301-7890', address: 'Blvd. Seguridad 12', taxId: 'SPE190515SE1', registrationDate: new Date('2026-04-29'), status: 'ACTIVE' },
+    { condominiumId: '', supplierName: 'Electro Soluciones del Centro', type: 'ELECTRICAL', contactName: 'Jorge Ramírez', email: 'jramirez@electrosol.mx', phone: '555-440-1122', address: 'Calle Voltio 45', taxId: 'ESC210310EC7', registrationDate: new Date('2026-03-18'), status: 'ACTIVE' },
+    { condominiumId: '', supplierName: 'Plomería Aqua Express', type: 'PLUMBING', contactName: 'Sofía Marín', email: 'smarin@aquaexpress.mx', phone: '555-555-9090', address: 'Av. Tubería 88', taxId: 'PAE200722PE5', registrationDate: new Date('2026-02-11'), status: 'PENDING' },
+    { condominiumId: '', supplierName: 'Jardines y Paisajes Verde Vivo', type: 'LANDSCAPING', contactName: 'Andrés Lozano', email: 'alozano@verdevivo.mx', phone: '555-612-3344', address: 'Camino Real 210', taxId: 'JPV180905VV2', registrationDate: new Date('2025-11-30'), status: 'INACTIVE' },
+    { condominiumId: '', supplierName: 'Limpieza Integral Brillo Total', type: 'CLEANING', contactName: 'Patricia Núñez', email: 'pnunez@brillototal.mx', phone: '555-778-5566', address: 'Privada Aseo 9', taxId: 'LIB220114BT8', registrationDate: new Date('2026-01-20'), status: 'ACTIVE' },
+  ];
+
+  let totalSuppliers = 0;
+  for (let ci = 0; ci < condominiums.length; ci++) {
+    const condoId = condominiums[ci].id;
+    const rows = SUPPLIER_SEED.map((s) => ({ ...s, condominiumId: condoId }));
+    await prisma.supplier.createMany({ data: rows });
+    totalSuppliers += rows.length;
+  }
+  console.log(`✅ Suppliers: ${totalSuppliers}`);
+
   // ─── Petty Cash (first 3 condominiums) ────────────────────────────────────
   const pettyCashData = [
     {
