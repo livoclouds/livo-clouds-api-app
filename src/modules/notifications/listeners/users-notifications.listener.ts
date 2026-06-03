@@ -35,7 +35,7 @@ export class UsersNotificationsListener {
           email: payload.email,
           role: payload.role,
         },
-        linkUrl: slug ? usersLink(slug) : null,
+        linkUrl: slug ? usersLink() : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {
@@ -60,7 +60,7 @@ export class UsersNotificationsListener {
           beforeRole: payload.beforeRole,
           afterRole: payload.afterRole,
         },
-        linkUrl: slug ? usersLink(slug) : null,
+        linkUrl: slug ? usersLink() : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {

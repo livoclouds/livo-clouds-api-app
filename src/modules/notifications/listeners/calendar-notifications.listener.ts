@@ -40,7 +40,7 @@ export class CalendarNotificationsListener {
           title: payload.title,
           startsAt: payload.startsAt,
         },
-        linkUrl: slug ? calendarEventLink(slug, payload.eventId) : null,
+        linkUrl: slug ? calendarEventLink(payload.eventId) : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {
@@ -65,7 +65,7 @@ export class CalendarNotificationsListener {
           title: payload.title,
         },
         // The event row is soft-deleted, so link to the calendar index.
-        linkUrl: slug ? calendarLink(slug) : null,
+        linkUrl: slug ? calendarLink() : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {
@@ -91,7 +91,7 @@ export class CalendarNotificationsListener {
           residentId: payload.residentId,
           startsAt: payload.startsAt,
         },
-        linkUrl: slug ? calendarEventLink(slug, payload.eventId) : null,
+        linkUrl: slug ? calendarEventLink(payload.eventId) : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {
