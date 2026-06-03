@@ -627,9 +627,11 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
       id: 'notif-new',
       userId: USER_ID,
       condominiumId: CONDOMINIUM_ID,
+      type: 'IMPORT_COMPLETED',
       title: 'Import completed',
       message: 'Your import finished',
       linkUrl: '/imports/batch-1',
+      data: { batchId: 'batch-1' },
       aggregateCount: 1,
     };
     prisma.notification.findFirst.mockResolvedValueOnce(null);
@@ -656,6 +658,9 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
         body: 'Your import finished',
         tag: 'notification-notif-new',
         url: '/imports/batch-1',
+        // type + data let the web service worker derive the click route itself
+        type: 'IMPORT_COMPLETED',
+        data: { batchId: 'batch-1' },
       }),
     );
     expect(webPush.sendToSubscription).toHaveBeenCalledWith(
