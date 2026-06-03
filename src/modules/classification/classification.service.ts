@@ -88,9 +88,11 @@ const UNIT_PATTERNS: { regex: RegExp; confidence: number }[] = [
 
 const CONCEPT_PATTERNS: { regex: RegExp; concept: string }[] = [
   // Maintenance abbreviations residents actually write: "mtto", "mmto", "manto",
-  // "mantto", "mant" — the old `mant\b` missed "Mtto"/"MTTO"/"Mmto" (no word
-  // boundary after "mant"). `\bm(?:antenimiento|antto|anto|tto|mto|ant)\b` covers them.
-  { regex: /mantenimiento|cuota\s+mensual|mensualidad|\bm(?:antenimiento|antto|anto|tto|mto|ant)\b/i, concept: 'MAINTENANCE' },
+  // "mantto", "mant", "mto" — the old `mant\b` missed "Mtto"/"MTTO"/"Mmto" (no word
+  // boundary after "mant"), and the inner group missed the bare "mto" (single t,
+  // e.g. "Concepto del Pago: mto 344"). `\bm(?:antenimiento|antto|anto|tto|mto|to|ant)\b`
+  // covers them: the `to` alternative yields the standalone token "mto".
+  { regex: /mantenimiento|cuota\s+mensual|mensualidad|\bm(?:antenimiento|antto|anto|tto|mto|to|ant)\b/i, concept: 'MAINTENANCE' },
   { regex: /deposito|dep[oó]sito|garant[ií]a/i, concept: 'DEPOSIT' },
   { regex: /multa|sanci[oó]n|infracci[oó]n/i, concept: 'FINE' },
   { regex: /\bagua\b|\bluz\b|electricidad|internet|\bgas\b/i, concept: 'UTILITY' },
