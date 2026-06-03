@@ -1046,6 +1046,9 @@ model UserNotificationSoundPreference {
   userId       String            @id
   soundEnabled Boolean           @default(true)
   soundChoice  NotificationSound @default(CHIME)
+  // "Do Not Disturb" — when on, the web mutes the in-app arrival toast. Persisted
+  // per user so the muted state survives refresh, lock-unlock and re-login.
+  dnd          Boolean           @default(false)
   updatedAt    DateTime          @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -1218,7 +1218,7 @@ describe('NotificationsService.dismissAll', () => {
 });
 
 describe('NotificationsService sound preference', () => {
-  it('returns the default (enabled, CHIME) when no row exists', async () => {
+  it('returns the default (enabled, CHIME, dnd off) when no row exists', async () => {
     const prisma = makePrismaMock();
     prisma.userNotificationSoundPreference.findUnique.mockResolvedValueOnce(null);
     const service = makeService(prisma);
@@ -1226,20 +1226,23 @@ describe('NotificationsService sound preference', () => {
     expect(await service.getSoundPreference(USER_ID)).toEqual({
       soundEnabled: true,
       soundChoice: NotificationSound.CHIME,
+      dnd: false,
     });
   });
 
-  it('returns the stored preference when a row exists', async () => {
+  it('returns the stored preference (incl. dnd) when a row exists', async () => {
     const prisma = makePrismaMock();
     prisma.userNotificationSoundPreference.findUnique.mockResolvedValueOnce({
       soundEnabled: false,
       soundChoice: NotificationSound.PEBBLE,
+      dnd: true,
     });
     const service = makeService(prisma);
 
     expect(await service.getSoundPreference(USER_ID)).toEqual({
       soundEnabled: false,
       soundChoice: NotificationSound.PEBBLE,
+      dnd: true,
     });
   });
 
@@ -1248,6 +1251,7 @@ describe('NotificationsService sound preference', () => {
     prisma.userNotificationSoundPreference.upsert.mockResolvedValueOnce({
       soundEnabled: true,
       soundChoice: NotificationSound.SHIMMER,
+      dnd: false,
     });
     const service = makeService(prisma);
 
@@ -1256,12 +1260,37 @@ describe('NotificationsService sound preference', () => {
       soundChoice: NotificationSound.SHIMMER,
     });
 
-    expect(result).toEqual({ soundEnabled: true, soundChoice: NotificationSound.SHIMMER });
+    expect(result).toEqual({
+      soundEnabled: true,
+      soundChoice: NotificationSound.SHIMMER,
+      dnd: false,
+    });
     expect(prisma.userNotificationSoundPreference.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { userId: USER_ID },
         create: expect.objectContaining({ userId: USER_ID, soundChoice: NotificationSound.SHIMMER }),
         update: expect.objectContaining({ soundChoice: NotificationSound.SHIMMER }),
+      }),
+    );
+  });
+
+  it('upserts only the dnd flag, leaving sound fields untouched', async () => {
+    const prisma = makePrismaMock();
+    prisma.userNotificationSoundPreference.upsert.mockResolvedValueOnce({
+      soundEnabled: true,
+      soundChoice: NotificationSound.CHIME,
+      dnd: true,
+    });
+    const service = makeService(prisma);
+
+    const result = await service.updateDndPreference(USER_ID, true);
+
+    expect(result).toEqual({ dnd: true });
+    expect(prisma.userNotificationSoundPreference.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: USER_ID },
+        create: { userId: USER_ID, dnd: true },
+        update: { dnd: true },
       }),
     );
   });

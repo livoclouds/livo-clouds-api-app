@@ -83,12 +83,22 @@ describe('NotificationsController dismiss-all + sound', () => {
     const service = {
       updateSoundPreference: jest
         .fn()
-        .mockResolvedValue({ soundEnabled: false, soundChoice: 'PEBBLE' }),
+        .mockResolvedValue({ soundEnabled: false, soundChoice: 'PEBBLE', dnd: false }),
     };
     const controller = new NotificationsController(service as never);
     const dto = { soundEnabled: false, soundChoice: 'PEBBLE' } as never;
     const result = await controller.updateSoundPreference(USER, dto);
-    expect(result).toEqual({ soundEnabled: false, soundChoice: 'PEBBLE' });
+    expect(result).toEqual({ soundEnabled: false, soundChoice: 'PEBBLE', dnd: false });
     expect(service.updateSoundPreference).toHaveBeenCalledWith('user-1', dto);
+  });
+
+  it('updateDndPreference forwards the dnd flag to the service', async () => {
+    const service = {
+      updateDndPreference: jest.fn().mockResolvedValue({ dnd: true }),
+    };
+    const controller = new NotificationsController(service as never);
+    const result = await controller.updateDndPreference(USER, { dnd: true } as never);
+    expect(result).toEqual({ dnd: true });
+    expect(service.updateDndPreference).toHaveBeenCalledWith('user-1', true);
   });
 });
