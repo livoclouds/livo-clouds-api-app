@@ -143,7 +143,7 @@ function eventInput(
     title: 'Import completed',
     message: 'Your import finished',
     data: { batchId: 'batch-1' },
-    linkUrl: '/dashboard/imports/batch-1',
+    linkUrl: '/imports/batch-1',
     ...overrides,
   };
 }
@@ -629,7 +629,7 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
       condominiumId: CONDOMINIUM_ID,
       title: 'Import completed',
       message: 'Your import finished',
-      linkUrl: '/dashboard/imports/batch-1',
+      linkUrl: '/imports/batch-1',
       aggregateCount: 1,
     };
     prisma.notification.findFirst.mockResolvedValueOnce(null);
@@ -655,7 +655,7 @@ describe('NotificationsService.tryAggregate web push fan-out', () => {
         title: 'Import completed',
         body: 'Your import finished',
         tag: 'notification-notif-new',
-        url: '/dashboard/imports/batch-1',
+        url: '/imports/batch-1',
       }),
     );
     expect(webPush.sendToSubscription).toHaveBeenCalledWith(

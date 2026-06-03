@@ -38,7 +38,7 @@ export class ReconciliationNotificationsListener {
           ruleName: payload.ruleName,
           action: payload.action,
         },
-        linkUrl: slug ? reconciliationRulesLink(slug) : null,
+        linkUrl: slug ? reconciliationRulesLink() : null,
         actorUserId: payload.actorUserId,
       });
     } catch (err) {

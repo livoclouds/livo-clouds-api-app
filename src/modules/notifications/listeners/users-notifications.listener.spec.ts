@@ -36,7 +36,7 @@ describe('UsersNotificationsListener', () => {
           email: 'new@example.com',
           role: 'TENANT_ADMIN',
         },
-        linkUrl: `/condominiums/${SLUG}/settings/users`,
+        linkUrl: '/settings/users',
         actorUserId: 'user-9',
       }),
     );
@@ -62,7 +62,7 @@ describe('UsersNotificationsListener', () => {
           beforeRole: 'READ_ONLY',
           afterRole: 'TENANT_ADMIN',
         },
-        linkUrl: `/condominiums/${SLUG}/settings/users`,
+        linkUrl: '/settings/users',
         actorUserId: 'user-9',
       }),
     );

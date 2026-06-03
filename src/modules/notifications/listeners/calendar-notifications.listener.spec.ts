@@ -31,7 +31,7 @@ describe('CalendarNotificationsListener', () => {
         type: NotificationType.CALENDAR_EVENT_CREATED,
         condominiumId: CONDOMINIUM_ID,
         data: { eventId: 'event-1', title: 'Council meeting', startsAt: STARTS_AT },
-        linkUrl: `/condominiums/${SLUG}/calendar/event-1`,
+        linkUrl: '/calendar/event-1',
         actorUserId: 'user-9',
       }),
     );
@@ -52,7 +52,7 @@ describe('CalendarNotificationsListener', () => {
       expect.objectContaining({
         type: NotificationType.CALENDAR_EVENT_CANCELLED,
         data: { eventId: 'event-2', title: 'Council meeting' },
-        linkUrl: `/condominiums/${SLUG}/calendar`,
+        linkUrl: '/calendar',
         actorUserId: 'user-9',
       }),
     );
@@ -80,7 +80,7 @@ describe('CalendarNotificationsListener', () => {
           residentId: 'res-7',
           startsAt: STARTS_AT,
         },
-        linkUrl: `/condominiums/${SLUG}/calendar/event-3`,
+        linkUrl: '/calendar/event-3',
         actorUserId: 'user-9',
       }),
     );

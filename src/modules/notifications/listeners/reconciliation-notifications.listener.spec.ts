@@ -36,7 +36,7 @@ describe('ReconciliationNotificationsListener', () => {
           title: 'notifications.types.RECONCILIATION_RULE_MODIFIED.title',
           message: 'notifications.types.RECONCILIATION_RULE_MODIFIED.body',
           data: { ruleId: 'rule-1', ruleName: 'Maintenance keywords', action },
-          linkUrl: `/condominiums/${SLUG}/settings/reconciliation-rules`,
+          linkUrl: '/settings/reconciliation-rules',
           actorUserId: 'user-9',
         }),
       );

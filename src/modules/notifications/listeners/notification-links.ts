@@ -1,44 +1,41 @@
 import { NotificationType } from '@prisma/client';
 
 /**
- * Deep-link builders and i18n-key derivation shared by the Phase 3
- * notification listeners.
+ * Canonical, client-agnostic deep-link references for notifications.
  *
- * Route conventions follow the web app's `[locale]/(app)/condominiums/
- * [condominiumSlug]/...` tree. As of Phase 3 only the `/dashboard` route is
- * built; the import/calendar/settings targets below are forward-looking —
- * `linkUrl` is inert stored data until Phase 4 wires navigation. See
- * OQ-NT-17 in the Notifications known-issues document. The locale segment is
- * intentionally omitted: next-intl's `as-needed` prefix resolves it at
- * navigation time.
+ * These are SEMANTIC pointers to the target resource, NOT literal web routes.
+ * Each client (the web app today, a future mobile app or email digest) maps a
+ * notification's `type` + `data` to its own concrete route — the web app, for
+ * example, resolves `type`+`data` to `/imports?tab=imports&batch=<id>` and does
+ * not navigate by these strings. They are kept for audit and non-web consumers.
+ *
+ * The tenant is intentionally absent: tenant scope comes from the authenticated
+ * session, never the URL (CLAUDE.md golden rule #3). The locale is absent too —
+ * each client resolves it from its own preference.
  */
 
-function base(slug: string): string {
-  return `/condominiums/${slug}`;
+export function importsLink(): string {
+  return '/imports';
 }
 
-export function importsLink(slug: string): string {
-  return `${base(slug)}/imports`;
+export function importBatchLink(batchId: string): string {
+  return `/imports/${batchId}`;
 }
 
-export function importBatchLink(slug: string, batchId: string): string {
-  return `${base(slug)}/imports/${batchId}`;
+export function reconciliationRulesLink(): string {
+  return '/settings/reconciliation-rules';
 }
 
-export function reconciliationRulesLink(slug: string): string {
-  return `${base(slug)}/settings/reconciliation-rules`;
+export function calendarLink(): string {
+  return '/calendar';
 }
 
-export function calendarLink(slug: string): string {
-  return `${base(slug)}/calendar`;
+export function calendarEventLink(eventId: string): string {
+  return `/calendar/${eventId}`;
 }
 
-export function calendarEventLink(slug: string, eventId: string): string {
-  return `${base(slug)}/calendar/${eventId}`;
-}
-
-export function usersLink(slug: string): string {
-  return `${base(slug)}/settings/users`;
+export function usersLink(): string {
+  return '/settings/users';
 }
 
 /**

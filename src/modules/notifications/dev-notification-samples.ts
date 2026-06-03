@@ -51,7 +51,7 @@ function buildDataAndLink(
   slug: string | null,
   startsAt: string,
 ): { data: Prisma.InputJsonValue; linkUrl: string | null } {
-  const batchLink = slug ? importBatchLink(slug, SAMPLE_BATCH_ID) : null;
+  const batchLink = slug ? importBatchLink(SAMPLE_BATCH_ID) : null;
   switch (type) {
     case NotificationType.IMPORT_COMPLETED:
       return {
@@ -88,17 +88,17 @@ function buildDataAndLink(
           ruleName: 'Cuotas de mantenimiento',
           action: 'updated',
         },
-        linkUrl: slug ? reconciliationRulesLink(slug) : null,
+        linkUrl: slug ? reconciliationRulesLink() : null,
       };
     case NotificationType.CALENDAR_EVENT_CREATED:
       return {
         data: { eventId: SAMPLE_EVENT_ID, title: 'Junta de vecinos', startsAt },
-        linkUrl: slug ? calendarEventLink(slug, SAMPLE_EVENT_ID) : null,
+        linkUrl: slug ? calendarEventLink(SAMPLE_EVENT_ID) : null,
       };
     case NotificationType.CALENDAR_EVENT_CANCELLED:
       return {
         data: { eventId: SAMPLE_EVENT_ID, title: 'Junta de vecinos' },
-        linkUrl: slug ? calendarLink(slug) : null,
+        linkUrl: slug ? calendarLink() : null,
       };
     case NotificationType.CALENDAR_BOOKING_CONFIRMED:
       return {
@@ -108,7 +108,7 @@ function buildDataAndLink(
           residentId: 'dev-resident-0001',
           startsAt,
         },
-        linkUrl: slug ? calendarEventLink(slug, SAMPLE_EVENT_ID) : null,
+        linkUrl: slug ? calendarEventLink(SAMPLE_EVENT_ID) : null,
       };
     case NotificationType.NEGATIVE_BALANCE:
       return { data: {}, linkUrl: null };
@@ -121,7 +121,7 @@ function buildDataAndLink(
           email: 'nuevo@cotoalameda.com',
           role: 'READ_ONLY',
         },
-        linkUrl: slug ? usersLink(slug) : null,
+        linkUrl: slug ? usersLink() : null,
       };
     case NotificationType.PERMISSIONS_CHANGED:
       return {
@@ -130,7 +130,7 @@ function buildDataAndLink(
           beforeRole: 'READ_ONLY',
           afterRole: 'TENANT_ADMIN',
         },
-        linkUrl: slug ? usersLink(slug) : null,
+        linkUrl: slug ? usersLink() : null,
       };
     case NotificationType.SESSION_EXPIRING:
       return { data: { minutesRemaining: 5 }, linkUrl: null };
