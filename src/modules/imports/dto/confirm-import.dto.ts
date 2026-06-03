@@ -141,4 +141,11 @@ export class ConfirmImportDto {
   @ValidateNested({ each: true })
   @Type(() => FileImportDto)
   files: FileImportDto[];
+
+  // The bank profile chosen for this import. Persisted onto every batch so the
+  // classification engine knows which bank's description format to parse (e.g.
+  // BanBajío unit extraction). All files in one confirm share the same profile.
+  @IsOptional()
+  @IsUUID('4', { message: 'bankProfileId must be a valid UUID v4' })
+  bankProfileId?: string;
 }

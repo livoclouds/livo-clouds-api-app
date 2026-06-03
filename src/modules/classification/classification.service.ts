@@ -10,6 +10,7 @@ import {
 import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-matcher';
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 import { SettingsCacheService } from '../settings/settings-cache.service';
+import { isBanBajio } from '../bank-profiles/known-banks';
 
 /**
  * Phase 6 (A4): page size for cursor-batched loading of classification
@@ -187,6 +188,44 @@ export function extractFromText(description: string): TextExtraction {
     paymentPeriodYear,
     paymentPeriodMonth,
   };
+}
+
+/**
+ * BanBajío-specific unit extraction. Their SPEI descriptions carry the unit in a
+ * "Concepto del Pago: <unit> <month> | Recibo # <n>" segment (e.g.
+ * "...Concepto del Pago: 106 noviembre | Recibo # 227120243..."). We read the
+ * leading number of that segment and accept it only when it falls within the
+ * condominium's configured unit range (1..totalUnits) — so account numbers, RFC
+ * and reference digits elsewhere in the description never get mistaken for a
+ * unit. Everything else (concept, payer, period) reuses the generic extractor.
+ */
+export function extractFromBanBajio(
+  description: string,
+  totalUnits: number,
+): TextExtraction {
+  const base = extractFromText(description);
+
+  // For BanBajío the unit ONLY comes from the "Concepto del Pago: <unit> ... |"
+  // segment. We deliberately ignore the generic extractor's unit guess here —
+  // its "#"-prefixed pattern would otherwise grab "Recibo # <n>" and other digit
+  // groups. Concept, payer and period still reuse the generic extractor.
+  let unitNumberDetected: string | null = null;
+  let unitConfidence = 0;
+
+  const segment = description.match(/concepto del pago:\s*([^|]*)/i);
+  if (segment) {
+    // Leading number of the segment, tolerating leading zeros ("06" -> 6).
+    const leading = segment[1].match(/^\s*0*(\d+)/);
+    if (leading) {
+      const unit = parseInt(leading[1], 10);
+      if (Number.isFinite(unit) && unit >= 1 && totalUnits > 0 && unit <= totalUnits) {
+        unitNumberDetected = String(unit);
+        unitConfidence = 0.95;
+      }
+    }
+  }
+
+  return { ...base, unitNumberDetected, unitConfidence };
 }
 
 function applyDbRules(
@@ -383,6 +422,7 @@ export class ClassificationService {
     activeRules: DbRule[];
     terraceEvents: TerraceCandidate[];
     terraceGlobalKeywords: string[];
+    totalUnits: number;
   }> {
     const [residents, activeRules, rawTerraceEvents, settings] = await Promise.all([
       this.loadAllByCursor<ResidentData>((cursor, take) =>
@@ -416,6 +456,7 @@ export class ClassificationService {
     ]);
 
     const terraceGlobalKeywords = settings?.terraceGlobalKeywords ?? [];
+    const totalUnits = settings?.totalUnits ?? 0;
 
     // Parse terrace metadata and filter to events with PENDING payment.
     const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
@@ -431,7 +472,7 @@ export class ClassificationService {
       }];
     });
 
-    return { residents, activeRules, terraceEvents, terraceGlobalKeywords };
+    return { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits };
   }
 
   classifyTransaction(
@@ -448,8 +489,14 @@ export class ClassificationService {
       // CondominiumSettings.terraceGlobalKeywords and threaded through.
       globalKeywords?: string[];
     },
+    // Bank identity + unit bound for bank-specific extraction. `bankName` comes
+    // from the batch's bank profile; `totalUnits` from CondominiumSettings.
+    bankContext?: { bankName: string | null; totalUnits: number },
   ): ClassificationResult {
-    const extraction = extractFromText(description);
+    const extraction =
+      bankContext && isBanBajio(bankContext.bankName)
+        ? extractFromBanBajio(description, bankContext.totalUnits)
+        : extractFromText(description);
 
     // Default the payment period to the transaction date's month/year when the
     // description does not carry an explicit period. The bank rarely writes
@@ -464,10 +511,28 @@ export class ClassificationService {
     const ruleMatch = applyDbRules(description, rules);
     if (ruleMatch) {
       const { matchedRule, score } = ruleMatch;
+      const paymentConcept = matchedRule.conceptType ?? extraction.paymentConcept;
+
+      // When the rule fires AND we extracted a unit number, still try to link
+      // the resident — a concept rule should not leave a clearly-identified
+      // payment unmatched. The resident match drives the review status; the rule
+      // keeps ownership of the concept and provenance. A concept-only rule (no
+      // unit in the description, e.g. bank-commission rules) keeps the prior
+      // auto-classify-without-resident behavior.
+      if (extraction.unitNumberDetected) {
+        const residentMatch = matchToResident(extraction, residents);
+        return {
+          ...extraction,
+          ...residentMatch,
+          paymentConcept,
+          matchedRuleId: matchedRule.id,
+        };
+      }
+
       const isAuto = score >= 0.8;
       return {
         ...extraction,
-        paymentConcept: matchedRule.conceptType ?? extraction.paymentConcept,
+        paymentConcept,
         residentId: null,
         matchSource: MatchSource.RULE,
         confidenceScore: score,
@@ -547,14 +612,24 @@ export class ClassificationService {
     // Phase 6 (A4 + A5): candidate sets (residents, terrace bookings) are
     // cursor-batched and terrace keywords come from the settings cache; the
     // batch's own transactions are bounded by the import file.
-    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords }, transactions] =
-      await Promise.all([
-        this.loadCandidates(condominiumId),
-        this.prisma.transaction.findMany({
-          where: { condominiumId, importBatchId: batchId },
-          select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
-        }),
-      ]);
+    const [
+      { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits },
+      transactions,
+      batchInfo,
+    ] = await Promise.all([
+      this.loadCandidates(condominiumId),
+      this.prisma.transaction.findMany({
+        where: { condominiumId, importBatchId: batchId },
+        select: { id: true, description: true, transactionDate: true, credits: true, charges: true, flowType: true },
+      }),
+      this.prisma.importBatch.findUnique({
+        where: { id: batchId },
+        select: { bankProfile: { select: { bankName: true } } },
+      }),
+    ]);
+
+    // The whole batch shares one bank profile, so the bank identity is read once.
+    const bankName = batchInfo?.bankProfile?.bankName ?? null;
 
     let classified = 0;
     let needsReview = 0;
@@ -592,6 +667,7 @@ export class ClassificationService {
           residents,
           activeRules,
           terraceContext,
+          { bankName, totalUnits },
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -740,7 +816,7 @@ export class ClassificationService {
     // Phase 6 (A4 + A5): shared cursor-batched candidate loading + cached
     // terrace keywords; only the PENDING-review transactions query is specific
     // to this re-apply path.
-    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords }, transactions] =
+    const [{ residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits }, transactions] =
       await Promise.all([
         this.loadCandidates(condominiumId),
         this.prisma.transaction.findMany({
@@ -756,6 +832,9 @@ export class ClassificationService {
             credits: true,
             charges: true,
             flowType: true,
+            // Pending rows span multiple batches/banks, so the bank identity is
+            // read per transaction (not once like classifyBatch).
+            importBatch: { select: { bankProfile: { select: { bankName: true } } } },
           },
         }),
       ]);
@@ -793,6 +872,7 @@ export class ClassificationService {
           residents,
           activeRules,
           terraceContext,
+          { bankName: tx.importBatch?.bankProfile?.bankName ?? null, totalUnits },
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {

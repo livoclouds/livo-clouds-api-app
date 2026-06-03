@@ -16,6 +16,62 @@ import { CreateBankProfileDto } from './dto/create-bank-profile.dto';
 import { UpdateBankProfileDto } from './dto/update-bank-profile.dto';
 import { FieldDefinitionDto } from './dto/field-definition.dto';
 
+/** Fields whose changes are tracked in the bank-profile audit trail. */
+const AUDITED_BANK_PROFILE_FIELDS = [
+  'name',
+  'bankName',
+  'isDefault',
+  'isActive',
+  'useSameForPdf',
+  'excelAliases',
+  'pdfAliases',
+] as const;
+
+interface BankProfileLike {
+  name: string;
+  bankName: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+  useSameForPdf: boolean;
+  excelAliases: unknown;
+  pdfAliases: unknown;
+}
+
+export interface BankProfileFieldChange {
+  field: string;
+  oldValue: unknown;
+  newValue: unknown;
+}
+
+/** Snapshot of the audited fields, stored as before/after state on AuditLog. */
+function bankProfileAuditSnapshot(p: BankProfileLike): Record<string, unknown> {
+  return {
+    name: p.name,
+    bankName: p.bankName ?? null,
+    isDefault: p.isDefault,
+    isActive: p.isActive,
+    useSameForPdf: p.useSameForPdf,
+    excelAliases: p.excelAliases,
+    pdfAliases: p.pdfAliases,
+  };
+}
+
+/** Field-level diff (which fields changed, with their old and new values). */
+function diffBankProfileSnapshots(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): BankProfileFieldChange[] {
+  const changes: BankProfileFieldChange[] = [];
+  for (const field of AUDITED_BANK_PROFILE_FIELDS) {
+    const oldValue = before[field] ?? null;
+    const newValue = after[field] ?? null;
+    if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+      changes.push({ field, oldValue, newValue });
+    }
+  }
+  return changes;
+}
+
 @Injectable()
 export class BankProfilesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -93,7 +149,9 @@ export class BankProfilesService {
           module: 'bank-profiles',
           entityType: 'BankProfile',
           entityId: created.id,
-          afterState: { name: created.name, isDefault: created.isDefault },
+          afterState: bankProfileAuditSnapshot(
+            created,
+          ) as unknown as Prisma.InputJsonValue,
           result: 'SUCCESS',
         },
       });
@@ -153,6 +211,13 @@ export class BankProfilesService {
 
       const updated = await tx.bankProfile.update({ where: { id }, data });
 
+      // Detailed, field-level audit trail: who, when (createdAt), which profile
+      // (entityId), which fields changed and their old -> new values. before/after
+      // snapshots carry the full audited state; `detail` carries the compact diff.
+      const beforeSnapshot = bankProfileAuditSnapshot(existing);
+      const afterSnapshot = bankProfileAuditSnapshot(updated);
+      const changes = diffBankProfileSnapshots(beforeSnapshot, afterSnapshot);
+
       await tx.auditLog.create({
         data: {
           condominiumId,
@@ -162,14 +227,9 @@ export class BankProfilesService {
           module: 'bank-profiles',
           entityType: 'BankProfile',
           entityId: id,
-          beforeState: {
-            name: existing.name,
-            isDefault: existing.isDefault,
-          },
-          afterState: {
-            name: updated.name,
-            isDefault: updated.isDefault,
-          },
+          beforeState: beforeSnapshot as unknown as Prisma.InputJsonValue,
+          afterState: afterSnapshot as unknown as Prisma.InputJsonValue,
+          detail: changes.length > 0 ? JSON.stringify(changes) : null,
           result: 'SUCCESS',
         },
       });
