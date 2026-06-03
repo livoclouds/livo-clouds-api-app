@@ -26,6 +26,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UnlockDto } from './dto/unlock.dto';
 import { UpdateOnboardingDto } from './dto/update-onboarding.dto';
+import { UpdateUiPreferencesDto } from './dto/update-ui-preferences.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -167,6 +168,21 @@ export class AuthController {
     @Body() dto: UpdateOnboardingDto,
   ) {
     return this.authService.updateOnboarding(user.sub, dto);
+  }
+
+  @Get('me/ui-preferences')
+  @ApiOperation({ summary: 'Get current user UI preferences (locale, theme, color)' })
+  getUiPreferences(@CurrentUser() user: JwtPayload) {
+    return this.authService.getUiPreferences(user.sub);
+  }
+
+  @Patch('me/ui-preferences')
+  @ApiOperation({ summary: 'Update current user UI preferences (locale, theme, color)' })
+  updateUiPreferences(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateUiPreferencesDto,
+  ) {
+    return this.authService.updateUiPreferences(user.sub, dto);
   }
 
   @Post('me/avatar')

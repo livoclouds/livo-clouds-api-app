@@ -414,6 +414,21 @@ enum OnboardingStatus {
   SKIPPED
 }
 
+// Per-user visual mode. SYSTEM mirrors the OS prefers-color-scheme; LIGHT/DARK
+// are explicit overrides. Drives the web's next-themes setting across devices.
+enum UiThemeMode {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+// Per-user locale override. NULL on the preference row means "inherit the
+// condominium default" (CondominiumSettings.defaultLocale); a value here wins.
+enum UiLocale {
+  es
+  en
+}
+
 model User {
   id              String    @id @default(uuid())
   condominiumId   String?
@@ -473,6 +488,7 @@ model User {
   notificationPreferences   UserNotificationPreference[]
   rootNotificationScope     RootNotificationScope?
   notificationSoundPref     UserNotificationSoundPreference?
+  uiPreference              UserUiPreference?
   r2AccessLogs              R2AccessLog[]
   pushSubscriptions         PushSubscription[]
 
@@ -1035,6 +1051,24 @@ model UserNotificationSoundPreference {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_notification_sound_preferences")
+}
+
+/// Per-user UI preferences (one row per user, upsert semantics — same shape as
+/// UserNotificationSoundPreference). `locale` and `primaryColor` are NULL when
+/// the user has not overridden them, in which case the web falls back to the
+/// condominium defaults (defaultLocale / primaryColor). `primaryColor` is stored
+/// as an HSL triplet ("213 76% 45%") to match the web's --primary CSS variable —
+/// never a hex string (the DTO regex enforces this).
+model UserUiPreference {
+  userId       String      @id
+  locale       UiLocale?
+  themeMode    UiThemeMode @default(SYSTEM)
+  primaryColor String?
+  updatedAt    DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_ui_preferences")
 }
 
 model FinancialMonthlySummary {
