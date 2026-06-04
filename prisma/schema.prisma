@@ -1198,6 +1198,12 @@ model ReconciliationRule {
   // of the group to read (defaults to 1).
   unitExtractionPattern String?
   unitExtractionGroup   Int?                 @default(1)
+  // UNIT outcome — flavor 2 metadata. The visual block recipe the admin built in
+  // the editor's advanced (block-builder) mode. The classification engine IGNORES
+  // this — it runs `unitExtractionPattern` (the compiled regex). It exists purely
+  // so the editor can faithfully reconstruct the block builder on edit instead of
+  // heuristically reverse-parsing the regex. Null for legacy/basic/guided rules.
+  extractionRecipe      Json?
   // EXPENSE outcome: which category (and optionally which supplier) to assign when
   // this rule fires on an EXPENSE transaction. At least one must be set for an
   // EXPENSE rule; both ignored for CONCEPT/UNIT rules.
