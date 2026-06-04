@@ -1,10 +1,17 @@
-import { ClassificationStatus, MatchSource, RequiresReviewReason } from '@prisma/client';
+import {
+  ClassificationStatus,
+  MatchSource,
+  ReconciliationRuleKind,
+  RequiresReviewReason,
+} from '@prisma/client';
 import {
   ClassificationService,
   extractFromText,
   extractFromBanBajio,
   parseMaintenanceConcept,
   resolveNearestCycle,
+  resolveRuleUnit,
+  type DbRule,
 } from './classification.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
@@ -89,8 +96,11 @@ function makePrismaMock(): PrismaMock {
   return mock;
 }
 
-function makeService(prisma: PrismaMock): ClassificationService {
-  const rulesService = { findActive: jest.fn().mockResolvedValue([]) };
+function makeService(
+  prisma: PrismaMock,
+  activeRules: unknown[] = [],
+): ClassificationService {
+  const rulesService = { findActive: jest.fn().mockResolvedValue(activeRules) };
   const events = { emit: jest.fn() };
   // Phase 6 (A5): the service now reads terrace keywords via SettingsCacheService.
   // The mock forwards to the existing condominiumSettings.findUnique mock so the
@@ -1665,5 +1675,141 @@ describe('ClassificationService.getSystemRulesCatalog — transparency catalog',
     for (const { example } of catalog.unitPatterns) {
       expect(extractFromText(example).unitNumberDetected).not.toBeNull();
     }
+  });
+});
+
+function unitRule(partial: Partial<DbRule>): DbRule {
+  return {
+    id: 'rule-1',
+    ruleKind: ReconciliationRuleKind.UNIT,
+    keywords: [],
+    unitPatterns: [],
+    conceptType: null,
+    assignedUnitNumber: null,
+    unitExtractionPattern: null,
+    unitExtractionGroup: null,
+    confidenceThreshold: 0.9 as unknown as DbRule['confidenceThreshold'],
+    ...partial,
+  };
+}
+
+describe('resolveRuleUnit — UNIT rule outcome resolution', () => {
+  it('returns null for a CONCEPT rule', () => {
+    const rule = unitRule({ ruleKind: ReconciliationRuleKind.CONCEPT, assignedUnitNumber: '5' });
+    expect(resolveRuleUnit(rule, 'casa 5 mantenimiento')).toBeNull();
+  });
+
+  it('returns the fixed unit for a direct-assignment rule', () => {
+    const rule = unitRule({ assignedUnitNumber: '34' });
+    expect(resolveRuleUnit(rule, 'transferencia juan perez')).toBe('34');
+  });
+
+  it('extracts the configured capture group for a format rule', () => {
+    const rule = unitRule({ unitExtractionPattern: 'apt-(\\d+)', unitExtractionGroup: 1 });
+    expect(resolveRuleUnit(rule, 'pago APT-305 cuota')).toBe('305');
+  });
+
+  it('defaults the capture group to 1 when unset', () => {
+    const rule = unitRule({ unitExtractionPattern: 'torre [a-z]-(\\d+)' });
+    expect(resolveRuleUnit(rule, 'pago torre b-12')).toBe('12');
+  });
+
+  it('returns null when the extraction pattern does not match', () => {
+    const rule = unitRule({ unitExtractionPattern: 'apt-(\\d+)' });
+    expect(resolveRuleUnit(rule, 'pago casa 5')).toBeNull();
+  });
+
+  it('degrades to null on an invalid regex instead of throwing', () => {
+    const rule = unitRule({ unitExtractionPattern: '([unterminated' });
+    expect(resolveRuleUnit(rule, 'anything')).toBeNull();
+  });
+
+  it('refuses an over-long pattern (runtime ReDoS backstop)', () => {
+    const rule = unitRule({ unitExtractionPattern: `a(${'b'.repeat(300)})` });
+    expect(resolveRuleUnit(rule, 'a' + 'b'.repeat(300))).toBeNull();
+  });
+});
+
+describe('ClassificationService.classifyBatch — UNIT-kind reconciliation rules', () => {
+  function setupRuleBatch(
+    prisma: PrismaMock,
+    residents: Array<{ id: string; unitNumber: string; firstName: string; lastName: string }>,
+    description: string,
+  ): void {
+    prisma.resident.findMany.mockResolvedValue(residents);
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description,
+        transactionDate: EVENT_DATE,
+        credits: 1500,
+        charges: null,
+        flowType: 'INCOME',
+      },
+    ]);
+  }
+
+  it('direct-assignment rule links the resident and auto-classifies', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, [
+      unitRule({ keywords: ['juan perez'], assignedUnitNumber: '5' }),
+    ]);
+    setupRuleBatch(
+      prisma,
+      [{ id: 'res-1', unitNumber: '5', firstName: 'Juan', lastName: 'Perez' }],
+      'transferencia juan perez sin referencia',
+    );
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.unitNumberDetected).toBe('5');
+    expect(data!.residentId).toBe('res-1');
+    expect(data!.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(data!.matchSource).toBe(MatchSource.AUTO_UNIT_NUMBER);
+    expect(data!.matchedRuleId).toBe('rule-1');
+  });
+
+  it('format-extraction rule captures the unit and links the resident (APT-305)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, [
+      unitRule({ unitExtractionPattern: 'apt-(\\d+)', unitExtractionGroup: 1 }),
+    ]);
+    setupRuleBatch(
+      prisma,
+      [{ id: 'res-7', unitNumber: '305', firstName: 'Ana', lastName: 'Soto' }],
+      'pago APT-305 cuota',
+    );
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.unitNumberDetected).toBe('305');
+    expect(data!.residentId).toBe('res-7');
+    expect(data!.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(data!.matchedRuleId).toBe('rule-1');
+  });
+
+  it('leaves the row in review (UNIT_NOT_FOUND) when the assigned unit is absent from the padrón', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, [
+      unitRule({ keywords: ['juan perez'], assignedUnitNumber: '99' }),
+    ]);
+    setupRuleBatch(
+      prisma,
+      [{ id: 'res-1', unitNumber: '5', firstName: 'Juan', lastName: 'Perez' }],
+      'transferencia juan perez sin referencia',
+    );
+
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.unitNumberDetected).toBe('99');
+    expect(data!.residentId).toBeNull();
+    expect(data!.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(data!.requiresReviewReason).toBe(RequiresReviewReason.UNIT_NOT_FOUND);
   });
 });

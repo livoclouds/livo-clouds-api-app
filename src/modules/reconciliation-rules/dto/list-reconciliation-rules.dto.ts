@@ -1,6 +1,7 @@
-import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ReconciliationRuleKind } from '@prisma/client';
 
 export class ListReconciliationRulesDto {
   @ApiPropertyOptional({ minimum: 1, default: 1 })
@@ -23,4 +24,9 @@ export class ListReconciliationRulesDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)
   isActive?: boolean;
+
+  @ApiPropertyOptional({ enum: ReconciliationRuleKind })
+  @IsOptional()
+  @IsEnum(ReconciliationRuleKind)
+  ruleKind?: ReconciliationRuleKind;
 }

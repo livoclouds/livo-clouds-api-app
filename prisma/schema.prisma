@@ -1103,24 +1103,46 @@ model FinancialMonthlySummary {
   @@map("financial_monthly_summaries")
 }
 
+// A reconciliation rule is a CONDITION (keywords / unitPatterns) that produces an
+// OUTCOME. CONCEPT rules tag the payment concept (the historical behavior); UNIT
+// rules assign/detect the house number, either as a fixed value (assignedUnitNumber)
+// or by extracting it from the description with a capture-group regex
+// (unitExtractionPattern). A rule is exactly one kind.
+enum ReconciliationRuleKind {
+  CONCEPT
+  UNIT
+}
+
 model ReconciliationRule {
-  id                  String   @id @default(uuid())
+  id                  String                 @id @default(uuid())
   condominiumId       String
   name                String
+  ruleKind            ReconciliationRuleKind @default(CONCEPT)
   keywords            String[]
+  // CONDITION trigger: regex strings tested against the description. NOT a unit
+  // extractor — it only decides whether the rule fires.
   unitPatterns        String[]
+  // CONCEPT outcome.
   conceptType         String?
-  confidenceThreshold Decimal  @default(0.80) @db.Decimal(3, 2)
-  isActive            Boolean  @default(true)
-  priority            Int      @default(0)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  // UNIT outcome — flavor 1 (direct assignment): a fixed unit number, e.g. "307".
+  assignedUnitNumber  String?
+  // UNIT outcome — flavor 2 (format extraction): a regex with one capture group
+  // that pulls the unit out of the description (e.g. "APT-(\\d+)"), and the index
+  // of the group to read (defaults to 1).
+  unitExtractionPattern String?
+  unitExtractionGroup   Int?                 @default(1)
+  confidenceThreshold Decimal                @default(0.80) @db.Decimal(3, 2)
+  isActive            Boolean                @default(true)
+  priority            Int                    @default(0)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
 
   condominium  Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
   transactions Transaction[]
 
   @@index([condominiumId, isActive])
   @@index([condominiumId, priority])
+  @@index([condominiumId, ruleKind])
   @@map("reconciliation_rules")
 }
 

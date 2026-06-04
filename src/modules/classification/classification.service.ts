@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, Prisma } from '@prisma/client';
+import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
 import {
@@ -28,11 +28,18 @@ interface ResidentData {
   lastName: string;
 }
 
-interface DbRule {
+export interface DbRule {
   id: string;
+  ruleKind: ReconciliationRuleKind;
   keywords: string[];
   unitPatterns: string[];
   conceptType: string | null;
+  // UNIT-rule outcome (null on CONCEPT rules). Either a fixed unit number
+  // (assignedUnitNumber) or a capture-group regex + group index that extracts
+  // the unit from the description.
+  assignedUnitNumber: string | null;
+  unitExtractionPattern: string | null;
+  unitExtractionGroup: number | null;
   confidenceThreshold: Prisma.Decimal;
 }
 
@@ -475,6 +482,44 @@ export function resolveNearestCycle(
   return { paymentPeriodMonth: month, paymentPeriodYear: bestYear };
 }
 
+// Defense-in-depth cap on the length of a user-provided extraction regex compiled
+// at classify time. The DTO `SafeRegexConstraint` is the primary ReDoS gate; this
+// is the runtime backstop.
+const MAX_EXTRACTION_PATTERN_LENGTH = 200;
+
+// Compiles a user-provided regex defensively: returns null instead of throwing on
+// an invalid or over-long pattern, so a bad rule degrades to "did not fire" rather
+// than aborting the whole classification batch.
+function safeCompile(pattern: string, flags: string): RegExp | null {
+  if (!pattern || pattern.length > MAX_EXTRACTION_PATTERN_LENGTH) return null;
+  try {
+    return new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+}
+
+// Resolves a UNIT rule's OUTCOME into a unit string, or null when the rule is not a
+// UNIT rule / produced nothing. Flavor 1 (direct assignment) short-circuits; flavor
+// 2 (format extraction) runs the capture-group regex against the original
+// description and reads the configured group. The returned value is later compared
+// to the padrón via `matchToResident` (which normalizes), so no casing work here.
+export function resolveRuleUnit(rule: DbRule, description: string): string | null {
+  if (rule.ruleKind !== ReconciliationRuleKind.UNIT) return null;
+  if (rule.assignedUnitNumber && rule.assignedUnitNumber.trim().length > 0) {
+    return rule.assignedUnitNumber.trim();
+  }
+  if (rule.unitExtractionPattern) {
+    const re = safeCompile(rule.unitExtractionPattern, 'i');
+    if (!re) return null;
+    const match = description.match(re);
+    const group = rule.unitExtractionGroup ?? 1;
+    const captured = match?.[group];
+    if (captured && captured.trim().length > 0) return captured.trim();
+  }
+  return null;
+}
+
 function applyDbRules(
   description: string,
   rules: DbRule[],
@@ -494,7 +539,19 @@ function applyDbRules(
         }
       });
 
-    if (allKeywordsMatch || (rule.unitPatterns.length > 0 && patternMatch)) {
+    // A UNIT extraction rule needs no separate trigger: it fires precisely when its
+    // extraction pattern captures a unit from the description. (Direct-assignment
+    // UNIT rules still fire through their keywords/unitPatterns condition.)
+    const extractionMatch =
+      rule.ruleKind === ReconciliationRuleKind.UNIT &&
+      !!rule.unitExtractionPattern &&
+      resolveRuleUnit(rule, description) !== null;
+
+    if (
+      allKeywordsMatch ||
+      (rule.unitPatterns.length > 0 && patternMatch) ||
+      extractionMatch
+    ) {
       return { matchedRule: rule, score: Number(rule.confidenceThreshold) };
     }
   }
@@ -833,6 +890,19 @@ export class ClassificationService {
     const ruleMatch = applyDbRules(description, rules);
     if (ruleMatch) {
       const { matchedRule, score } = ruleMatch;
+
+      // UNIT-kind rule: its outcome is a house number. Override the system-detected
+      // unit BEFORE resident linkage so the user rule wins over the engine's fixed
+      // extractor. The assigned/extracted unit still flows through matchToResident,
+      // so a unit absent from the padrón becomes UNIT_NOT_FOUND → NEEDS_REVIEW (never
+      // a silent mis-link). The user owns the confidence (web default 0.9 → auto).
+      const ruleUnit = resolveRuleUnit(matchedRule, description);
+      if (ruleUnit) {
+        extraction.unitNumberDetected = ruleUnit;
+        extraction.unitNumbersDetected = [ruleUnit];
+        extraction.unitConfidence = Number(matchedRule.confidenceThreshold);
+      }
+
       const paymentConcept = matchedRule.conceptType ?? extraction.paymentConcept;
 
       // When the rule fires AND we extracted a unit number, still try to link
