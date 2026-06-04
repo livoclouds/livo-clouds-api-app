@@ -341,6 +341,7 @@ model Condominium {
   commonAreas                      CommonArea[]
   inventoryItems                   InventoryItem[]
   suppliers                        Supplier[]
+  expenseCategories                ExpenseCategory[]
   importBatches                    ImportBatch[]
   transactions                     Transaction[]
   collectionRecords                CollectionRecord[]
@@ -784,6 +785,9 @@ model Supplier {
   phone            String?
   address          String?
   taxId            String?
+  // When set, classifying an EXPENSE to this supplier auto-fills this category
+  // (in the review modal and via EXPENSE reconciliation rules). Optional.
+  defaultExpenseCategoryId String?
   registrationDate DateTime?      @db.Date
   status           SupplierStatus @default(ACTIVE)
   notes            String?
@@ -796,13 +800,57 @@ model Supplier {
   createdBy        String?
   updatedBy        String?
 
-  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  condominium            Condominium          @relation(fields: [condominiumId], references: [id])
+  defaultExpenseCategory ExpenseCategory?     @relation(fields: [defaultExpenseCategoryId], references: [id])
+  transactions           Transaction[]
+  reconciliationRules    ReconciliationRule[]
 
   @@index([condominiumId])
   @@index([condominiumId, status])
   @@index([condominiumId, type])
+  @@index([condominiumId, defaultExpenseCategoryId])
   @@index([deletedAt])
   @@map("suppliers")
+}
+
+/// Condo-editable catalog that classifies EXPENSE transactions (e.g.
+/// "Administración", "Vigilancia", "Jardinería"). The income side keeps using the
+/// hardcoded `paymentConcept` enum; this is the expense-side counterpart, modeled
+/// as data so each condominium can tailor its own categories.
+model ExpenseCategory {
+  id            String    @id @default(uuid())
+  condominiumId String
+  // Human-facing label. Source of truth for custom categories; for seeded
+  // "system" categories the web app prefers the i18n key derived from systemKey
+  // and falls back to this.
+  name          String
+  // Stable key for built-in/default categories (e.g. "ADMINISTRATION"). Lets the
+  // web app localize the label via t() and lets default EXPENSE rules anchor to a
+  // category without hardcoding a generated id. Null for custom rows.
+  systemKey     String?
+  // Optional badge/chart color token (hsl or hex).
+  color         String?
+  sortOrder     Int       @default(0)
+  isActive      Boolean   @default(true)
+  // True for seeded defaults; guards the rows the engine ships with from deletion.
+  isSystem      Boolean   @default(false)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  // Audit-trail actor ids (the acting user's JWT `sub`). API-owned.
+  createdBy     String?
+  updatedBy     String?
+
+  condominium         Condominium          @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  transactions        Transaction[]
+  reconciliationRules ReconciliationRule[]
+  defaultForSuppliers Supplier[]
+
+  @@index([condominiumId])
+  @@index([condominiumId, isActive])
+  @@index([condominiumId, systemKey])
+  @@index([deletedAt])
+  @@map("expense_categories")
 }
 
 model ImportBatch {
@@ -896,6 +944,10 @@ model Transaction {
   unitNumbersDetected    String[]              @default([])
   payerNameDetected      String?
   paymentConcept         String?
+  // EXPENSE-side classification (mirrors paymentConcept for income). Only set on
+  // flowType=EXPENSE rows; left null for income.
+  expenseCategoryId      String?
+  supplierId             String?
   paymentPeriodYear      Int?
   paymentPeriodMonth     Int?
   matchSource            MatchSource?
@@ -917,6 +969,8 @@ model Transaction {
   matchedRule          ReconciliationRule? @relation(fields: [matchedRuleId], references: [id])
   matchedCalendarEvent CalendarEvent?      @relation("MatchedTransaction", fields: [matchedCalendarEventId], references: [id])
   reconciledBy         User?               @relation("ReconciledBy", fields: [reconciledById], references: [id])
+  expenseCategory      ExpenseCategory?    @relation(fields: [expenseCategoryId], references: [id])
+  supplier             Supplier?           @relation(fields: [supplierId], references: [id])
   paymentAllocations   PaymentAllocation[]
 
   @@index([condominiumId])
@@ -924,6 +978,8 @@ model Transaction {
   @@index([residentId])
   @@index([transactionDate])
   @@index([flowType])
+  @@index([condominiumId, expenseCategoryId])
+  @@index([condominiumId, supplierId])
   @@index([condominiumId, classificationStatus])
   @@index([condominiumId, transactionDate, flowType])
   @@index([residentId, paymentPeriodYear, paymentPeriodMonth])
@@ -1119,6 +1175,7 @@ model FinancialMonthlySummary {
 enum ReconciliationRuleKind {
   CONCEPT
   UNIT
+  EXPENSE
 }
 
 model ReconciliationRule {
@@ -1139,14 +1196,21 @@ model ReconciliationRule {
   // of the group to read (defaults to 1).
   unitExtractionPattern String?
   unitExtractionGroup   Int?                 @default(1)
+  // EXPENSE outcome: which category (and optionally which supplier) to assign when
+  // this rule fires on an EXPENSE transaction. At least one must be set for an
+  // EXPENSE rule; both ignored for CONCEPT/UNIT rules.
+  expenseCategoryId   String?
+  supplierId          String?
   confidenceThreshold Decimal                @default(0.80) @db.Decimal(3, 2)
   isActive            Boolean                @default(true)
   priority            Int                    @default(0)
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
 
-  condominium  Condominium   @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
-  transactions Transaction[]
+  condominium     Condominium      @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
+  expenseCategory ExpenseCategory? @relation(fields: [expenseCategoryId], references: [id])
+  supplier        Supplier?        @relation(fields: [supplierId], references: [id])
+  transactions    Transaction[]
 
   @@index([condominiumId, isActive])
   @@index([condominiumId, priority])

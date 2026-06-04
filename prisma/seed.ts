@@ -13,6 +13,7 @@ import {
   AuditResult,
   EventType,
   EventStatus,
+  ReconciliationRuleKind,
 } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import * as fs from 'fs';
@@ -382,6 +383,7 @@ async function main() {
   await prisma.paymentAllocation.deleteMany();
   await prisma.transaction.deleteMany();
   await prisma.reconciliationRule.deleteMany();
+  await prisma.expenseCategory.deleteMany();
   await prisma.importBatch.deleteMany();
   await prisma.pettyCashMovement.deleteMany();
   await prisma.collectionRecord.deleteMany();
@@ -810,6 +812,117 @@ async function main() {
     totalSuppliers += rows.length;
   }
   console.log(`✅ Suppliers: ${totalSuppliers}`);
+
+  // ─── Expense Categories + EXPENSE reconciliation rules ─────────────────────
+  // The income side keeps the hardcoded paymentConcept enum; expenses are
+  // classified by these condo-editable categories. Seeded as `isSystem` defaults
+  // each condominium can rename/deactivate (but not delete). EXPENSE rules then
+  // auto-classify the recurring monthly outflows (administration, security,
+  // gardening, cleaning) by the stable text the bank writes in the SPEI concept.
+  const EXPENSE_CATEGORY_SEED: {
+    systemKey: string;
+    name: string;
+    color: string;
+  }[] = [
+    { systemKey: 'ADMINISTRATION', name: 'Administración', color: '#6366f1' },
+    { systemKey: 'SECURITY', name: 'Vigilancia', color: '#ef4444' },
+    { systemKey: 'LANDSCAPING', name: 'Jardinería', color: '#22c55e' },
+    { systemKey: 'CLEANING', name: 'Limpieza', color: '#06b6d4' },
+    { systemKey: 'MAINTENANCE', name: 'Mantenimiento', color: '#f59e0b' },
+    { systemKey: 'UTILITIES', name: 'Servicios (agua/luz/gas)', color: '#eab308' },
+    { systemKey: 'OTHER', name: 'Otros', color: '#94a3b8' },
+  ];
+
+  // keyword → category, with an optional supplier (by seeded name) to also stamp.
+  const EXPENSE_RULE_SEED: {
+    name: string;
+    keywords: string[];
+    categoryKey: string;
+    supplierName: string | null;
+  }[] = [
+    { name: 'Servicios de administración', keywords: ['servicios de administracion', 'administracion'], categoryKey: 'ADMINISTRATION', supplierName: null },
+    { name: 'Servicios de vigilancia', keywords: ['servicios de vigilancia', 'vigilancia'], categoryKey: 'SECURITY', supplierName: 'Seguridad Privada Escudo' },
+    { name: 'Servicios de jardinería', keywords: ['servicios de jardineria', 'jardineria'], categoryKey: 'LANDSCAPING', supplierName: 'Jardines y Paisajes Verde Vivo' },
+    { name: 'Servicios de limpieza', keywords: ['servicios de limpieza', 'limpieza'], categoryKey: 'CLEANING', supplierName: 'Limpieza Integral Brillo Total' },
+  ];
+
+  // Supplier type → the category it most naturally maps to, used to backfill each
+  // supplier's defaultExpenseCategory so picking a supplier auto-fills a category.
+  const SUPPLIER_TYPE_TO_CATEGORY_KEY: Record<string, string> = {
+    ADMINISTRATION: 'ADMINISTRATION',
+    SECURITY: 'SECURITY',
+    LANDSCAPING: 'LANDSCAPING',
+    CLEANING: 'CLEANING',
+    MAINTENANCE: 'MAINTENANCE',
+    ELECTRICAL: 'UTILITIES',
+    PLUMBING: 'MAINTENANCE',
+  };
+
+  let totalCategories = 0;
+  let totalExpenseRules = 0;
+  for (const condo of condominiums) {
+    const cats = await Promise.all(
+      EXPENSE_CATEGORY_SEED.map((c, idx) =>
+        prisma.expenseCategory.create({
+          data: {
+            condominiumId: condo.id,
+            name: c.name,
+            systemKey: c.systemKey,
+            color: c.color,
+            sortOrder: idx,
+            isSystem: true,
+            isActive: true,
+          },
+        }),
+      ),
+    );
+    totalCategories += cats.length;
+    const catByKey = new Map(cats.map((c) => [c.systemKey!, c]));
+
+    const condoSuppliers = await prisma.supplier.findMany({
+      where: { condominiumId: condo.id },
+      select: { id: true, supplierName: true, type: true },
+    });
+    const supplierByName = new Map(condoSuppliers.map((s) => [s.supplierName, s]));
+
+    // Backfill each supplier's default category.
+    for (const s of condoSuppliers) {
+      const key = SUPPLIER_TYPE_TO_CATEGORY_KEY[s.type];
+      const cat = key ? catByKey.get(key) : undefined;
+      if (cat) {
+        await prisma.supplier.update({
+          where: { id: s.id },
+          data: { defaultExpenseCategoryId: cat.id },
+        });
+      }
+    }
+
+    // EXPENSE rules continue the per-condo priority sequence after the concept rules.
+    const existingRuleCount = await prisma.reconciliationRule.count({
+      where: { condominiumId: condo.id },
+    });
+    const expenseRules: Prisma.ReconciliationRuleCreateManyInput[] =
+      EXPENSE_RULE_SEED.map((r, idx) => {
+        const cat = catByKey.get(r.categoryKey);
+        const supplier = r.supplierName ? supplierByName.get(r.supplierName) : undefined;
+        return {
+          condominiumId: condo.id,
+          name: r.name,
+          ruleKind: ReconciliationRuleKind.EXPENSE,
+          keywords: r.keywords,
+          unitPatterns: [],
+          expenseCategoryId: cat?.id ?? null,
+          supplierId: supplier?.id ?? null,
+          confidenceThreshold: new Prisma.Decimal('0.85'),
+          priority: existingRuleCount + idx + 1,
+          isActive: true,
+        };
+      });
+    await prisma.reconciliationRule.createMany({ data: expenseRules });
+    totalExpenseRules += expenseRules.length;
+  }
+  console.log(`✅ Expense categories: ${totalCategories}`);
+  console.log(`✅ Expense rules: ${totalExpenseRules}`);
 
   // ─── Petty Cash (first 3 condominiums) ────────────────────────────────────
   const pettyCashData = [

@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, Prisma } from '@prisma/client';
+import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, FlowType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
 import {
@@ -40,6 +40,10 @@ export interface DbRule {
   assignedUnitNumber: string | null;
   unitExtractionPattern: string | null;
   unitExtractionGroup: number | null;
+  // EXPENSE-rule outcome (null on CONCEPT/UNIT rules): the category and/or
+  // supplier to stamp on a matched EXPENSE transaction.
+  expenseCategoryId: string | null;
+  supplierId: string | null;
   confidenceThreshold: Prisma.Decimal;
 }
 
@@ -67,7 +71,13 @@ interface MatchResult {
   matchedAt: Date | null;
 }
 
-export interface ClassificationResult extends TextExtraction, MatchResult {}
+export interface ClassificationResult extends TextExtraction, MatchResult {
+  // EXPENSE-side outcome. Optional so the income-oriented return paths (which
+  // spread only TextExtraction + MatchResult) stay valid; defaults to null at
+  // persistence. Set only when an EXPENSE rule fires on an EXPENSE transaction.
+  expenseCategoryId?: string | null;
+  supplierId?: string | null;
+}
 
 export interface ClassificationSummary {
   total: number;
@@ -523,10 +533,20 @@ export function resolveRuleUnit(rule: DbRule, description: string): string | nul
 function applyDbRules(
   description: string,
   rules: DbRule[],
+  flowType: FlowType = FlowType.INCOME,
 ): { matchedRule: DbRule; score: number } | null {
   const normalized = normalizeText(description);
 
-  for (const rule of rules) {
+  // Rules only apply to the matching flow: EXPENSE rules (category/supplier
+  // outcome) fire on outflows; CONCEPT/UNIT rules (resident-payment outcome) fire
+  // on inflows. This keeps an income concept from ever landing on an expense and
+  // vice-versa.
+  const applicable =
+    flowType === FlowType.EXPENSE
+      ? rules.filter((r) => r.ruleKind === ReconciliationRuleKind.EXPENSE)
+      : rules.filter((r) => r.ruleKind !== ReconciliationRuleKind.EXPENSE);
+
+  for (const rule of applicable) {
     const allKeywordsMatch = rule.keywords.length > 0 &&
       rule.keywords.every((kw) => normalized.includes(normalizeText(kw)));
 
@@ -850,6 +870,9 @@ export class ClassificationService {
       ordinaryFeeAmount: number;
       lateFeeAmount: number;
     },
+    // Drives which rule kinds apply (EXPENSE rules on outflows, CONCEPT/UNIT on
+    // inflows). Defaults to INCOME so existing callers/tests stay unchanged.
+    flowType: FlowType = FlowType.INCOME,
   ): ClassificationResult {
     const extraction =
       bankContext && isBanBajio(bankContext.bankName)
@@ -887,9 +910,31 @@ export class ClassificationService {
     }
 
     // Pass 0: DB-driven rules (priority order, first match wins)
-    const ruleMatch = applyDbRules(description, rules);
+    const ruleMatch = applyDbRules(description, rules, flowType);
     if (ruleMatch) {
       const { matchedRule, score } = ruleMatch;
+
+      // EXPENSE-kind rule: its outcome is a category and/or supplier — never a
+      // resident or income concept. Stamp them and short-circuit; an expense is
+      // classified by what it bought and who was paid, not by who paid it.
+      if (matchedRule.ruleKind === ReconciliationRuleKind.EXPENSE) {
+        const isAuto = score >= 0.8;
+        return {
+          ...extraction,
+          expenseCategoryId: matchedRule.expenseCategoryId,
+          supplierId: matchedRule.supplierId,
+          residentId: null,
+          matchSource: MatchSource.RULE,
+          confidenceScore: score,
+          classificationStatus: isAuto
+            ? ClassificationStatus.AUTO
+            : ClassificationStatus.NEEDS_REVIEW,
+          requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
+          matchedRuleId: matchedRule.id,
+          matchedCalendarEventId: null,
+          matchedAt: isAuto ? new Date() : null,
+        };
+      }
 
       // UNIT-kind rule: its outcome is a house number. Override the system-detected
       // unit BEFORE resident linkage so the user rule wins over the engine's fixed
@@ -1150,6 +1195,7 @@ export class ClassificationService {
           terraceContext,
           { bankName, totalUnits },
           maintenanceContext,
+          tx.flowType,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -1157,6 +1203,8 @@ export class ClassificationService {
           unitNumbersDetected: result.unitNumbersDetected,
           payerNameDetected: result.payerNameDetected,
           paymentConcept: result.paymentConcept,
+          expenseCategoryId: result.expenseCategoryId ?? null,
+          supplierId: result.supplierId ?? null,
           paymentPeriodYear: result.paymentPeriodYear,
           paymentPeriodMonth: result.paymentPeriodMonth,
           matchSource: result.matchSource,
@@ -1365,6 +1413,7 @@ export class ClassificationService {
           terraceContext,
           { bankName: txBankName, totalUnits },
           maintenanceContext,
+          tx.flowType,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -1372,6 +1421,8 @@ export class ClassificationService {
           unitNumbersDetected: result.unitNumbersDetected,
           payerNameDetected: result.payerNameDetected,
           paymentConcept: result.paymentConcept,
+          expenseCategoryId: result.expenseCategoryId ?? null,
+          supplierId: result.supplierId ?? null,
           paymentPeriodYear: result.paymentPeriodYear,
           paymentPeriodMonth: result.paymentPeriodMonth,
           matchSource: result.matchSource,
@@ -1542,6 +1593,8 @@ export class ClassificationService {
         allocatedAmount: number;
       }[];
       paymentConcept?: string;
+      expenseCategoryId?: string;
+      supplierId?: string;
       paymentPeriodMonth?: number;
       paymentPeriodYear?: number;
       transactionDate?: string;
@@ -1579,6 +1632,35 @@ export class ClassificationService {
       residentId = resident.id;
     }
 
+    // Tenant-scope guard: a category/supplier id, when provided non-empty, must
+    // belong to this condominium before it can be stamped on the transaction.
+    if (dto.expenseCategoryId) {
+      const cat = await this.prisma.expenseCategory.findFirst({
+        where: { id: dto.expenseCategoryId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!cat) {
+        throw new BadRequestException({
+          code: 'EXPENSE_CATEGORY_NOT_FOUND',
+          reason: 'Expense category does not belong to this condominium.',
+          field: 'expenseCategoryId',
+        });
+      }
+    }
+    if (dto.supplierId) {
+      const supplier = await this.prisma.supplier.findFirst({
+        where: { id: dto.supplierId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!supplier) {
+        throw new BadRequestException({
+          code: 'SUPPLIER_NOT_FOUND',
+          reason: 'Supplier does not belong to this condominium.',
+          field: 'supplierId',
+        });
+      }
+    }
+
     await this.prisma.$transaction(async (tx) => {
       const existingTx = await tx.transaction.findFirst({
         where: { id: transactionId, condominiumId },
@@ -1588,6 +1670,8 @@ export class ClassificationService {
           residentId: true,
           unitNumberDetected: true,
           paymentConcept: true,
+          expenseCategoryId: true,
+          supplierId: true,
           paymentPeriodMonth: true,
           paymentPeriodYear: true,
           transactionDate: true,
@@ -1608,6 +1692,8 @@ export class ClassificationService {
         data: {
           ...(dto.unitNumber !== undefined && { unitNumberDetected: dto.unitNumber || null }),
           ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
+          ...(dto.expenseCategoryId !== undefined && { expenseCategoryId: dto.expenseCategoryId || null }),
+          ...(dto.supplierId !== undefined && { supplierId: dto.supplierId || null }),
           ...(dto.paymentPeriodMonth !== undefined && { paymentPeriodMonth: dto.paymentPeriodMonth }),
           ...(dto.paymentPeriodYear !== undefined && { paymentPeriodYear: dto.paymentPeriodYear }),
           ...(dto.transactionDate !== undefined && { transactionDate: new Date(dto.transactionDate) }),
@@ -1669,6 +1755,8 @@ export class ClassificationService {
             residentId: existingTx.residentId,
             unitNumberDetected: existingTx.unitNumberDetected,
             paymentConcept: existingTx.paymentConcept,
+            expenseCategoryId: existingTx.expenseCategoryId,
+            supplierId: existingTx.supplierId,
             paymentPeriodMonth: existingTx.paymentPeriodMonth,
             paymentPeriodYear: existingTx.paymentPeriodYear,
             transactionDate: existingTx.transactionDate,
@@ -1681,6 +1769,8 @@ export class ClassificationService {
             residentId: residentId !== undefined ? residentId : (existingTx.residentId ?? null),
             unitNumberDetected: dto.unitNumber !== undefined ? (dto.unitNumber || null) : existingTx.unitNumberDetected,
             paymentConcept: dto.paymentConcept !== undefined ? (dto.paymentConcept || null) : existingTx.paymentConcept,
+            expenseCategoryId: dto.expenseCategoryId !== undefined ? (dto.expenseCategoryId || null) : existingTx.expenseCategoryId,
+            supplierId: dto.supplierId !== undefined ? (dto.supplierId || null) : existingTx.supplierId,
             paymentPeriodMonth: dto.paymentPeriodMonth !== undefined ? dto.paymentPeriodMonth : existingTx.paymentPeriodMonth,
             paymentPeriodYear: dto.paymentPeriodYear !== undefined ? dto.paymentPeriodYear : existingTx.paymentPeriodYear,
             transactionDate: dto.transactionDate !== undefined ? new Date(dto.transactionDate) : existingTx.transactionDate,
