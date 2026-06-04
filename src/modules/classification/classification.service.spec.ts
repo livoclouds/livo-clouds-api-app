@@ -1,5 +1,6 @@
 import {
   ClassificationStatus,
+  FlowType,
   MatchSource,
   ReconciliationRuleKind,
   RequiresReviewReason,
@@ -1192,6 +1193,95 @@ describe('ClassificationService.classifyTransaction — bank-aware extraction', 
   });
 });
 
+describe('classifyTransaction — EXPENSE rules', () => {
+  const EXPENSE_DESC =
+    'SPEI Enviado | Beneficiario: RAMCAR NET | Concepto del Pago: Servicios de Vigilancia por (25,987.50) mxn';
+
+  const expenseRule = [
+    {
+      id: 'rule-vig',
+      ruleKind: ReconciliationRuleKind.EXPENSE,
+      keywords: ['servicios de vigilancia'],
+      unitPatterns: [],
+      conceptType: null,
+      assignedUnitNumber: null,
+      unitExtractionPattern: null,
+      unitExtractionGroup: null,
+      expenseCategoryId: 'cat-security',
+      supplierId: 'sup-ramcar',
+      confidenceThreshold: 0.85,
+    },
+  ] as never;
+
+  it('stamps category + supplier on a matched EXPENSE transaction', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      EXPENSE_DESC,
+      new Date('2025-11-29T12:00:00Z'),
+      [],
+      expenseRule,
+      undefined,
+      undefined,
+      undefined,
+      FlowType.EXPENSE,
+    );
+    expect(result.expenseCategoryId).toBe('cat-security');
+    expect(result.supplierId).toBe('sup-ramcar');
+    expect(result.matchedRuleId).toBe('rule-vig');
+    expect(result.matchSource).toBe(MatchSource.RULE);
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('does NOT fire an EXPENSE rule on an INCOME transaction', () => {
+    const service = makeService(makePrismaMock());
+    const result = service.classifyTransaction(
+      EXPENSE_DESC,
+      new Date('2025-11-29T12:00:00Z'),
+      [],
+      expenseRule,
+      undefined,
+      undefined,
+      undefined,
+      FlowType.INCOME,
+    );
+    expect(result.expenseCategoryId ?? null).toBeNull();
+    expect(result.supplierId ?? null).toBeNull();
+    expect(result.matchedRuleId).toBeNull();
+  });
+
+  it('does NOT fire a CONCEPT rule on an EXPENSE transaction', () => {
+    const service = makeService(makePrismaMock());
+    const conceptRule = [
+      {
+        id: 'rule-util',
+        ruleKind: ReconciliationRuleKind.CONCEPT,
+        keywords: ['servicios de vigilancia'],
+        unitPatterns: [],
+        conceptType: 'UTILITY',
+        assignedUnitNumber: null,
+        unitExtractionPattern: null,
+        unitExtractionGroup: null,
+        expenseCategoryId: null,
+        supplierId: null,
+        confidenceThreshold: 0.85,
+      },
+    ] as never;
+    const result = service.classifyTransaction(
+      EXPENSE_DESC,
+      new Date('2025-11-29T12:00:00Z'),
+      [],
+      conceptRule,
+      undefined,
+      undefined,
+      undefined,
+      FlowType.EXPENSE,
+    );
+    expect(result.matchedRuleId).toBeNull();
+    expect(result.expenseCategoryId ?? null).toBeNull();
+  });
+});
+
 describe('parseMaintenanceConcept — month + unit in any order', () => {
   const seg = (s: string) => `SPEI Recibido | Concepto del Pago: ${s} | Recibo # 1`;
 
@@ -1688,6 +1778,8 @@ function unitRule(partial: Partial<DbRule>): DbRule {
     assignedUnitNumber: null,
     unitExtractionPattern: null,
     unitExtractionGroup: null,
+    expenseCategoryId: null,
+    supplierId: null,
     confidenceThreshold: 0.9 as unknown as DbRule['confidenceThreshold'],
     ...partial,
   };

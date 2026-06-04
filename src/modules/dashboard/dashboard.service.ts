@@ -87,6 +87,52 @@ export class DashboardService {
     };
   }
 
+  /**
+   * Breakdown of a month's expenses grouped by expense category. Mirrors the
+   * getKpis expense filter (all EXPENSE rows by transactionDate, any
+   * reconciliation status) so the slices sum to the dashboard's totalExpenses.
+   * Transactions with no category fall into an "uncategorized" bucket (null id).
+   */
+  async getExpensesByCategory(condominiumId: string, year: number, month: number) {
+    const gte = new Date(year, month - 1, 1);
+    const lt = new Date(year, month, 1);
+
+    const [grouped, categories, settings] = await Promise.all([
+      this.prisma.transaction.groupBy({
+        by: ['expenseCategoryId'],
+        where: { condominiumId, flowType: 'EXPENSE', transactionDate: { gte, lt } },
+        _sum: { charges: true },
+        _count: true,
+      }),
+      // No deletedAt filter: a soft-deleted category still referenced by historical
+      // transactions should resolve its name, not fall into "uncategorized".
+      this.prisma.expenseCategory.findMany({
+        where: { condominiumId },
+        select: { id: true, name: true, systemKey: true, color: true },
+      }),
+      this.settingsCache.getSettings(condominiumId),
+    ]);
+
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    const items = grouped
+      .map((g) => {
+        const cat = g.expenseCategoryId ? byId.get(g.expenseCategoryId) : undefined;
+        return {
+          expenseCategoryId: g.expenseCategoryId,
+          name: cat?.name ?? null,
+          systemKey: cat?.systemKey ?? null,
+          color: cat?.color ?? null,
+          total: Number(g._sum.charges ?? 0),
+          count: g._count,
+        };
+      })
+      .filter((i) => i.total > 0)
+      .sort((a, b) => b.total - a.total);
+
+    const total = items.reduce((sum, i) => sum + i.total, 0);
+    return { currency: settings?.currency ?? 'MXN', period: { year, month }, total, items };
+  }
+
   async getMonthlyTrend(condominiumId: string, year: number) {
     type PaidCountRow = { month: number; paidCount: number };
 

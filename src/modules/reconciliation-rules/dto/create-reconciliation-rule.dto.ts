@@ -61,6 +61,20 @@ export class CreateReconciliationRuleDto {
   @IsString()
   conceptType?: string;
 
+  // EXPENSE outcome — the category and/or supplier to stamp on a matched expense.
+  // At least one is required for an EXPENSE rule (enforced by UnitOutcomeShape).
+  @ApiPropertyOptional({ description: 'Expense category id for an EXPENSE rule' })
+  @ValidateIf((o) => o.ruleKind === ReconciliationRuleKind.EXPENSE)
+  @IsOptional()
+  @IsString()
+  expenseCategoryId?: string;
+
+  @ApiPropertyOptional({ description: 'Supplier id for an EXPENSE rule' })
+  @ValidateIf((o) => o.ruleKind === ReconciliationRuleKind.EXPENSE)
+  @IsOptional()
+  @IsString()
+  supplierId?: string;
+
   // UNIT outcome — flavor 1 (direct assignment). Required for a UNIT rule that has
   // no extraction pattern.
   @ApiPropertyOptional({ description: 'Fixed unit number for a UNIT/direct rule', maxLength: 40 })

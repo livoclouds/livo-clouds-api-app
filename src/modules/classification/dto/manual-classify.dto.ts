@@ -50,6 +50,16 @@ export class ManualClassifyDto {
   @IsString()
   paymentConcept?: string;
 
+  // EXPENSE-side classification. Empty string clears the field. Only meaningful on
+  // EXPENSE transactions; the web app sends these instead of paymentConcept there.
+  @IsOptional()
+  @IsString()
+  expenseCategoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  supplierId?: string;
+
   @IsOptional()
   @IsInt()
   @Min(1)

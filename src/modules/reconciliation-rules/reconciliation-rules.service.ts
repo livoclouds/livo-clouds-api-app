@@ -38,6 +38,8 @@ export interface ReconciliationRuleSnapshot {
   assignedUnitNumber: string | null;
   unitExtractionPattern: string | null;
   unitExtractionGroup: number | null;
+  expenseCategoryId: string | null;
+  supplierId: string | null;
   confidenceThreshold: string;
   isActive: boolean;
   priority: number;
@@ -55,6 +57,8 @@ function serializeRuleSnapshot(rule: ReconciliationRule): ReconciliationRuleSnap
     assignedUnitNumber: rule.assignedUnitNumber,
     unitExtractionPattern: rule.unitExtractionPattern,
     unitExtractionGroup: rule.unitExtractionGroup,
+    expenseCategoryId: rule.expenseCategoryId,
+    supplierId: rule.supplierId,
     confidenceThreshold: rule.confidenceThreshold.toString(),
     isActive: rule.isActive,
     priority: rule.priority,
@@ -191,6 +195,8 @@ export class ReconciliationRulesService {
         assignedUnitNumber: dto.assignedUnitNumber ?? null,
         unitExtractionPattern: dto.unitExtractionPattern ?? null,
         unitExtractionGroup: dto.unitExtractionGroup ?? null,
+        expenseCategoryId: dto.expenseCategoryId || null,
+        supplierId: dto.supplierId || null,
         confidenceThreshold: dto.confidenceThreshold !== undefined
           ? new Prisma.Decimal(dto.confidenceThreshold.toFixed(2))
           : new Prisma.Decimal('0.80'),
@@ -280,7 +286,7 @@ export class ReconciliationRulesService {
   ) {
     const before = await this.findOneOrFail(condominiumId, id);
 
-    const data: Prisma.ReconciliationRuleUpdateInput = {};
+    const data: Prisma.ReconciliationRuleUncheckedUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.ruleKind !== undefined) data.ruleKind = dto.ruleKind;
     if (dto.keywords !== undefined) data.keywords = dto.keywords;
@@ -289,6 +295,8 @@ export class ReconciliationRulesService {
     if (dto.assignedUnitNumber !== undefined) data.assignedUnitNumber = dto.assignedUnitNumber;
     if (dto.unitExtractionPattern !== undefined) data.unitExtractionPattern = dto.unitExtractionPattern;
     if (dto.unitExtractionGroup !== undefined) data.unitExtractionGroup = dto.unitExtractionGroup;
+    if (dto.expenseCategoryId !== undefined) data.expenseCategoryId = dto.expenseCategoryId || null;
+    if (dto.supplierId !== undefined) data.supplierId = dto.supplierId || null;
     if (dto.confidenceThreshold !== undefined)
       data.confidenceThreshold = new Prisma.Decimal(dto.confidenceThreshold.toFixed(2));
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
@@ -673,6 +681,8 @@ export class ReconciliationRulesService {
                 assignedUnitNumber: previousState.assignedUnitNumber ?? null,
                 unitExtractionPattern: previousState.unitExtractionPattern ?? null,
                 unitExtractionGroup: previousState.unitExtractionGroup ?? null,
+                expenseCategoryId: previousState.expenseCategoryId ?? null,
+                supplierId: previousState.supplierId ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
                 isActive: previousState.isActive,
                 priority: previousState.priority,
@@ -703,6 +713,8 @@ export class ReconciliationRulesService {
                 assignedUnitNumber: previousState.assignedUnitNumber ?? null,
                 unitExtractionPattern: previousState.unitExtractionPattern ?? null,
                 unitExtractionGroup: previousState.unitExtractionGroup ?? null,
+                expenseCategoryId: previousState.expenseCategoryId ?? null,
+                supplierId: previousState.supplierId ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
                 isActive: previousState.isActive,
                 priority: previousState.priority,

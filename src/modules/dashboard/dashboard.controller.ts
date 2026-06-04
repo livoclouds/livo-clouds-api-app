@@ -31,4 +31,17 @@ export class DashboardController {
     const y = year ? parseInt(year, 10) : new Date().getFullYear();
     return this.dashboardService.getMonthlyTrend(req.condominiumId, y);
   }
+
+  @Get('expenses-by-category')
+  @ApiOperation({ summary: 'Breakdown of a month\'s expenses grouped by category' })
+  getExpensesByCategory(
+    @Request() req: { condominiumId: string },
+    @Query('year') year?: string,
+    @Query('month') month?: string,
+  ) {
+    const now = new Date();
+    const y = year ? parseInt(year, 10) : now.getFullYear();
+    const m = month ? parseInt(month, 10) : now.getMonth() + 1;
+    return this.dashboardService.getExpensesByCategory(req.condominiumId, y, m);
+  }
 }

@@ -43,6 +43,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
+import { ExpenseCategoriesModule } from './modules/expense-categories/expense-categories.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
@@ -96,6 +97,7 @@ import { SystemStatusModule } from './modules/system-status/system-status.module
     UsersModule,
     RolesModule,
     ReconciliationRulesModule,
+    ExpenseCategoriesModule,
     CalendarModule,
     CalendarReclassifyModule,
     WhatsAppModule,

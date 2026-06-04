@@ -75,9 +75,13 @@ export class SafeRegexConstraint implements ValidatorConstraintInterface {
 }
 
 /**
- * Object-level shape check. A UNIT rule must carry exactly one outcome
- * (assignedUnitNumber XOR unitExtractionPattern); a CONCEPT rule must carry
- * neither. Attached to an always-present field (`name`) so it runs on create.
+ * Object-level shape check, by rule kind:
+ *  - UNIT    → exactly one unit outcome (assignedUnitNumber XOR unitExtractionPattern),
+ *              no expense outcome.
+ *  - EXPENSE → at least one expense outcome (expenseCategoryId and/or supplierId),
+ *              no unit outcome.
+ *  - CONCEPT → neither a unit nor an expense outcome.
+ * Attached to an always-present field (`name`) so it runs on create.
  */
 @ValidatorConstraint({ name: 'unitOutcomeShape', async: false })
 export class UnitOutcomeShapeConstraint implements ValidatorConstraintInterface {
@@ -86,6 +90,8 @@ export class UnitOutcomeShapeConstraint implements ValidatorConstraintInterface 
       ruleKind?: ReconciliationRuleKind;
       assignedUnitNumber?: string;
       unitExtractionPattern?: string;
+      expenseCategoryId?: string;
+      supplierId?: string;
     };
     const kind = o.ruleKind ?? ReconciliationRuleKind.CONCEPT;
     const hasAssign =
@@ -93,13 +99,20 @@ export class UnitOutcomeShapeConstraint implements ValidatorConstraintInterface 
     const hasPattern =
       typeof o.unitExtractionPattern === 'string' &&
       o.unitExtractionPattern.length > 0;
+    const hasExpenseOutcome =
+      (typeof o.expenseCategoryId === 'string' && o.expenseCategoryId.length > 0) ||
+      (typeof o.supplierId === 'string' && o.supplierId.length > 0);
+
     if (kind === ReconciliationRuleKind.UNIT) {
-      return hasAssign !== hasPattern; // exactly one
+      return hasAssign !== hasPattern && !hasExpenseOutcome; // exactly one unit outcome
     }
-    return !hasAssign && !hasPattern; // CONCEPT carries no unit outcome
+    if (kind === ReconciliationRuleKind.EXPENSE) {
+      return hasExpenseOutcome && !hasAssign && !hasPattern; // ≥1 expense outcome, no unit
+    }
+    return !hasAssign && !hasPattern && !hasExpenseOutcome; // CONCEPT carries neither
   }
 
   defaultMessage(): string {
-    return 'A UNIT rule requires exactly one of assignedUnitNumber or unitExtractionPattern; a CONCEPT rule must set neither.';
+    return 'A UNIT rule requires exactly one of assignedUnitNumber or unitExtractionPattern; an EXPENSE rule requires at least one of expenseCategoryId or supplierId; a CONCEPT rule must set none of them.';
   }
 }
