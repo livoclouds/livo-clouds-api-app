@@ -200,6 +200,51 @@ describe('ReconciliationRulesService', () => {
         }),
       );
     });
+
+    it('persists extractionRecipe metadata for an advanced block-builder rule', async () => {
+      prisma.reconciliationRule.aggregate.mockResolvedValue({ _max: { priority: null } });
+      prisma.reconciliationRule.create.mockResolvedValue(
+        makeRule({ id: 'rule-b', ruleKind: 'UNIT' }),
+      );
+      const recipe = {
+        nodes: [{ id: 'n1', kind: 'digits', min: 3, max: 3, optional: false }],
+        captureId: 'n1',
+      };
+
+      await service.create(
+        CONDOMINIUM_ID,
+        {
+          name: 'Blocks',
+          keywords: ['kw'],
+          ruleKind: 'UNIT' as never,
+          unitExtractionPattern: '(\\d{3})',
+          extractionRecipe: recipe,
+        },
+        USER_ID,
+      );
+
+      expect(prisma.reconciliationRule.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ extractionRecipe: recipe }),
+        }),
+      );
+    });
+
+    it('writes SQL NULL for extractionRecipe when omitted', async () => {
+      prisma.reconciliationRule.aggregate.mockResolvedValue({ _max: { priority: null } });
+      prisma.reconciliationRule.create.mockResolvedValue(makeRule({ id: 'rule-c' }));
+
+      await service.create(
+        CONDOMINIUM_ID,
+        { name: 'Plain', keywords: ['kw'] },
+        USER_ID,
+      );
+
+      const { data } = prisma.reconciliationRule.create.mock.calls[0][0] as {
+        data: { extractionRecipe: unknown };
+      };
+      expect(data.extractionRecipe).toBe(Prisma.DbNull);
+    });
   });
 
   describe('reorder', () => {
@@ -475,6 +520,10 @@ describe('ReconciliationRulesService', () => {
           assignedUnitNumber: null,
           unitExtractionPattern: 'apt-(\\d+)',
           unitExtractionGroup: 1,
+          extractionRecipe: {
+            nodes: [{ id: 'n1', kind: 'digits', min: 1, max: 4, optional: false }],
+            captureId: 'n1',
+          },
         }),
         newState: null,
       });
@@ -494,6 +543,10 @@ describe('ReconciliationRulesService', () => {
           ruleKind: 'UNIT',
           unitExtractionPattern: 'apt-(\\d+)',
           unitExtractionGroup: 1,
+          extractionRecipe: {
+            nodes: [{ id: 'n1', kind: 'digits', min: 1, max: 4, optional: false }],
+            captureId: 'n1',
+          },
         }),
       });
     });

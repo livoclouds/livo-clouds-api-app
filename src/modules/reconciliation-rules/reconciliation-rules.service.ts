@@ -40,9 +40,24 @@ export interface ReconciliationRuleSnapshot {
   unitExtractionGroup: number | null;
   expenseCategoryId: string | null;
   supplierId: string | null;
+  // Engine-ignored visual block recipe (advanced builder metadata). Snapshotted
+  // so a per-row discard restores it alongside the regex it compiled to.
+  extractionRecipe: Prisma.JsonValue | null;
   confidenceThreshold: string;
   isActive: boolean;
   priority: number;
+}
+
+/**
+ * Coerce a JSON value (from a DTO or a snapshot) into a Prisma write input,
+ * mapping absent/null to a real SQL NULL via Prisma.DbNull.
+ */
+function toRecipeInput(
+  value: Prisma.JsonValue | null | undefined,
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null || value === undefined
+    ? Prisma.DbNull
+    : (value as Prisma.InputJsonValue);
 }
 
 function serializeRuleSnapshot(rule: ReconciliationRule): ReconciliationRuleSnapshot {
@@ -59,6 +74,7 @@ function serializeRuleSnapshot(rule: ReconciliationRule): ReconciliationRuleSnap
     unitExtractionGroup: rule.unitExtractionGroup,
     expenseCategoryId: rule.expenseCategoryId,
     supplierId: rule.supplierId,
+    extractionRecipe: rule.extractionRecipe ?? null,
     confidenceThreshold: rule.confidenceThreshold.toString(),
     isActive: rule.isActive,
     priority: rule.priority,
@@ -195,6 +211,9 @@ export class ReconciliationRulesService {
         assignedUnitNumber: dto.assignedUnitNumber ?? null,
         unitExtractionPattern: dto.unitExtractionPattern ?? null,
         unitExtractionGroup: dto.unitExtractionGroup ?? null,
+        extractionRecipe: toRecipeInput(
+          dto.extractionRecipe as Prisma.JsonValue | null | undefined,
+        ),
         expenseCategoryId: dto.expenseCategoryId || null,
         supplierId: dto.supplierId || null,
         confidenceThreshold: dto.confidenceThreshold !== undefined
@@ -295,6 +314,8 @@ export class ReconciliationRulesService {
     if (dto.assignedUnitNumber !== undefined) data.assignedUnitNumber = dto.assignedUnitNumber;
     if (dto.unitExtractionPattern !== undefined) data.unitExtractionPattern = dto.unitExtractionPattern;
     if (dto.unitExtractionGroup !== undefined) data.unitExtractionGroup = dto.unitExtractionGroup;
+    if (dto.extractionRecipe !== undefined)
+      data.extractionRecipe = toRecipeInput(dto.extractionRecipe as Prisma.JsonValue | null);
     if (dto.expenseCategoryId !== undefined) data.expenseCategoryId = dto.expenseCategoryId || null;
     if (dto.supplierId !== undefined) data.supplierId = dto.supplierId || null;
     if (dto.confidenceThreshold !== undefined)
@@ -681,6 +702,7 @@ export class ReconciliationRulesService {
                 assignedUnitNumber: previousState.assignedUnitNumber ?? null,
                 unitExtractionPattern: previousState.unitExtractionPattern ?? null,
                 unitExtractionGroup: previousState.unitExtractionGroup ?? null,
+                extractionRecipe: toRecipeInput(previousState.extractionRecipe),
                 expenseCategoryId: previousState.expenseCategoryId ?? null,
                 supplierId: previousState.supplierId ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
@@ -713,6 +735,7 @@ export class ReconciliationRulesService {
                 assignedUnitNumber: previousState.assignedUnitNumber ?? null,
                 unitExtractionPattern: previousState.unitExtractionPattern ?? null,
                 unitExtractionGroup: previousState.unitExtractionGroup ?? null,
+                extractionRecipe: toRecipeInput(previousState.extractionRecipe),
                 expenseCategoryId: previousState.expenseCategoryId ?? null,
                 supplierId: previousState.supplierId ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),

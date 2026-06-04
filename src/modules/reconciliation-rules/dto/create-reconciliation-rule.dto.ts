@@ -22,6 +22,7 @@ import {
   SafeRegexConstraint,
   UnitOutcomeShapeConstraint,
 } from '../validators/unit-rule.validators';
+import { ExtractionRecipeShapeConstraint } from '../validators/extraction-recipe.validators';
 
 export class CreateReconciliationRuleDto {
   @ApiProperty({ maxLength: 120 })
@@ -104,6 +105,18 @@ export class CreateReconciliationRuleDto {
   @Min(0)
   @Type(() => Number)
   unitExtractionGroup?: number;
+
+  // UNIT outcome — flavor 2 metadata. The visual block recipe the editor built;
+  // engine-ignored (classification runs unitExtractionPattern). Persisted so the
+  // editor can faithfully rebuild the block builder on edit. Not part of the
+  // UNIT XOR — it is metadata, not an outcome.
+  @ApiPropertyOptional({
+    description:
+      'Visual block recipe { nodes, captureId } for the advanced block builder (engine-ignored metadata)',
+  })
+  @IsOptional()
+  @Validate(ExtractionRecipeShapeConstraint)
+  extractionRecipe?: unknown;
 
   @ApiPropertyOptional({ minimum: 0, maximum: 1, default: 0.8 })
   @IsOptional()
