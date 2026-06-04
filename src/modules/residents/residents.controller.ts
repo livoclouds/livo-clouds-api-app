@@ -11,9 +11,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
+import { BulkCreateResidentsDto } from './dto/bulk-create-residents.dto';
 import { BulkDeleteResidentsDto } from './dto/bulk-delete-residents.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
@@ -77,6 +79,24 @@ export class ResidentsController {
   // POST (not DELETE) because the id list travels in the request body, which is
   // awkward for DELETE in Nest/Swagger. The static 'bulk-delete' segment does
   // not collide with the dynamic ':id' routes above.
+  // Bulk-create from an imported spreadsheet. Static 'bulk' segment does not
+  // collide with the dynamic ':id' routes. Throttled like the bank-import
+  // endpoints — an import is a heavy, infrequent operation.
+  @Post('bulk')
+  @RequirePermission('residents.manage')
+  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Bulk-create residents from an import' })
+  bulkCreate(
+    @Request() req: AuthedRequest,
+    @Body() dto: BulkCreateResidentsDto,
+  ) {
+    return this.residentsService.bulkCreate(
+      req.condominiumId,
+      req.user.sub,
+      dto.residents,
+    );
+  }
+
   @Post('bulk-delete')
   @RequirePermission('residents.manage')
   @ApiOperation({ summary: 'Soft delete several residents' })
