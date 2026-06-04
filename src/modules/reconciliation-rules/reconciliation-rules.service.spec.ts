@@ -85,9 +85,13 @@ function makeRule(overrides: Record<string, unknown> = {}): Record<string, unkno
     id: 'rule-1',
     condominiumId: CONDOMINIUM_ID,
     name: 'Rule 1',
+    ruleKind: 'CONCEPT',
     keywords: ['kw'],
     unitPatterns: [],
     conceptType: null,
+    assignedUnitNumber: null,
+    unitExtractionPattern: null,
+    unitExtractionGroup: 1,
     confidenceThreshold: new Prisma.Decimal('0.80'),
     isActive: true,
     priority: 1,
@@ -156,6 +160,43 @@ describe('ReconciliationRulesService', () => {
       expect(prisma.reconciliationRule.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ priority: 1 }),
+        }),
+      );
+    });
+
+    it('persists ruleKind + unit outcome fields for a UNIT rule', async () => {
+      prisma.reconciliationRule.aggregate.mockResolvedValue({ _max: { priority: null } });
+      prisma.reconciliationRule.create.mockResolvedValue(
+        makeRule({
+          id: 'rule-u',
+          ruleKind: 'UNIT',
+          conceptType: null,
+          assignedUnitNumber: null,
+          unitExtractionPattern: 'apt-(\\d+)',
+          unitExtractionGroup: 1,
+        }),
+      );
+
+      await service.create(
+        CONDOMINIUM_ID,
+        {
+          name: 'APT format',
+          keywords: ['kw'],
+          ruleKind: 'UNIT' as never,
+          unitExtractionPattern: 'apt-(\\d+)',
+          unitExtractionGroup: 1,
+        },
+        USER_ID,
+      );
+
+      expect(prisma.reconciliationRule.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            ruleKind: 'UNIT',
+            unitExtractionPattern: 'apt-(\\d+)',
+            unitExtractionGroup: 1,
+            assignedUnitNumber: null,
+          }),
         }),
       );
     });
@@ -418,6 +459,43 @@ describe('ReconciliationRulesService', () => {
         }),
       });
       expect(result.updatedRule).not.toBeNull();
+    });
+
+    it('DELETED → restores a UNIT rule with its kind + extraction fields intact', async () => {
+      prisma.reconciliationRuleChangeLog.findFirst.mockResolvedValue({
+        id: 'change-deleted-unit',
+        condominiumId: CONDOMINIUM_ID,
+        ruleId: null,
+        action: RuleChangeAction.DELETED,
+        changedAt: new Date('2026-05-25T10:00:00Z'),
+        previousState: makeSnapshot({
+          id: 'rule-unit-uuid',
+          name: 'APT format',
+          ruleKind: 'UNIT',
+          assignedUnitNumber: null,
+          unitExtractionPattern: 'apt-(\\d+)',
+          unitExtractionGroup: 1,
+        }),
+        newState: null,
+      });
+      prisma.reconciliationRuleChangeLog.findMany.mockResolvedValueOnce([
+        { id: 'change-deleted-unit', action: RuleChangeAction.DELETED },
+      ]);
+      prisma.reconciliationRule.findUnique.mockResolvedValue(null);
+      prisma.reconciliationRule.create.mockResolvedValue(
+        makeRule({ id: 'rule-unit-uuid', ruleKind: 'UNIT' }),
+      );
+
+      await service.discardSingleChange(CONDOMINIUM_ID, 'change-deleted-unit', USER_ID);
+
+      expect(prisma.reconciliationRule.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          id: 'rule-unit-uuid',
+          ruleKind: 'UNIT',
+          unitExtractionPattern: 'apt-(\\d+)',
+          unitExtractionGroup: 1,
+        }),
+      });
     });
 
     it('DELETED → throws ConflictException when UUID is already taken', async () => {

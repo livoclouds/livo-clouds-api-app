@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, ReconciliationRule, RuleChangeAction } from '@prisma/client';
+import { Prisma, ReconciliationRule, ReconciliationRuleKind, RuleChangeAction } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -31,9 +31,13 @@ export interface ReconciliationRuleSnapshot {
   id: string;
   condominiumId: string;
   name: string;
+  ruleKind: ReconciliationRuleKind;
   keywords: string[];
   unitPatterns: string[];
   conceptType: string | null;
+  assignedUnitNumber: string | null;
+  unitExtractionPattern: string | null;
+  unitExtractionGroup: number | null;
   confidenceThreshold: string;
   isActive: boolean;
   priority: number;
@@ -44,9 +48,13 @@ function serializeRuleSnapshot(rule: ReconciliationRule): ReconciliationRuleSnap
     id: rule.id,
     condominiumId: rule.condominiumId,
     name: rule.name,
+    ruleKind: rule.ruleKind,
     keywords: [...rule.keywords],
     unitPatterns: [...rule.unitPatterns],
     conceptType: rule.conceptType,
+    assignedUnitNumber: rule.assignedUnitNumber,
+    unitExtractionPattern: rule.unitExtractionPattern,
+    unitExtractionGroup: rule.unitExtractionGroup,
     confidenceThreshold: rule.confidenceThreshold.toString(),
     isActive: rule.isActive,
     priority: rule.priority,
@@ -130,6 +138,7 @@ export class ReconciliationRulesService {
 
     const where: Prisma.ReconciliationRuleWhereInput = { condominiumId };
     if (dto.isActive !== undefined) where.isActive = dto.isActive;
+    if (dto.ruleKind !== undefined) where.ruleKind = dto.ruleKind;
 
     const [data, total] = await Promise.all([
       this.prisma.reconciliationRule.findMany({
@@ -175,9 +184,13 @@ export class ReconciliationRulesService {
       data: {
         condominiumId,
         name: dto.name,
+        ruleKind: dto.ruleKind ?? ReconciliationRuleKind.CONCEPT,
         keywords: dto.keywords,
         unitPatterns: dto.unitPatterns ?? [],
         conceptType: dto.conceptType ?? null,
+        assignedUnitNumber: dto.assignedUnitNumber ?? null,
+        unitExtractionPattern: dto.unitExtractionPattern ?? null,
+        unitExtractionGroup: dto.unitExtractionGroup ?? null,
         confidenceThreshold: dto.confidenceThreshold !== undefined
           ? new Prisma.Decimal(dto.confidenceThreshold.toFixed(2))
           : new Prisma.Decimal('0.80'),
@@ -269,9 +282,13 @@ export class ReconciliationRulesService {
 
     const data: Prisma.ReconciliationRuleUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
+    if (dto.ruleKind !== undefined) data.ruleKind = dto.ruleKind;
     if (dto.keywords !== undefined) data.keywords = dto.keywords;
     if (dto.unitPatterns !== undefined) data.unitPatterns = dto.unitPatterns;
     if (dto.conceptType !== undefined) data.conceptType = dto.conceptType;
+    if (dto.assignedUnitNumber !== undefined) data.assignedUnitNumber = dto.assignedUnitNumber;
+    if (dto.unitExtractionPattern !== undefined) data.unitExtractionPattern = dto.unitExtractionPattern;
+    if (dto.unitExtractionGroup !== undefined) data.unitExtractionGroup = dto.unitExtractionGroup;
     if (dto.confidenceThreshold !== undefined)
       data.confidenceThreshold = new Prisma.Decimal(dto.confidenceThreshold.toFixed(2));
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
@@ -649,9 +666,13 @@ export class ReconciliationRulesService {
               where: { id: targetRuleId },
               data: {
                 name: previousState.name,
+                ruleKind: previousState.ruleKind ?? ReconciliationRuleKind.CONCEPT,
                 keywords: previousState.keywords,
                 unitPatterns: previousState.unitPatterns,
                 conceptType: previousState.conceptType,
+                assignedUnitNumber: previousState.assignedUnitNumber ?? null,
+                unitExtractionPattern: previousState.unitExtractionPattern ?? null,
+                unitExtractionGroup: previousState.unitExtractionGroup ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
                 isActive: previousState.isActive,
                 priority: previousState.priority,
@@ -675,9 +696,13 @@ export class ReconciliationRulesService {
                 id: previousState.id,
                 condominiumId: previousState.condominiumId,
                 name: previousState.name,
+                ruleKind: previousState.ruleKind ?? ReconciliationRuleKind.CONCEPT,
                 keywords: previousState.keywords,
                 unitPatterns: previousState.unitPatterns,
                 conceptType: previousState.conceptType,
+                assignedUnitNumber: previousState.assignedUnitNumber ?? null,
+                unitExtractionPattern: previousState.unitExtractionPattern ?? null,
+                unitExtractionGroup: previousState.unitExtractionGroup ?? null,
                 confidenceThreshold: new Prisma.Decimal(previousState.confidenceThreshold),
                 isActive: previousState.isActive,
                 priority: previousState.priority,
