@@ -4,6 +4,10 @@ import {
   ValidationArguments,
 } from 'class-validator';
 import { ReconciliationRuleKind } from '@prisma/client';
+// `re2` uses CommonJS `export = RE2`; import-equals resolves to the constructor
+// at runtime with esModuleInterop off (see classification.service.ts).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import RE2 = require('re2');
 
 /**
  * Defense-in-depth cap on a user-provided extraction regex. Mirrors
@@ -14,10 +18,10 @@ export const MAX_EXTRACTION_PATTERN_LENGTH = 200;
 
 /**
  * Heuristic blocklist for the most common catastrophic-backtracking shapes
- * (nested quantifiers). This is NOT an exhaustive ReDoS oracle — it is one layer
- * alongside the length cap and the engine's try/catch. Reconciliation rules are
- * admin-only (per-tenant) configuration, so the blast radius of a bad pattern is
- * the tenant's own classification batch, not a public endpoint.
+ * (nested quantifiers). With the engine now matching via RE2 (linear-time), this
+ * is no longer the primary ReDoS defense — it stays as an early, friendly reject
+ * so admins get clear feedback at save time instead of a pattern that quietly
+ * never fires. Reconciliation rules are admin-only (per-tenant) configuration.
  */
 const DANGEROUS_PATTERNS: RegExp[] = [
   /\([^)]*[+*][^)]*\)\s*[+*]/, // (a+)+, (a*)*, (.+)+
@@ -46,8 +50,12 @@ export class SafeRegexConstraint implements ValidatorConstraintInterface {
     if (typeof value !== 'string' || value.length === 0) return false;
     if (value.length > MAX_EXTRACTION_PATTERN_LENGTH) return false;
     if (DANGEROUS_PATTERNS.some((d) => d.test(value))) return false;
+    // Compile-check with RE2 (the same engine used at classify time) so an
+    // accepted pattern is guaranteed runnable: RE2 rejects backreferences and
+    // lookaround, which would otherwise pass a JS-RegExp check and then silently
+    // never fire in the engine.
     try {
-      new RegExp(value, 'i');
+      new RE2(value, 'i');
     } catch {
       return false;
     }

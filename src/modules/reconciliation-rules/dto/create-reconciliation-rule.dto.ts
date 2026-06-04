@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -8,6 +9,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
   Validate,
   ValidateIf,
@@ -16,13 +18,16 @@ import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ReconciliationRuleKind } from '@prisma/client';
 import {
+  MAX_EXTRACTION_PATTERN_LENGTH,
   SafeRegexConstraint,
   UnitOutcomeShapeConstraint,
 } from '../validators/unit-rule.validators';
 
 export class CreateReconciliationRuleDto {
-  @ApiProperty()
+  @ApiProperty({ maxLength: 120 })
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
   // Object-level guard, attached to an always-present field so it runs on create:
   // a UNIT rule carries exactly one outcome; a CONCEPT rule carries none.
   @Validate(UnitOutcomeShapeConstraint)
@@ -38,13 +43,17 @@ export class CreateReconciliationRuleDto {
 
   @ApiProperty({ type: [String] })
   @IsArray()
+  @ArrayMaxSize(50)
   @IsString({ each: true })
+  @MaxLength(80, { each: true })
   keywords: string[];
 
   @ApiPropertyOptional({ type: [String] })
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(50)
   @IsString({ each: true })
+  @MaxLength(MAX_EXTRACTION_PATTERN_LENGTH, { each: true })
   unitPatterns?: string[];
 
   @ApiPropertyOptional()
@@ -68,13 +77,14 @@ export class CreateReconciliationRuleDto {
 
   // UNIT outcome — flavor 1 (direct assignment). Required for a UNIT rule that has
   // no extraction pattern.
-  @ApiPropertyOptional({ description: 'Fixed unit number for a UNIT/direct rule' })
+  @ApiPropertyOptional({ description: 'Fixed unit number for a UNIT/direct rule', maxLength: 40 })
   @ValidateIf(
     (o) =>
       o.ruleKind === ReconciliationRuleKind.UNIT && !o.unitExtractionPattern,
   )
   @IsString()
   @IsNotEmpty()
+  @MaxLength(40)
   assignedUnitNumber?: string;
 
   // UNIT outcome — flavor 2 (format extraction). Required and safety-validated for

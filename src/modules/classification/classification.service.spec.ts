@@ -1820,6 +1820,21 @@ describe('resolveRuleUnit — UNIT rule outcome resolution', () => {
     const rule = unitRule({ unitExtractionPattern: `a(${'b'.repeat(300)})` });
     expect(resolveRuleUnit(rule, 'a' + 'b'.repeat(300))).toBeNull();
   });
+
+  it('matches a catastrophic-backtracking pattern in linear time (RE2, no hang)', () => {
+    // Under the JS backtracker this input would hang for seconds; RE2 runs it
+    // in linear time. We assert it both returns promptly and matches correctly.
+    const rule = unitRule({ unitExtractionPattern: '(a+)+-(\\d+)', unitExtractionGroup: 2 });
+    const adversarial = `${'a'.repeat(40)}-7`;
+    const start = Date.now();
+    expect(resolveRuleUnit(rule, adversarial)).toBe('7');
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it('degrades to null on an RE2-unsupported pattern (lookahead) instead of throwing', () => {
+    const rule = unitRule({ unitExtractionPattern: '(?=apt)apt-(\\d+)' });
+    expect(resolveRuleUnit(rule, 'pago apt-9')).toBeNull();
+  });
 });
 
 describe('ClassificationService.classifyBatch — UNIT-kind reconciliation rules', () => {
