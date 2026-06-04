@@ -5,6 +5,11 @@
   "author": "LivoClouds",
   "private": true,
   "license": "UNLICENSED",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "re2"
+    ]
+  },
   "scripts": {
     "build": "rm -rf dist && nest build",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -51,6 +56,7 @@
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pdf-parse": "^1.1.4",
+    "re2": "^1.24.1",
     "reflect-metadata": "^0.2.2",
     "resend": "^6.12.3",
     "rrule": "^2.8.1",
