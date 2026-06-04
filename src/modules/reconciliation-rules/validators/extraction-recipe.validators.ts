@@ -1,7 +1,6 @@
 import {
   ValidatorConstraint,
   ValidatorConstraintInterface,
-  ValidationArguments,
 } from 'class-validator';
 
 /** Cap on the serialized recipe so a malformed/huge blob can't bloat a row. */
@@ -59,7 +58,7 @@ export class ExtractionRecipeShapeConstraint
     return true;
   }
 
-  defaultMessage(_args: ValidationArguments): string {
+  defaultMessage(): string {
     return 'extractionRecipe must be an object { nodes: [1..24 blocks], captureId } referencing an existing block and at most 8 KB serialized';
   }
 }
