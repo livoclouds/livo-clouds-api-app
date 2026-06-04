@@ -52,4 +52,19 @@ export class UpdateUiPreferencesDto {
   @IsOptional()
   @IsEnum(NotificationSound)
   unlockSoundChoice?: NotificationSound;
+
+  @ApiPropertyOptional({
+    description: 'Whether a sound plays when the Lock Screen engages.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  lockSoundEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    enum: NotificationSound,
+    description: 'Sound preset played when the Lock Screen engages.',
+  })
+  @IsOptional()
+  @IsEnum(NotificationSound)
+  lockSoundChoice?: NotificationSound;
 }

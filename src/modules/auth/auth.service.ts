@@ -1140,6 +1140,8 @@ export class AuthService {
       primaryColor: row?.primaryColor ?? null,
       unlockSoundEnabled: row?.unlockSoundEnabled ?? true,
       unlockSoundChoice: row?.unlockSoundChoice ?? NotificationSound.CHIME,
+      lockSoundEnabled: row?.lockSoundEnabled ?? true,
+      lockSoundChoice: row?.lockSoundChoice ?? NotificationSound.CHIME,
     };
   }
 
@@ -1155,6 +1157,8 @@ export class AuthService {
       primaryColor?: string | null;
       unlockSoundEnabled?: boolean;
       unlockSoundChoice?: NotificationSound;
+      lockSoundEnabled?: boolean;
+      lockSoundChoice?: NotificationSound;
     } = {};
     if (dto.locale !== undefined) data.locale = dto.locale;
     if (dto.themeMode !== undefined) data.themeMode = dto.themeMode;
@@ -1163,6 +1167,10 @@ export class AuthService {
       data.unlockSoundEnabled = dto.unlockSoundEnabled;
     if (dto.unlockSoundChoice !== undefined)
       data.unlockSoundChoice = dto.unlockSoundChoice;
+    if (dto.lockSoundEnabled !== undefined)
+      data.lockSoundEnabled = dto.lockSoundEnabled;
+    if (dto.lockSoundChoice !== undefined)
+      data.lockSoundChoice = dto.lockSoundChoice;
 
     const row = await this.prisma.userUiPreference.upsert({
       where: { userId },
@@ -1175,6 +1183,8 @@ export class AuthService {
       primaryColor: row.primaryColor,
       unlockSoundEnabled: row.unlockSoundEnabled,
       unlockSoundChoice: row.unlockSoundChoice,
+      lockSoundEnabled: row.lockSoundEnabled,
+      lockSoundChoice: row.lockSoundChoice,
     };
   }
 
