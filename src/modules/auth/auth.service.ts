@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { UiLocale, UiThemeMode } from '@prisma/client';
+import { NotificationSound, UiLocale, UiThemeMode } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { JwtPayload, OnboardingStatus, UserRole } from '../../common/types';
@@ -1138,6 +1138,8 @@ export class AuthService {
       locale: row?.locale ?? null,
       themeMode: row?.themeMode ?? UiThemeMode.SYSTEM,
       primaryColor: row?.primaryColor ?? null,
+      unlockSoundEnabled: row?.unlockSoundEnabled ?? true,
+      unlockSoundChoice: row?.unlockSoundChoice ?? NotificationSound.CHIME,
     };
   }
 
@@ -1151,10 +1153,16 @@ export class AuthService {
       locale?: UiLocale | null;
       themeMode?: UiThemeMode;
       primaryColor?: string | null;
+      unlockSoundEnabled?: boolean;
+      unlockSoundChoice?: NotificationSound;
     } = {};
     if (dto.locale !== undefined) data.locale = dto.locale;
     if (dto.themeMode !== undefined) data.themeMode = dto.themeMode;
     if (dto.primaryColor !== undefined) data.primaryColor = dto.primaryColor;
+    if (dto.unlockSoundEnabled !== undefined)
+      data.unlockSoundEnabled = dto.unlockSoundEnabled;
+    if (dto.unlockSoundChoice !== undefined)
+      data.unlockSoundChoice = dto.unlockSoundChoice;
 
     const row = await this.prisma.userUiPreference.upsert({
       where: { userId },
@@ -1165,6 +1173,8 @@ export class AuthService {
       locale: row.locale,
       themeMode: row.themeMode,
       primaryColor: row.primaryColor,
+      unlockSoundEnabled: row.unlockSoundEnabled,
+      unlockSoundChoice: row.unlockSoundChoice,
     };
   }
 
