@@ -1,5 +1,9 @@
 import { BadRequestException, ConflictException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+// `re2` is a CommonJS module that uses `export = RE2`; with esModuleInterop off,
+// import-equals is the form that resolves to the constructor at runtime.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import RE2 = require('re2');
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
@@ -483,17 +487,20 @@ export function resolveNearestCycle(
 }
 
 // Defense-in-depth cap on the length of a user-provided extraction regex compiled
-// at classify time. The DTO `SafeRegexConstraint` is the primary ReDoS gate; this
+// at classify time. The DTO `SafeRegexConstraint` is the primary input gate; this
 // is the runtime backstop.
 const MAX_EXTRACTION_PATTERN_LENGTH = 200;
 
-// Compiles a user-provided regex defensively: returns null instead of throwing on
-// an invalid or over-long pattern, so a bad rule degrades to "did not fire" rather
-// than aborting the whole classification batch.
-function safeCompile(pattern: string, flags: string): RegExp | null {
+// Compiles a user-provided regex with RE2 (Google's linear-time engine): unlike the
+// JS `RegExp` backtracker, RE2 has no catastrophic-backtracking failure mode, so an
+// adversarial or accidental ReDoS pattern can never hang a classification batch.
+// Returns null instead of throwing on an invalid / over-long / RE2-unsupported
+// pattern (RE2 rejects backreferences + lookaround), so a bad rule degrades to "did
+// not fire" rather than aborting the batch — same contract as before, now ReDoS-proof.
+function safeCompile(pattern: string, flags: string): RE2 | null {
   if (!pattern || pattern.length > MAX_EXTRACTION_PATTERN_LENGTH) return null;
   try {
-    return new RegExp(pattern, flags);
+    return new RE2(pattern, flags);
   } catch {
     return null;
   }
@@ -512,7 +519,7 @@ export function resolveRuleUnit(rule: DbRule, description: string): string | nul
   if (rule.unitExtractionPattern) {
     const re = safeCompile(rule.unitExtractionPattern, 'i');
     if (!re) return null;
-    const match = description.match(re);
+    const match = re.exec(description);
     const group = rule.unitExtractionGroup ?? 1;
     const captured = match?.[group];
     if (captured && captured.trim().length > 0) return captured.trim();
@@ -532,11 +539,9 @@ function applyDbRules(
 
     const patternMatch = rule.unitPatterns.length > 0 &&
       rule.unitPatterns.some((p) => {
-        try {
-          return new RegExp(p, 'i').test(normalized);
-        } catch {
-          return false;
-        }
+        // RE2 (via safeCompile) keeps trigger matching linear-time + ReDoS-proof.
+        const re = safeCompile(p, 'i');
+        return re ? re.test(normalized) : false;
       });
 
     // A UNIT extraction rule needs no separate trigger: it fires precisely when its

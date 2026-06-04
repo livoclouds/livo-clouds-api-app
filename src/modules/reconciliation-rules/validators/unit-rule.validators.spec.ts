@@ -52,6 +52,18 @@ describe('SafeRegexConstraint', () => {
   it('defaults the group to 1 when unset', () => {
     expect(c.validate('apt-(\\d+)', args('apt-(\\d+)', {}))).toBe(true);
   });
+
+  it('rejects an RE2-unsupported pattern (lookahead) the engine could not run', () => {
+    // Valid in JS RegExp but RE2 has no lookaround — reject at save time so it
+    // never becomes a rule that silently never fires.
+    const p = '(?=apt)apt-(\\d+)';
+    expect(c.validate(p, args(p, { unitExtractionGroup: 1 }))).toBe(false);
+  });
+
+  it('rejects an RE2-unsupported pattern (backreference)', () => {
+    const p = '(a)\\1-(\\d+)';
+    expect(c.validate(p, args(p, { unitExtractionGroup: 2 }))).toBe(false);
+  });
 });
 
 describe('UnitOutcomeShapeConstraint', () => {
