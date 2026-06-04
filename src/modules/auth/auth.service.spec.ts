@@ -685,7 +685,13 @@ describe('AuthService', () => {
 
       const result = await service.getUiPreferences(USER_ID);
 
-      expect(result).toEqual({ locale: null, themeMode: 'SYSTEM', primaryColor: null });
+      expect(result).toEqual({
+        locale: null,
+        themeMode: 'SYSTEM',
+        primaryColor: null,
+        unlockSoundEnabled: true,
+        unlockSoundChoice: 'CHIME',
+      });
     });
 
     it('getUiPreferences returns the stored row', async () => {
@@ -694,11 +700,19 @@ describe('AuthService', () => {
         locale: 'es',
         themeMode: 'DARK',
         primaryColor: '213 76% 45%',
+        unlockSoundEnabled: false,
+        unlockSoundChoice: 'BEACON',
       });
 
       const result = await service.getUiPreferences(USER_ID);
 
-      expect(result).toEqual({ locale: 'es', themeMode: 'DARK', primaryColor: '213 76% 45%' });
+      expect(result).toEqual({
+        locale: 'es',
+        themeMode: 'DARK',
+        primaryColor: '213 76% 45%',
+        unlockSoundEnabled: false,
+        unlockSoundChoice: 'BEACON',
+      });
     });
 
     it('updateUiPreferences upserts only the provided keys', async () => {
@@ -733,6 +747,39 @@ describe('AuthService', () => {
         where: { userId: USER_ID },
         create: { userId: USER_ID, locale: null, primaryColor: null },
         update: { locale: null, primaryColor: null },
+      });
+    });
+
+    it('updateUiPreferences persists the unlock-sound preference', async () => {
+      prisma.userUiPreference.upsert.mockResolvedValue({
+        userId: USER_ID,
+        locale: null,
+        themeMode: 'SYSTEM',
+        primaryColor: null,
+        unlockSoundEnabled: false,
+        unlockSoundChoice: 'BEACON',
+      });
+
+      const result = await service.updateUiPreferences(USER_ID, {
+        unlockSoundEnabled: false,
+        unlockSoundChoice: 'BEACON' as never,
+      });
+
+      expect(prisma.userUiPreference.upsert).toHaveBeenCalledWith({
+        where: { userId: USER_ID },
+        create: {
+          userId: USER_ID,
+          unlockSoundEnabled: false,
+          unlockSoundChoice: 'BEACON',
+        },
+        update: { unlockSoundEnabled: false, unlockSoundChoice: 'BEACON' },
+      });
+      expect(result).toEqual({
+        locale: null,
+        themeMode: 'SYSTEM',
+        primaryColor: null,
+        unlockSoundEnabled: false,
+        unlockSoundChoice: 'BEACON',
       });
     });
   });

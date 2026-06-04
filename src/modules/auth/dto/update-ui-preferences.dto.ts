@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { UiLocale, UiThemeMode } from '@prisma/client';
-import { IsEnum, IsOptional, IsString, Matches } from 'class-validator';
+import { NotificationSound, UiLocale, UiThemeMode } from '@prisma/client';
+import { IsBoolean, IsEnum, IsOptional, IsString, Matches } from 'class-validator';
 
 /**
  * Body for updating the current user's UI preferences (PATCH — every field is
@@ -37,4 +37,19 @@ export class UpdateUiPreferencesDto {
     message: 'primaryColor must be an HSL triplet like "213 76% 45%"',
   })
   primaryColor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Whether a sound plays on a successful Lock Screen unlock.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  unlockSoundEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    enum: NotificationSound,
+    description: 'Sound preset played on a successful Lock Screen unlock.',
+  })
+  @IsOptional()
+  @IsEnum(NotificationSound)
+  unlockSoundChoice?: NotificationSound;
 }
