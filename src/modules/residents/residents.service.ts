@@ -40,6 +40,18 @@ const RESIDENT_INCLUDE = {
   additionalResidents: true,
 } satisfies Prisma.ResidentInclude;
 
+// Why each row that was not created was left out. UNIT_EXISTS: the unit number
+// is already reserved in this condominium (active or soft-deleted).
+// DUPLICATE_IN_FILE: the same unit appeared earlier in the same upload.
+export type BulkCreateSkipReason = 'UNIT_EXISTS' | 'DUPLICATE_IN_FILE';
+
+export interface BulkCreateResidentsResult {
+  created: number;
+  createdIds: string[];
+  skipped: { row: number; unitNumber: string; reason: BulkCreateSkipReason }[];
+  errors: { row: number; unitNumber: string; message: string }[];
+}
+
 // The five boolean flags stored in Resident.documentation. Used to build the
 // JSON-path where clause for the complete / incomplete documentation filter.
 const DOCUMENTATION_KEYS = [
@@ -269,6 +281,88 @@ export class ResidentsService {
 
       return resident;
     });
+  }
+
+  // Bulk-create residents from an imported spreadsheet. Designed for partial
+  // success: a unit that is already taken (active OR soft-deleted — the
+  // @@unique([condominiumId, unitNumber]) constraint covers both) is skipped,
+  // not failed, and reported back so the importer can resolve it. The same
+  // unit appearing twice in one upload is skipped after its first occurrence.
+  //
+  // Each resident is created in its own transaction (create + audit together)
+  // so one unexpected failure isolates to a single row instead of aborting the
+  // whole batch — Postgres aborts a transaction on first error, so a single
+  // wrapping transaction could not collect per-row errors.
+  async bulkCreate(
+    condominiumId: string,
+    userId: string,
+    rows: CreateResidentDto[],
+  ): Promise<BulkCreateResidentsResult> {
+    // Pre-load every unit number the constraint reserves (no deletedAt filter)
+    // so collisions are detected before the insert is attempted.
+    const taken = await this.prisma.resident.findMany({
+      where: { condominiumId },
+      select: { unitNumber: true },
+    });
+    const takenUnits = new Set(taken.map((r) => r.unitNumber));
+
+    const created: string[] = [];
+    const skipped: BulkCreateResidentsResult['skipped'] = [];
+    const errors: BulkCreateResidentsResult['errors'] = [];
+    const seenInFile = new Set<string>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const dto = rows[i];
+      const row = i + 1; // 1-based, matches the spreadsheet line the user sees
+      const unit = dto.unitNumber;
+
+      if (takenUnits.has(unit)) {
+        skipped.push({ row, unitNumber: unit, reason: 'UNIT_EXISTS' });
+        continue;
+      }
+      if (seenInFile.has(unit)) {
+        skipped.push({ row, unitNumber: unit, reason: 'DUPLICATE_IN_FILE' });
+        continue;
+      }
+      seenInFile.add(unit);
+
+      try {
+        const resident = await this.prisma.$transaction(async (tx) => {
+          const r = await tx.resident.create({
+            data: this.toResidentCreateData(condominiumId, dto),
+            include: RESIDENT_INCLUDE,
+          });
+          await this.audit.log(
+            {
+              condominiumId,
+              userId,
+              action: AUDIT_ACTION.RESIDENT_CREATED,
+              actionCategory: 'CREATE',
+              module: RESIDENTS_MODULE,
+              entityType: 'Resident',
+              entityId: r.id,
+              afterState: r,
+              result: 'SUCCESS',
+            },
+            tx,
+          );
+          return r;
+        });
+        created.push(resident.id);
+      } catch (err) {
+        // A concurrent request could claim the unit between the pre-load and
+        // this insert — the unique constraint catches it, so report it as a
+        // skip rather than a hard error. Anything else is an unexpected
+        // per-row failure that must not sink the rest of the batch.
+        if (isUniqueConstraintError(err)) {
+          skipped.push({ row, unitNumber: unit, reason: 'UNIT_EXISTS' });
+        } else {
+          errors.push({ row, unitNumber: unit, message: 'CREATE_FAILED' });
+        }
+      }
+    }
+
+    return { created: created.length, createdIds: created, skipped, errors };
   }
 
   async update(

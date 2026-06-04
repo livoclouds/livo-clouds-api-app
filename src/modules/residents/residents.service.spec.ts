@@ -1114,4 +1114,111 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
       });
     });
   });
+
+  describe('bulkCreate — resident import', () => {
+    function row(unitNumber: string): CreateResidentDto {
+      return {
+        unitNumber,
+        residentType: ResidentTypeDto.OWNER,
+        firstName: 'Imported',
+        lastName: 'Resident',
+      };
+    }
+
+    it('creates every row and logs one RESIDENT_CREATED per resident', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]); // no units taken
+      prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
+        Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        row('101'),
+        row('102'),
+      ]);
+
+      expect(result.created).toBe(2);
+      expect(result.createdIds).toEqual(['res-101', 'res-102']);
+      expect(result.skipped).toEqual([]);
+      expect(result.errors).toEqual([]);
+      expect(audit.log).toHaveBeenCalledTimes(2);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'RESIDENT_CREATED', entityType: 'Resident' }),
+        prisma,
+      );
+    });
+
+    it('skips units already reserved in the condominium (active or soft-deleted)', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([{ unitNumber: '101' }]);
+      prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
+        Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        row('101'),
+        row('102'),
+      ]);
+
+      expect(result.created).toBe(1);
+      expect(result.createdIds).toEqual(['res-102']);
+      expect(result.skipped).toEqual([
+        { row: 1, unitNumber: '101', reason: 'UNIT_EXISTS' },
+      ]);
+      expect(prisma.resident.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips a unit that repeats within the same upload', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]);
+      prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
+        Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        row('101'),
+        row('101'),
+      ]);
+
+      expect(result.created).toBe(1);
+      expect(result.skipped).toEqual([
+        { row: 2, unitNumber: '101', reason: 'DUPLICATE_IN_FILE' },
+      ]);
+    });
+
+    it('treats a P2002 race on insert as a skip, not a failure', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]);
+      prisma.resident.create.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [row('101')]);
+
+      expect(result.created).toBe(0);
+      expect(result.skipped).toEqual([
+        { row: 1, unitNumber: '101', reason: 'UNIT_EXISTS' },
+      ]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('isolates an unexpected per-row failure without sinking the batch', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]);
+      prisma.resident.create
+        .mockRejectedValueOnce(new Error('db exploded'))
+        .mockImplementationOnce(({ data }: { data: { unitNumber: string } }) =>
+          Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+        );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        row('101'),
+        row('102'),
+      ]);
+
+      expect(result.created).toBe(1);
+      expect(result.createdIds).toEqual(['res-102']);
+      expect(result.errors).toEqual([
+        { row: 1, unitNumber: '101', message: 'CREATE_FAILED' },
+      ]);
+    });
+  });
 });
