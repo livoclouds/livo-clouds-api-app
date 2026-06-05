@@ -12,6 +12,12 @@ interface PrismaMock {
     create: jest.Mock;
     updateMany: jest.Mock;
   };
+  supplierRating: {
+    groupBy: jest.Mock;
+    aggregate: jest.Mock;
+    create: jest.Mock;
+    findMany: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -23,6 +29,14 @@ function makePrismaMock(): PrismaMock {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'sup-1' }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    supplierRating: {
+      groupBy: jest.fn().mockResolvedValue([]),
+      aggregate: jest
+        .fn()
+        .mockResolvedValue({ _avg: { score: null }, _count: { _all: 0 } }),
+      create: jest.fn().mockResolvedValue({ id: 'rat-1' }),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     $transaction: jest.fn(),
   };
@@ -152,6 +166,164 @@ describe('SuppliersService', () => {
         deletedAt: null,
       });
       expect(call.data.deletedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('findAll aggregates', () => {
+    it('attaches rounded averageRating + ratingCount from the rating history', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findMany.mockResolvedValue([
+        { id: 'sup-1' },
+        { id: 'sup-2' },
+      ]);
+      prisma.supplier.count.mockResolvedValue(2);
+      prisma.supplierRating.groupBy.mockResolvedValue([
+        { supplierId: 'sup-1', _avg: { score: 4.666 }, _count: { _all: 3 } },
+      ]);
+      const service = makeService(prisma, makeAuditMock());
+
+      const result = await service.findAll(CONDOMINIUM_ID, {});
+      const rows = result.data as Array<{
+        id: string;
+        averageRating: number;
+        ratingCount: number;
+        jobsCount: number;
+      }>;
+
+      expect(rows[0]).toMatchObject({
+        id: 'sup-1',
+        averageRating: 4.7,
+        ratingCount: 3,
+        jobsCount: 0,
+      });
+      // A supplier with no ratings reports zeros, not NaN/undefined.
+      expect(rows[1]).toMatchObject({ averageRating: 0, ratingCount: 0 });
+    });
+
+    it('returns archived rows when `archived` is set', async () => {
+      const prisma = makePrismaMock();
+      const service = makeService(prisma, makeAuditMock());
+
+      await service.findAll(CONDOMINIUM_ID, { archived: true } as never);
+
+      const where = prisma.supplier.findMany.mock.calls[0][0].where;
+      expect(where.deletedAt).toEqual({ not: null });
+    });
+
+    it('filters by category and engagementType', async () => {
+      const prisma = makePrismaMock();
+      const service = makeService(prisma, makeAuditMock());
+
+      await service.findAll(CONDOMINIUM_ID, {
+        category: 'GARDENING',
+        engagementType: 'FIXED',
+      } as never);
+
+      const where = prisma.supplier.findMany.mock.calls[0][0].where;
+      expect(where.AND).toEqual([
+        { category: 'GARDENING' },
+        { engagementType: 'FIXED' },
+      ]);
+    });
+  });
+
+  describe('restore', () => {
+    it('throws NotFound when no archived row matches', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue(null);
+      const service = makeService(prisma, makeAuditMock());
+      await expect(
+        service.restore(CONDOMINIUM_ID, USER_ID, 'x'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('clears deletedAt with a structural archived filter', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst
+        .mockResolvedValueOnce({ id: 'sup-1', deletedAt: new Date() })
+        .mockResolvedValueOnce({ id: 'sup-1', deletedAt: null });
+      const service = makeService(prisma, makeAuditMock());
+
+      await service.restore(CONDOMINIUM_ID, USER_ID, 'sup-1');
+
+      const call = prisma.supplier.updateMany.mock.calls[0][0];
+      expect(call.where).toEqual({
+        id: 'sup-1',
+        condominiumId: CONDOMINIUM_ID,
+        deletedAt: { not: null },
+      });
+      expect(call.data.deletedAt).toBeNull();
+      expect(call.data.updatedBy).toBe(USER_ID);
+    });
+  });
+
+  describe('addRating', () => {
+    it('throws NotFound when the supplier is out of tenant', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue(null);
+      const service = makeService(prisma, makeAuditMock());
+      await expect(
+        service.addRating(CONDOMINIUM_ID, USER_ID, 'x', { score: 5 } as never),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('appends a rating with the actor id and returns refreshed aggregates', async () => {
+      const prisma = makePrismaMock();
+      const audit = makeAuditMock();
+      prisma.supplier.findFirst.mockResolvedValue({ id: 'sup-1' });
+      prisma.supplierRating.create.mockResolvedValue({ id: 'rat-9' });
+      prisma.supplierRating.aggregate.mockResolvedValue({
+        _avg: { score: 4.5 },
+        _count: { _all: 2 },
+      });
+      const service = makeService(prisma, audit);
+
+      const out = await service.addRating(CONDOMINIUM_ID, USER_ID, 'sup-1', {
+        score: 4,
+        comment: 'ok',
+      } as never);
+
+      const data = prisma.supplierRating.create.mock.calls[0][0].data;
+      expect(data).toMatchObject({
+        condominiumId: CONDOMINIUM_ID,
+        supplierId: 'sup-1',
+        score: 4,
+        createdBy: USER_ID,
+      });
+      expect(out).toEqual({
+        rating: { id: 'rat-9' },
+        averageRating: 4.5,
+        ratingCount: 2,
+      });
+      expect(audit.log).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('listRatings', () => {
+    it('throws NotFound when the supplier is absent', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue(null);
+      const service = makeService(prisma, makeAuditMock());
+      await expect(
+        service.listRatings(CONDOMINIUM_ID, 'missing'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns the tenant-scoped history newest first', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue({ id: 'sup-1' });
+      prisma.supplierRating.findMany.mockResolvedValue([{ id: 'rat-1' }]);
+      const service = makeService(prisma, makeAuditMock());
+
+      const rows = await service.listRatings(CONDOMINIUM_ID, 'sup-1');
+
+      const call = prisma.supplierRating.findMany.mock.calls[0][0];
+      expect(call.where).toEqual({
+        condominiumId: CONDOMINIUM_ID,
+        supplierId: 'sup-1',
+      });
+      expect(call.orderBy).toEqual({ createdAt: 'desc' });
+      expect(rows).toEqual([{ id: 'rat-1' }]);
     });
   });
 });
