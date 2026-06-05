@@ -129,6 +129,33 @@ describe('ResidentArcoService', () => {
     });
   });
 
+  describe('findAllByCondominium', () => {
+    it('lists every request tenant-wide, soonest deadline first, audited at condominium scope', async () => {
+      const { service, audit, prisma } = makeService();
+      await service.findAllByCondominium(CONDO, USER, { type: 'ACCESS' } as never);
+      const args = prisma.arcoRequest.findMany.mock.calls[0][0];
+      // Cross-resident: condominium-scoped, no residentId narrowing.
+      expect(args.where).toMatchObject({ condominiumId: CONDO, deletedAt: null, type: 'ACCESS' });
+      expect(args.where).not.toHaveProperty('residentId');
+      expect(args.orderBy).toEqual([{ dueDate: 'asc' }]);
+      // Lean projection — carries resident identity, never leaks attachments/storageKey.
+      expect(args.select.resident.select).toMatchObject({
+        id: true,
+        firstName: true,
+        lastName: true,
+        unitNumber: true,
+      });
+      expect(args.select).not.toHaveProperty('attachments');
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ARCO_LIST_VIEWED',
+          entityType: 'Condominium',
+          entityId: CONDO,
+        }),
+      );
+    });
+  });
+
   describe('access packet', () => {
     it('generates the dossier packet for an ACCESS request + records the event', async () => {
       const { service, prisma, dossier, audit } = makeService();

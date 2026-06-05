@@ -171,6 +171,62 @@ export class ResidentArcoService {
     });
   }
 
+  // Condominium-wide compliance list — every ARCO request across all residents,
+  // soonest legal deadline first. Tenant-scoped; reads a lean projection (no
+  // events/attachments, never storageKey) plus the resident's identity for the
+  // table. Audited as a condominium-scope list view.
+  async findAllByCondominium(
+    condominiumId: string,
+    userId: string,
+    query: ListArcoRequestsDto = {},
+  ) {
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.ARCO_LIST_VIEWED,
+      actionCategory: 'READ',
+      module: ARCO_MODULE,
+      entityType: 'Condominium',
+      entityId: condominiumId,
+      result: 'SUCCESS',
+    });
+
+    return this.prisma.arcoRequest.findMany({
+      where: {
+        condominiumId,
+        deletedAt: null,
+        ...(query.type ? { type: query.type } : {}),
+        ...(query.status ? { status: query.status } : {}),
+      },
+      select: {
+        id: true,
+        residentId: true,
+        type: true,
+        status: true,
+        channel: true,
+        description: true,
+        resolution: true,
+        referenceFolio: true,
+        receivedAt: true,
+        dueDate: true,
+        resolvedAt: true,
+        createdBy: true,
+        updatedBy: true,
+        createdAt: true,
+        updatedAt: true,
+        resident: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            unitNumber: true,
+          },
+        },
+      },
+      orderBy: [{ dueDate: 'asc' }],
+    });
+  }
+
   async findOne(
     condominiumId: string,
     residentId: string,
