@@ -50,9 +50,24 @@ function makePrismaMock() {
       findFirst: jest.fn(),
       delete: jest.fn().mockResolvedValue({}),
     },
+    // Cross-module sources for the ARCO packet (Capa 2E).
+    paymentAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+    transaction: { findMany: jest.fn().mockResolvedValue([]) },
+    whatsAppConversation: { findMany: jest.fn().mockResolvedValue([]) },
+    visitorLog: { findMany: jest.fn().mockResolvedValue([]) },
+    calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
   };
   const $transaction = jest.fn((cb: (tx: unknown) => unknown) => cb(mock));
   return Object.assign(mock, { $transaction });
+}
+
+function makeCollection() {
+  return {
+    getAccountStatement: jest.fn().mockResolvedValue({
+      summary: { totalPaid: 0, totalExpected: 0, monthsPaid: 0, monthsUnpaid: 0, balance: 0 },
+      collectionRecords: [],
+    }),
+  };
 }
 
 function makeAudit() {
@@ -86,13 +101,15 @@ function makeService(perms: string[] = ALL_PERMS) {
   const audit = makeAudit();
   const rbac = makeRbac(perms);
   const storage = makeStorage();
+  const collection = makeCollection();
   const service = new ResidentDossierService(
     prisma as never,
     audit as never,
     rbac as never,
     storage as never,
+    collection as never,
   );
-  return { service, prisma, audit, rbac, storage };
+  return { service, prisma, audit, rbac, storage, collection };
 }
 
 const fakeFile = (over: Partial<{ mimeType: string; size: number }> = {}) => ({
@@ -413,6 +430,58 @@ describe('ResidentDossierService', () => {
       await expect(
         service.exportArcoPacket(CONDO, RESIDENT, USER),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('ARCO cross-module compilation (phase 2E)', () => {
+    it('reuses the account statement and redacts the transaction projection', async () => {
+      const { service, prisma, collection } = makeService();
+      await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      expect(collection.getAccountStatement).toHaveBeenCalledWith(CONDO, RESIDENT);
+      const txSelect = prisma.transaction.findMany.mock.calls[0][0].select;
+      // Safe fields present; third-party / raw-bank fields ABSENT by construction.
+      expect(txSelect).toMatchObject({ transactionDate: true, credits: true, paymentConcept: true });
+      expect(txSelect.description).toBeUndefined();
+      expect(txSelect.payerName).toBeUndefined();
+      expect(txSelect.unitNumbersDetected).toBeUndefined();
+    });
+
+    it('compiles WhatsApp as facts only — no content, no counterpart identity', async () => {
+      const { service, prisma } = makeService();
+      await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      const sel = prisma.whatsAppConversation.findMany.mock.calls[0][0].select;
+      expect(sel.status).toBe(true);
+      expect(sel._count).toEqual({ select: { messages: true } });
+      expect(sel.phoneNumber).toBeUndefined();
+      expect(sel.contactName).toBeUndefined();
+      expect(JSON.stringify(sel)).not.toContain('textContent');
+    });
+
+    it('compiles visitor logs as redacted facts — no name/plate/notes', async () => {
+      const { service, prisma } = makeService();
+      await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      const call = prisma.visitorLog.findMany.mock.calls[0][0];
+      expect(call.select).toEqual({ checkInAt: true, checkOutAt: true });
+      expect(call.where).toMatchObject({ residentId: RESIDENT, deletedAt: null });
+    });
+
+    it('omits calendar metadata and audits per-module counts', async () => {
+      const { service, prisma, audit } = makeService();
+      await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      const calSel = prisma.calendarEvent.findMany.mock.calls[0][0].select;
+      expect(calSel.metadata).toBeUndefined();
+      expect(calSel.title).toBe(true);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'DOSSIER_ARCO_EXPORTED',
+          afterState: expect.objectContaining({
+            transactions: 0,
+            conversations: 0,
+            visits: 0,
+            calendarEvents: 0,
+          }),
+        }),
+      );
     });
   });
 
