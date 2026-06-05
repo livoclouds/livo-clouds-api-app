@@ -1220,5 +1220,88 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
         { row: 1, unitNumber: '101', message: 'CREATE_FAILED' },
       ]);
     });
+
+    it('nests documentation + sub-entities into one insert and audits each child', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]);
+      // The nested insert returns the resident with its created children, which
+      // logImportedChildren iterates to write one audit row each.
+      prisma.resident.create.mockResolvedValue(
+        makeResident({
+          id: 'res-101',
+          unitNumber: '101',
+          vehicles: [makeVehicle({ id: 'veh-1' }), makeVehicle({ id: 'veh-2' })],
+          pets: [makePet({ id: 'pet-1' })],
+          additionalResidents: [makeAdditionalResident({ id: 'addl-1' })],
+        }),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        {
+          ...row('101'),
+          documentation: {
+            propertyTax: true,
+            titleDeed: false,
+            ownerDocumentation: true,
+            nationalId: false,
+            proofOfAddress: true,
+          },
+          vehicles: [
+            { make: 'Toyota', model: 'Corolla', plates: 'AAA-1', hasTag: false },
+            { make: 'Honda', model: 'Civic', plates: 'BBB-2', hasTag: true, tagId: 'T2' },
+          ],
+          pets: [{ name: 'Max', petType: PetTypeDto.DOG }],
+          additionalResidents: [
+            { name: 'María', residentType: ResidentTypeDto.RESIDENT, relationship: 'Spouse' },
+          ],
+        },
+      ]);
+
+      expect(result.created).toBe(1);
+
+      // The create data carries documentation + nested creates with condominiumId
+      // on vehicles/pets but not on additional residents.
+      const createArg = prisma.resident.create.mock.calls[0][0];
+      expect(createArg.data.documentation).toMatchObject({ propertyTax: true, proofOfAddress: true });
+      expect(createArg.data.vehicles.create).toHaveLength(2);
+      expect(createArg.data.vehicles.create[0]).toMatchObject({ condominiumId: CONDOMINIUM_ID, make: 'Toyota' });
+      expect(createArg.data.pets.create[0]).toMatchObject({ condominiumId: CONDOMINIUM_ID, petType: 'DOG' });
+      expect(createArg.data.additionalResidents.create[0]).not.toHaveProperty('condominiumId');
+
+      // One RESIDENT_CREATED + 2 vehicles + 1 pet + 1 additional = 5 audit rows.
+      expect(audit.log).toHaveBeenCalledTimes(5);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'RESIDENT_VEHICLE_ADDED', entityType: 'Vehicle', entityId: 'veh-2' }),
+        prisma,
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'RESIDENT_PET_ADDED', entityType: 'Pet' }),
+        prisma,
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RESIDENT_ADDITIONAL_RESIDENT_ADDED',
+          entityType: 'AdditionalResident',
+        }),
+        prisma,
+      );
+    });
+
+    it('omits empty sub-entity arrays from the create data', async () => {
+      prisma.resident.findMany.mockResolvedValueOnce([]);
+      prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
+        Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+      );
+
+      await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        { ...row('101'), vehicles: [], pets: [], additionalResidents: [] },
+      ]);
+
+      const createArg = prisma.resident.create.mock.calls[0][0];
+      expect(createArg.data.vehicles).toBeUndefined();
+      expect(createArg.data.pets).toBeUndefined();
+      expect(createArg.data.additionalResidents).toBeUndefined();
+      // No children → only the resident audit row.
+      expect(audit.log).toHaveBeenCalledTimes(1);
+    });
   });
 });
