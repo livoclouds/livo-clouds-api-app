@@ -727,6 +727,7 @@ async function main() {
         return {
           condominiumId: condoId,
           unitNumber: row.unidad,
+          unitNumberNormalized: row.unidad.trim().toLowerCase(),
           firstName,
           lastName,
           residentType: csvResidentType(row.perfil),
@@ -749,6 +750,7 @@ async function main() {
         return {
           condominiumId: condoId,
           unitNumber: String(ui + 1),
+          unitNumberNormalized: String(ui + 1).trim().toLowerCase(),
           firstName: nameAt(FIRST_NAMES, ci, ui),
           lastName: nameAt(LAST_NAMES, ci, ui + 5),
           residentType: RESIDENT_TYPES[(ci + ui) % RESIDENT_TYPES.length],

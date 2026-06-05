@@ -160,6 +160,7 @@ export class WhatsAppUnregisteredService {
         data: {
           condominiumId,
           unitNumber: dto.unitNumber,
+          unitNumberNormalized: dto.unitNumber.trim().toLowerCase(),
           residentType: dto.residentType,
           firstName: dto.firstName,
           lastName: dto.lastName,

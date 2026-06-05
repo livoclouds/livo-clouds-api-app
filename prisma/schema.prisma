@@ -584,6 +584,10 @@ model Resident {
   id             String        @id @default(uuid())
   condominiumId  String
   unitNumber     String
+  // Canonical (trimmed, lower-cased) unit number. Uniqueness is enforced on
+  // this so "A1" and "a1" are the same unit within a condominium; `unitNumber`
+  // keeps the original casing for display. Always set by the service.
+  unitNumberNormalized String
   residentType   ResidentType  @default(OWNER)
   firstName      String
   lastName       String
@@ -613,7 +617,7 @@ model Resident {
   whatsAppConversations            WhatsAppConversation[]
   visitorLogs                      VisitorLog[]
 
-  @@unique([condominiumId, unitNumber])
+  @@unique([condominiumId, unitNumberNormalized])
   @@index([condominiumId])
   @@index([paymentStatus])
   @@index([deletedAt])
