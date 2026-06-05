@@ -39,6 +39,7 @@ const AUDIT_ACTION = {
   DOSSIER_ATTACHMENT_REMOVED: 'DOSSIER_ATTACHMENT_REMOVED',
   DOSSIER_EXPORT_REQUESTED: 'DOSSIER_EXPORT_REQUESTED',
   DOSSIER_HARD_DELETED: 'DOSSIER_HARD_DELETED',
+  DOSSIER_ARCO_EXPORTED: 'DOSSIER_ARCO_EXPORTED',
 } as const;
 
 const MANAGE_PERMISSION = 'residents.dossier.manage';
@@ -692,6 +693,165 @@ export class ResidentDossierService {
       fileName: `dossier_${residentId}.zip`,
       entries: entries.length,
       attachments: attachmentCount,
+    };
+  }
+
+  private escapeHtml(value: unknown): string {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ARCO subject packet (Capa 2D) — a CURATED export of the resident's own
+  // personal data for an LFPDPPP "Acceso" request. Distinct from the internal
+  // export: it compiles the resident profile + sub-entities (vehicles, pets,
+  // additional residents) + their non-legal-confidential dossier, and ships a
+  // human-readable HTML cover. LEGAL_CONFIDENTIAL entries are EXCLUDED by
+  // exemption, but the packet states how many reserved records exist.
+  async exportArcoPacket(
+    condominiumId: string,
+    residentId: string,
+    userId: string,
+  ): Promise<{
+    buffer: Buffer;
+    fileName: string;
+    entries: number;
+    reservedLegalConfidential: number;
+  }> {
+    const resident = await this.prisma.resident.findFirst({
+      where: { id: residentId, condominiumId, deletedAt: null },
+      include: { vehicles: true, pets: true, additionalResidents: true },
+    });
+    if (!resident) throw new NotFoundException('Resident not found');
+
+    // The subject's own dossier, excluding the legal-confidential tier (exempt).
+    const entries = await this.prisma.residentDossierEntry.findMany({
+      where: {
+        condominiumId,
+        residentId,
+        deletedAt: null,
+        confidentiality: { not: DossierConfidentiality.LEGAL_CONFIDENTIAL },
+      },
+      include: {
+        events: { orderBy: { createdAt: 'asc' } },
+        attachments: { orderBy: { uploadedAt: 'asc' } },
+      },
+      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+    });
+    const reservedLegalConfidential = await this.prisma.residentDossierEntry.count({
+      where: {
+        condominiumId,
+        residentId,
+        deletedAt: null,
+        confidentiality: DossierConfidentiality.LEGAL_CONFIDENTIAL,
+      },
+    });
+
+    const data = {
+      generatedAt: new Date().toISOString(),
+      condominiumId,
+      residentId,
+      resident: {
+        firstName: resident.firstName,
+        lastName: resident.lastName,
+        unitNumber: resident.unitNumber,
+        residentType: resident.residentType,
+        phone: resident.phone,
+        email: resident.email,
+        documentation: resident.documentation,
+        vehicles: resident.vehicles,
+        pets: resident.pets,
+        additionalResidents: resident.additionalResidents,
+      },
+      dossier: entries.map((e) => ({
+        ...e,
+        attachments: e.attachments.map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          mimeType: a.mimeType,
+          fileSizeBytes: a.fileSizeBytes,
+          uploadedAt: a.uploadedAt,
+        })),
+      })),
+      notice: { reservedLegalConfidential },
+    };
+
+    const reservedNotice =
+      reservedLegalConfidential > 0
+        ? `<p><strong>Aviso:</strong> existen ${reservedLegalConfidential} registro(s) reservado(s) por confidencialidad legal que no se incluyen en este paquete (exención de acceso).</p>`
+        : '';
+    const html = `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Paquete ARCO — ${this.escapeHtml(resident.firstName)} ${this.escapeHtml(resident.lastName)}</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;line-height:1.5;color:#1f2937">
+<h1>Paquete de Acceso (ARCO)</h1>
+<p>Datos personales que el condominio conserva sobre el titular, generados el ${this.escapeHtml(data.generatedAt)}.</p>
+<h2>Titular</h2>
+<ul>
+<li><strong>Nombre:</strong> ${this.escapeHtml(resident.firstName)} ${this.escapeHtml(resident.lastName)}</li>
+<li><strong>Unidad:</strong> ${this.escapeHtml(resident.unitNumber)}</li>
+<li><strong>Contacto:</strong> ${this.escapeHtml(resident.phone)} · ${this.escapeHtml(resident.email)}</li>
+</ul>
+<h2>Resumen</h2>
+<ul>
+<li>Vehículos: ${resident.vehicles.length}</li>
+<li>Mascotas: ${resident.pets.length}</li>
+<li>Residentes adicionales: ${resident.additionalResidents.length}</li>
+<li>Antecedentes incluidos: ${entries.length}</li>
+</ul>
+${reservedNotice}
+<p>El detalle estructurado está en <code>datos.json</code>; la evidencia documental, en la carpeta <code>evidencia/</code>.</p>
+</body></html>`;
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const finished = new Promise<void>((resolve, reject) => {
+      archive.on('end', () => resolve());
+      archive.on('warning', (err) => reject(err));
+      archive.on('error', (err) => reject(err));
+    });
+
+    archive.append(html, { name: 'index.html' });
+    archive.append(JSON.stringify(data, null, 2), { name: 'datos.json' });
+
+    for (const entry of entries) {
+      for (const att of entry.attachments) {
+        const buffer = await this.storage.downloadFile(att.storageKey, {
+          userId,
+          condominiumId,
+          byteSize: att.fileSizeBytes,
+        });
+        archive.append(buffer, {
+          name: `evidencia/${entry.id}/${att.id}-${this.sanitizeFileName(att.fileName)}`,
+        });
+      }
+    }
+
+    await archive.finalize();
+    await finished;
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_ARCO_EXPORTED,
+      actionCategory: 'READ',
+      module: DOSSIER_MODULE,
+      entityType: 'Resident',
+      entityId: residentId,
+      afterState: {
+        entries: entries.length,
+        reservedLegalConfidential,
+      },
+      result: 'SUCCESS',
+    });
+
+    return {
+      buffer: Buffer.concat(chunks),
+      fileName: `arco_${residentId}.zip`,
+      entries: entries.length,
+      reservedLegalConfidential,
     };
   }
 

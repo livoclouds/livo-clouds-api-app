@@ -16,10 +16,25 @@ const ENTRY = 'entry-1';
 
 function makePrismaMock() {
   const mock = {
-    resident: { findFirst: jest.fn().mockResolvedValue({ id: RESIDENT }) },
+    resident: {
+      findFirst: jest.fn().mockResolvedValue({
+        id: RESIDENT,
+        firstName: 'Ana',
+        lastName: 'García',
+        unitNumber: 'A1',
+        residentType: 'OWNER',
+        phone: '555',
+        email: 'ana@example.com',
+        documentation: {},
+        vehicles: [],
+        pets: [],
+        additionalResidents: [],
+      }),
+    },
     residentDossierEntry: {
       findFirst: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => ({
         id: ENTRY,
         status: 'OPEN',
@@ -352,6 +367,52 @@ describe('ResidentDossierService', () => {
       expect(audit.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'DOSSIER_EXPORT_REQUESTED' }),
       );
+    });
+  });
+
+  describe('ARCO subject packet (phase 2D)', () => {
+    it('excludes LEGAL_CONFIDENTIAL entries and reports the reserved count', async () => {
+      const { service, prisma } = makeService();
+      prisma.residentDossierEntry.findMany.mockResolvedValue([]);
+      prisma.residentDossierEntry.count.mockResolvedValue(3); // 3 reserved legal-confidential
+      const out = await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      const where = prisma.residentDossierEntry.findMany.mock.calls[0][0].where;
+      expect(where.confidentiality).toEqual({ not: 'LEGAL_CONFIDENTIAL' });
+      expect(where.deletedAt).toBeNull();
+      // The count query targets exactly the excluded tier.
+      const countWhere = prisma.residentDossierEntry.count.mock.calls[0][0].where;
+      expect(countWhere.confidentiality).toBe('LEGAL_CONFIDENTIAL');
+      expect(out.reservedLegalConfidential).toBe(3);
+    });
+
+    it('bundles the resident profile + evidence into a ZIP and audits the packet', async () => {
+      const { service, prisma, storage, audit } = makeService();
+      prisma.residentDossierEntry.findMany.mockResolvedValue([
+        {
+          id: ENTRY,
+          confidentiality: 'STANDARD',
+          events: [],
+          attachments: [
+            { id: 'att-1', storageKey: 'k1', fileName: 'acta.pdf', mimeType: 'application/pdf', fileSizeBytes: 9, uploadedAt: new Date() },
+          ],
+        },
+      ]);
+      const out = await service.exportArcoPacket(CONDO, RESIDENT, USER);
+      expect(storage.downloadFile).toHaveBeenCalledWith('k1', expect.anything());
+      expect(out.buffer.slice(0, 2).toString()).toBe('PK'); // ZIP magic bytes
+      expect(out.fileName).toContain('.zip');
+      expect(out.entries).toBe(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'DOSSIER_ARCO_EXPORTED' }),
+      );
+    });
+
+    it('throws NotFound when the resident does not exist', async () => {
+      const { service, prisma } = makeService();
+      prisma.resident.findFirst.mockResolvedValue(null);
+      await expect(
+        service.exportArcoPacket(CONDO, RESIDENT, USER),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

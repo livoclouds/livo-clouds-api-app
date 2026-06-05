@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class UpdateGeneralSettingsDto {
   @ApiPropertyOptional()
@@ -46,4 +46,12 @@ export class UpdateGeneralSettingsDto {
   @IsOptional()
   @IsString()
   businessHours?: string;
+
+  // Resident dossier retention window in days. 0 disables auto-purge (opt-in).
+  @ApiPropertyOptional({ example: 365, minimum: 0, maximum: 3650 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  dossierRetentionDays?: number;
 }

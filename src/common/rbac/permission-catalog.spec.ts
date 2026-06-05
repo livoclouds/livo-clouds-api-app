@@ -66,6 +66,7 @@ describe('permission-catalog', () => {
       const admin = presetForRole('TENANT_ADMIN');
       expect(admin).toContain('residents.manage');
       expect(admin).toContain('settings.update');
+      expect(admin).toContain('residents.dossier.exportArco'); // ARCO packet (Capa 2D)
       expect(admin.some((k) => k.startsWith('platform.'))).toBe(false);
       expect(admin).not.toContain('files.delete');
     });
@@ -96,6 +97,8 @@ describe('permission-catalog', () => {
       expect(condo).not.toContain('residents.dossier.manage');
       // ARCO export is a read-tier action the auditor holds (no write verb).
       expect(condo).toContain('residents.dossier.export');
+      // The ARCO subject packet is a compliance action — admin/root only.
+      expect(condo).not.toContain('residents.dossier.exportArco');
     });
   });
 
