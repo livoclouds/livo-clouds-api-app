@@ -5,8 +5,18 @@ import {
 
 const c = new ExtractionRecipeShapeConstraint();
 
+/** Build a valid node of the given kind (matches the web BlockRecipe model). */
 function node(id: string, kind = 'digits') {
-  return { id, kind, min: 1, max: 3, optional: false };
+  switch (kind) {
+    case 'literal':
+      return { id, kind, optional: false, text: 'APT' };
+    case 'separator':
+      return { id, kind, optional: false, style: 'dash' };
+    case 'anyOf':
+      return { id, kind, optional: false, options: ['casa', 'cs'] };
+    default: // digits | letters | alnum
+      return { id, kind, optional: false, min: 1, max: 3 };
+  }
 }
 
 describe('ExtractionRecipeShapeConstraint', () => {
@@ -70,5 +80,62 @@ describe('ExtractionRecipeShapeConstraint', () => {
       captureId: 'a',
     };
     expect(c.validate(huge)).toBe(false);
+  });
+
+  it('accepts every valid node kind', () => {
+    const recipe = {
+      nodes: [
+        node('a', 'literal'),
+        node('b', 'separator'),
+        node('c', 'letters'),
+        node('d', 'alnum'),
+        node('e', 'anyOf'),
+        node('f', 'digits'),
+      ],
+      captureId: 'f',
+    };
+    expect(c.validate(recipe)).toBe(true);
+  });
+
+  it('rejects an unknown kind', () => {
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'wildcard', optional: false }], captureId: 'a' }),
+    ).toBe(false);
+  });
+
+  it('rejects a separator with an unknown style', () => {
+    expect(
+      c.validate({
+        nodes: [{ id: 'a', kind: 'separator', optional: false, style: 'bogus' }],
+        captureId: 'a',
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects a literal without a text string', () => {
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'literal', optional: false }], captureId: 'a' }),
+    ).toBe(false);
+  });
+
+  it('rejects numeric blocks out of range or with min > max', () => {
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'digits', min: 1, max: 99 }], captureId: 'a' }),
+    ).toBe(false); // max beyond the 12 cap
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'digits', min: 5, max: 2 }], captureId: 'a' }),
+    ).toBe(false); // min > max
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'letters', min: 0, max: 3 }], captureId: 'a' }),
+    ).toBe(false); // min below the 1 cap
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'digits', min: 1.5, max: 3 }], captureId: 'a' }),
+    ).toBe(false); // non-integer
+  });
+
+  it('rejects an anyOf whose options are not all strings', () => {
+    expect(
+      c.validate({ nodes: [{ id: 'a', kind: 'anyOf', options: ['ok', 3] }], captureId: 'a' }),
+    ).toBe(false);
   });
 });
