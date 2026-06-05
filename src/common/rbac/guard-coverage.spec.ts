@@ -47,6 +47,7 @@ import { RolesController } from '../../modules/roles/roles.controller';
 import { SecurityController } from '../../modules/security/security.controller';
 import { SettingsController } from '../../modules/settings/settings.controller';
 import { StorageAdminController } from '../../modules/storage-admin/storage-admin.controller';
+import { SupportController } from '../../modules/support/support.controller';
 import { TransactionsController } from '../../modules/transactions/transactions.controller';
 import { UsersController } from '../../modules/users/users.controller';
 import { WhatsAppController } from '../../modules/whatsapp/whatsapp.controller';
@@ -127,6 +128,12 @@ function isPublicRoute(ctrl: Function, method: string): boolean {
  *   WhatsAppWebhookController — @Public with Meta signature auth; no RBAC
  *   WhatsAppInternalCronController — @Public with cron-secret bearer; no RBAC
  *   HealthController        — @Public infrastructure health check
+ *   SupportController       — Support Center is available to EVERY authenticated
+ *                             role, so its mutations are intentionally NOT
+ *                             permission-gated (excluded from Check A). Its
+ *                             tenant-scoped ticket routes still carry class-level
+ *                             CondominiumAccessGuard — asserted explicitly in
+ *                             Check B below.
  */
 const TENANT_SCOPED_CONTROLLERS: Function[] = [
   BankProfilesController,
@@ -161,6 +168,9 @@ const TENANT_SCOPED_CONTROLLERS: Function[] = [
  *   WhatsAppWebhookController   — @Public POST with Meta signature auth
  *   WhatsAppInternalCronController — @Public POST with cron-secret bearer auth
  *   HealthController            — GET-only, @Public
+ *   SupportController          — open to every authenticated role (file a ticket,
+ *                                vote/view an article); intentionally not
+ *                                permission-gated. Tenant guard verified in Check B.
  */
 const MUTATION_GUARDED_CONTROLLERS: Function[] = [
   // Tenant-scoped (all must be in TENANT_SCOPED_CONTROLLERS above)
@@ -210,6 +220,12 @@ describe('[RBAC-006] Check B — tenant-scoped controllers carry CondominiumAcce
   // AuditController uses per-method guard on the tenant route only.
   it('AuditController.findAll: method-level CondominiumAccessGuard on the tenant route', () => {
     expect(hasCondominiumGuardOnMethod(AuditController, 'findAll')).toBe(true);
+  });
+
+  // SupportController is excluded from permission gating (all-roles access) but
+  // its tenant-scoped ticket routes must still carry the tenant guard.
+  it('SupportController: class-level CondominiumAccessGuard', () => {
+    expect(hasCondominiumGuardOnClass(SupportController)).toBe(true);
   });
 });
 
