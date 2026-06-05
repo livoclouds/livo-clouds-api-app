@@ -117,6 +117,26 @@ enum SupplierStatus {
   PENDING
 }
 
+/// Coarse directory bucket shown in the Proveedores UI (filter chips + card
+/// icon). Distinct from the finer-grained `SupplierType`, which is kept for
+/// back-compat with the dashboard activity table and expense reconciliation.
+enum SupplierCategory {
+  ADMINISTRATION
+  SURVEILLANCE
+  GARDENING
+  CLEANING
+  MAINTENANCE
+  SERVICES
+  OTHER
+}
+
+/// Whether the condominium contracts this supplier on a recurring basis
+/// (FIXED → "Proveedor fijo") or ad-hoc per job (OCCASIONAL → "Eventual").
+enum SupplierEngagement {
+  FIXED
+  OCCASIONAL
+}
+
 enum FlowType {
   INCOME
   EXPENSE
@@ -341,6 +361,7 @@ model Condominium {
   commonAreas                      CommonArea[]
   inventoryItems                   InventoryItem[]
   suppliers                        Supplier[]
+  supplierRatings                  SupplierRating[]
   expenseCategories                ExpenseCategory[]
   importBatches                    ImportBatch[]
   transactions                     Transaction[]
@@ -792,24 +813,37 @@ model InventoryItem {
 }
 
 model Supplier {
-  id                       String         @id @default(uuid())
+  id                       String             @id @default(uuid())
   condominiumId            String
   supplierName             String
   type                     SupplierType
+  // Coarse directory bucket driving the Proveedores filter chips. Backfilled
+  // from `type` for legacy rows; defaults to OTHER for new ones that omit it.
+  category                 SupplierCategory   @default(OTHER)
+  // FIXED → recurring "Proveedor fijo"; OCCASIONAL → ad-hoc "Eventual".
+  engagementType           SupplierEngagement @default(OCCASIONAL)
   contactName              String?
   email                    String?
   phone                    String?
+  whatsapp                 String?
   address                  String?
+  // Free-text schedule / availability shown in the contact panel.
+  availability             String?
+  // Whether the supplier also serves residents privately (trust reference).
+  servesResidents          Boolean            @default(false)
+  // Trust/reference notes (who recommends them, prior experience). Kept
+  // separate from `notes` (internal/admin remarks).
+  references               String?
   taxId                    String?
   // When set, classifying an EXPENSE to this supplier auto-fills this category
   // (in the review modal and via EXPENSE reconciliation rules). Optional.
   defaultExpenseCategoryId String?
-  registrationDate         DateTime?      @db.Date
-  status                   SupplierStatus @default(ACTIVE)
+  registrationDate         DateTime?          @db.Date
+  status                   SupplierStatus     @default(ACTIVE)
   notes                    String?
   deletedAt                DateTime?
-  createdAt                DateTime       @default(now())
-  updatedAt                DateTime       @updatedAt
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
   // Audit-trail actor ids (the JWT `sub` of the acting user). API-owned: set
   // from the session on create/update, never accepted from the request body.
   // Nullable so rows created before this column existed remain valid.
@@ -820,13 +854,37 @@ model Supplier {
   defaultExpenseCategory ExpenseCategory?     @relation(fields: [defaultExpenseCategoryId], references: [id])
   transactions           Transaction[]
   reconciliationRules    ReconciliationRule[]
+  ratings                SupplierRating[]
 
   @@index([condominiumId])
   @@index([condominiumId, status])
   @@index([condominiumId, type])
+  @@index([condominiumId, category])
+  @@index([condominiumId, engagementType])
   @@index([condominiumId, defaultExpenseCategoryId])
   @@index([deletedAt])
   @@map("suppliers")
+}
+
+/// One dated rating event for a supplier (1–5 stars + optional comment). The
+/// supplier's displayed score is the AVERAGE of its ratings, so this is an
+/// append-only history rather than a single editable field.
+model SupplierRating {
+  id            String   @id @default(uuid())
+  condominiumId String
+  supplierId    String
+  score         Int
+  comment       String?
+  // JWT `sub` of the rater. API-owned, never from the request body.
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  supplier    Supplier    @relation(fields: [supplierId], references: [id])
+
+  @@index([supplierId])
+  @@index([condominiumId, supplierId])
+  @@map("supplier_ratings")
 }
 
 /// Condo-editable catalog that classifies EXPENSE transactions (e.g.
