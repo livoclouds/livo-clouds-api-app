@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   DossierConfidentiality,
   DossierEventType,
@@ -13,6 +15,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RbacService } from '../../common/rbac/rbac.service';
+import { StorageService } from '../storage/storage.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateDossierEntryDto } from './dto/create-dossier-entry.dto';
 import { ListDossierEntriesDto } from './dto/list-dossier-entries.dto';
@@ -26,20 +29,52 @@ const AUDIT_ACTION = {
   DOSSIER_DELETED: 'DOSSIER_DELETED',
   DOSSIER_VIEWED: 'DOSSIER_VIEWED',
   DOSSIER_LIST_VIEWED: 'DOSSIER_LIST_VIEWED',
+  DOSSIER_NOTE_ADDED: 'DOSSIER_NOTE_ADDED',
+  DOSSIER_ATTACHMENT_ADDED: 'DOSSIER_ATTACHMENT_ADDED',
+  DOSSIER_ATTACHMENT_REMOVED: 'DOSSIER_ATTACHMENT_REMOVED',
 } as const;
 
 // Maps a dossier view permission to the confidentiality level it unlocks. A
-// user sees a record only when they hold the permission for its level. This is
-// the permission-based analogue of the calendar's role-based visibility filter.
+// user sees a record only when they hold the permission for its level.
 const LEVEL_PERMISSION: Record<DossierConfidentiality, string> = {
   STANDARD: 'residents.dossier.view',
   RESTRICTED: 'residents.dossier.viewRestricted',
   LEGAL_CONFIDENTIAL: 'residents.dossier.viewLegal',
 };
 
+// Evidence attachments — PDF + images, 10 MB/file (under the API's 20 MB global
+// multipart cap, which stays as a backstop).
+const ALLOWED_MIME = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+];
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+// `storageKey` is internal (R2 path) and must NEVER leave the API — views go
+// through a presigned GET. The list/detail include therefore selects only
+// attachment metadata.
 const ENTRY_INCLUDE = {
   events: { orderBy: { createdAt: 'asc' as const } },
+  attachments: {
+    select: {
+      id: true,
+      fileName: true,
+      mimeType: true,
+      fileSizeBytes: true,
+      uploadedAt: true,
+    },
+    orderBy: { uploadedAt: 'asc' as const },
+  },
 } satisfies Prisma.ResidentDossierEntryInclude;
+
+export interface UploadedDossierFile {
+  buffer: Buffer;
+  originalName: string;
+  mimeType: string;
+  size: number;
+}
 
 @Injectable()
 export class ResidentDossierService {
@@ -47,6 +82,7 @@ export class ResidentDossierService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly rbac: RbacService,
+    private readonly storage: StorageService,
   ) {}
 
   // The confidentiality levels the user is allowed to see, derived from their
@@ -58,17 +94,76 @@ export class ResidentDossierService {
     );
   }
 
-  // HIGH-severity entries must carry documentary backing (a reference folio in
-  // phase 2A; file attachments land in 2B). Enforced against the merged result,
-  // since a PATCH may raise severity or clear the folio independently.
-  private assertEvidence(severity: DossierSeverity, referenceFolio: string | null) {
-    if (severity === DossierSeverity.HIGH && !referenceFolio?.trim()) {
+  // HIGH-severity entries must carry documentary backing — a reference folio OR
+  // at least one evidence attachment. Enforced against the merged result.
+  private assertEvidence(
+    severity: DossierSeverity,
+    referenceFolio: string | null,
+    attachmentCount: number,
+  ) {
+    if (
+      severity === DossierSeverity.HIGH &&
+      !referenceFolio?.trim() &&
+      attachmentCount === 0
+    ) {
       throw new UnprocessableEntityException('errors.dossier.evidenceRequired');
     }
   }
 
-  // Allow-listed Prisma payload — the DTO is never spread into `data:` so a
-  // request body can never write condominiumId/residentId/createdBy/deletedAt.
+  private validateFile(file: UploadedDossierFile) {
+    if (!ALLOWED_MIME.includes(file.mimeType)) {
+      throw new BadRequestException('errors.dossier.invalidFileType');
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      throw new BadRequestException('errors.dossier.fileTooLarge');
+    }
+  }
+
+  private sanitizeFileName(name: string): string {
+    const cleaned = (name || 'file')
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/_+/g, '_');
+    return cleaned.slice(-120) || 'file';
+  }
+
+  // Uploads one file to R2 and persists its metadata row. The R2 key carries a
+  // random segment so two files with the same name never collide, and the key is
+  // never derived from client input alone.
+  private async storeAttachment(
+    condominiumId: string,
+    dossierEntryId: string,
+    userId: string,
+    file: UploadedDossierFile,
+  ) {
+    this.validateFile(file);
+    const key = `condominiums/${condominiumId}/resident-dossier/${dossierEntryId}/${randomUUID()}-${this.sanitizeFileName(
+      file.originalName,
+    )}`;
+    await this.storage.uploadFile(key, file.buffer, file.mimeType, {
+      userId,
+      condominiumId,
+      byteSize: file.size,
+    });
+    return this.prisma.dossierAttachment.create({
+      data: {
+        condominiumId,
+        dossierEntryId,
+        fileName: file.originalName.slice(0, 512),
+        storageKey: key,
+        mimeType: file.mimeType,
+        fileSizeBytes: file.size,
+        uploadedBy: userId,
+      },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        fileSizeBytes: true,
+        uploadedAt: true,
+      },
+    });
+  }
+
   private toEntryData(dto: CreateDossierEntryDto | UpdateDossierEntryDto) {
     return {
       category: dto.category,
@@ -94,6 +189,18 @@ export class ResidentDossierService {
     if (!resident) throw new NotFoundException('Resident not found');
   }
 
+  private async loadEntryOrFail(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+  ) {
+    const entry = await this.prisma.residentDossierEntry.findFirst({
+      where: { id: entryId, condominiumId, residentId, deletedAt: null },
+    });
+    if (!entry) throw new NotFoundException('Dossier entry not found');
+    return entry;
+  }
+
   async findAll(
     condominiumId: string,
     residentId: string,
@@ -103,7 +210,6 @@ export class ResidentDossierService {
     await this.assertResident(condominiumId, residentId);
     const levels = await this.allowedLevels(userId);
 
-    // View auditing — sensitive data: record who listed whose dossier.
     await this.audit.log({
       condominiumId,
       userId,
@@ -145,7 +251,6 @@ export class ResidentDossierService {
 
     const levels = await this.allowedLevels(userId);
     if (!levels.includes(entry.confidentiality)) {
-      // The caller may see the resident but not this confidentiality tier.
       throw new ForbiddenException('errors.dossier.forbiddenLevel');
     }
 
@@ -168,13 +273,20 @@ export class ResidentDossierService {
     residentId: string,
     userId: string,
     dto: CreateDossierEntryDto,
+    files: UploadedDossierFile[] = [],
   ) {
     await this.assertResident(condominiumId, residentId);
     const severity = (dto.severity ?? DossierSeverity.LOW) as DossierSeverity;
-    this.assertEvidence(severity, dto.referenceFolio ?? null);
+    files.forEach((f) => this.validateFile(f));
+    // Evidence: HIGH needs a folio OR at least one attachment in this request.
+    this.assertEvidence(severity, dto.referenceFolio ?? null, files.length);
 
-    return this.prisma.$transaction(async (tx) => {
-      const created = await tx.residentDossierEntry.create({
+    // Create the entry + CREATED event + audit atomically; uploads happen after,
+    // keyed by the new entry id. An upload failure surfaces to the caller but
+    // never leaves the entry without its required folio (the folio path is
+    // validated above), so there are no silently-evidence-less HIGH entries.
+    const created = await this.prisma.$transaction(async (tx) => {
+      const entry = await tx.residentDossierEntry.create({
         data: {
           ...this.toEntryData(dto),
           category: dto.category,
@@ -191,9 +303,9 @@ export class ResidentDossierService {
       await tx.dossierEvent.create({
         data: {
           condominiumId,
-          dossierEntryId: created.id,
+          dossierEntryId: entry.id,
           type: DossierEventType.CREATED,
-          toStatus: created.status,
+          toStatus: entry.status,
           createdBy: userId,
         },
       });
@@ -206,17 +318,23 @@ export class ResidentDossierService {
           actionCategory: 'CREATE',
           module: DOSSIER_MODULE,
           entityType: 'ResidentDossierEntry',
-          entityId: created.id,
-          afterState: created,
+          entityId: entry.id,
+          afterState: entry,
           result: 'SUCCESS',
         },
         tx,
       );
 
-      return tx.residentDossierEntry.findFirst({
-        where: { id: created.id },
-        include: ENTRY_INCLUDE,
-      });
+      return entry;
+    });
+
+    for (const file of files) {
+      await this.storeAttachment(condominiumId, created.id, userId, file);
+    }
+
+    return this.prisma.residentDossierEntry.findFirst({
+      where: { id: created.id },
+      include: ENTRY_INCLUDE,
     });
   }
 
@@ -236,7 +354,10 @@ export class ResidentDossierService {
       const nextSeverity = (dto.severity ?? before.severity) as DossierSeverity;
       const nextFolio =
         dto.referenceFolio !== undefined ? dto.referenceFolio : before.referenceFolio;
-      this.assertEvidence(nextSeverity, nextFolio ?? null);
+      const attachmentCount = await tx.dossierAttachment.count({
+        where: { dossierEntryId: entryId },
+      });
+      this.assertEvidence(nextSeverity, nextFolio ?? null, attachmentCount);
 
       const result = await tx.residentDossierEntry.updateMany({
         where: { id: entryId, condominiumId, residentId, deletedAt: null },
@@ -282,6 +403,147 @@ export class ResidentDossierService {
     });
   }
 
+  async addNote(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+    userId: string,
+    note: string,
+  ) {
+    await this.loadEntryOrFail(condominiumId, residentId, entryId);
+    await this.prisma.dossierEvent.create({
+      data: {
+        condominiumId,
+        dossierEntryId: entryId,
+        type: DossierEventType.NOTE_ADDED,
+        note: note.slice(0, 2000),
+        createdBy: userId,
+      },
+    });
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_NOTE_ADDED,
+      actionCategory: 'UPDATE',
+      module: DOSSIER_MODULE,
+      entityType: 'ResidentDossierEntry',
+      entityId: entryId,
+      result: 'SUCCESS',
+    });
+    return this.prisma.residentDossierEntry.findFirst({
+      where: { id: entryId },
+      include: ENTRY_INCLUDE,
+    });
+  }
+
+  async addAttachments(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+    userId: string,
+    files: UploadedDossierFile[],
+  ) {
+    await this.loadEntryOrFail(condominiumId, residentId, entryId);
+    if (files.length === 0) {
+      throw new BadRequestException('errors.dossier.noFile');
+    }
+    for (const file of files) {
+      await this.storeAttachment(condominiumId, entryId, userId, file);
+      await this.prisma.dossierEvent.create({
+        data: {
+          condominiumId,
+          dossierEntryId: entryId,
+          type: DossierEventType.ATTACHMENT_ADDED,
+          note: file.originalName.slice(0, 2000),
+          createdBy: userId,
+        },
+      });
+    }
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_ATTACHMENT_ADDED,
+      actionCategory: 'UPDATE',
+      module: DOSSIER_MODULE,
+      entityType: 'ResidentDossierEntry',
+      entityId: entryId,
+      result: 'SUCCESS',
+    });
+    return this.prisma.residentDossierEntry.findFirst({
+      where: { id: entryId },
+      include: ENTRY_INCLUDE,
+    });
+  }
+
+  // Presigned GET for an attachment — gated by the caller's view tier on the
+  // parent entry, not just `manage`.
+  async getAttachmentUrl(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+    attachmentId: string,
+    userId: string,
+  ): Promise<{ url: string }> {
+    const entry = await this.loadEntryOrFail(condominiumId, residentId, entryId);
+    const levels = await this.allowedLevels(userId);
+    if (!levels.includes(entry.confidentiality)) {
+      throw new ForbiddenException('errors.dossier.forbiddenLevel');
+    }
+    const attachment = await this.prisma.dossierAttachment.findFirst({
+      where: { id: attachmentId, dossierEntryId: entryId, condominiumId },
+    });
+    if (!attachment) throw new NotFoundException('Attachment not found');
+
+    const url = await this.storage.getPresignedUrl(attachment.storageKey, 3600, {
+      userId,
+      condominiumId,
+      byteSize: attachment.fileSizeBytes,
+    });
+    return { url };
+  }
+
+  async removeAttachment(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+    attachmentId: string,
+    userId: string,
+  ) {
+    await this.loadEntryOrFail(condominiumId, residentId, entryId);
+    const attachment = await this.prisma.dossierAttachment.findFirst({
+      where: { id: attachmentId, dossierEntryId: entryId, condominiumId },
+    });
+    if (!attachment) throw new NotFoundException('Attachment not found');
+
+    await this.prisma.dossierAttachment.delete({ where: { id: attachment.id } });
+    // Best-effort R2 cleanup — a storage hiccup must not fail the API response;
+    // the row is already gone and the object becomes orphaned, not leaked.
+    await this.storage
+      .deleteFile(attachment.storageKey, { condominiumId })
+      .catch(() => undefined);
+
+    await this.prisma.dossierEvent.create({
+      data: {
+        condominiumId,
+        dossierEntryId: entryId,
+        type: DossierEventType.ATTACHMENT_REMOVED,
+        note: attachment.fileName,
+        createdBy: userId,
+      },
+    });
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_ATTACHMENT_REMOVED,
+      actionCategory: 'DELETE',
+      module: DOSSIER_MODULE,
+      entityType: 'ResidentDossierEntry',
+      entityId: entryId,
+      result: 'SUCCESS',
+    });
+    return { id: attachmentId, deleted: true };
+  }
+
   async remove(
     condominiumId: string,
     residentId: string,
@@ -294,8 +556,6 @@ export class ResidentDossierService {
       });
       if (!before) throw new NotFoundException('Dossier entry not found');
 
-      // Soft delete — sensitive legal records are retained for forensic recovery;
-      // reads filter `deletedAt` out across the service.
       const result = await tx.residentDossierEntry.updateMany({
         where: { id: entryId, condominiumId, residentId, deletedAt: null },
         data: { deletedAt: new Date(), updatedBy: userId },

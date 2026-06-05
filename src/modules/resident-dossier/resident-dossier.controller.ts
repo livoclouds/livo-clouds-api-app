@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -10,28 +11,79 @@ import {
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import type { FastifyRequest } from 'fastify';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
+import { AddDossierNoteDto } from './dto/add-dossier-note.dto';
 import { CreateDossierEntryDto } from './dto/create-dossier-entry.dto';
 import { ListDossierEntriesDto } from './dto/list-dossier-entries.dto';
 import { UpdateDossierEntryDto } from './dto/update-dossier-entry.dto';
-import { ResidentDossierService } from './resident-dossier.service';
+import {
+  ResidentDossierService,
+  type UploadedDossierFile,
+} from './resident-dossier.service';
 
-// `condominiumId` is set by CondominiumAccessGuard from the session-bound slug;
-// `user` is the authenticated JWT payload. `residentId` is a path param scoped
-// by the same guard's tenant. Every method forwards `user.sub` so reads and
-// writes are audited against the acting user.
-type AuthedRequest = { condominiumId: string; user: JwtPayload };
+type AuthedRequest = FastifyRequest & {
+  condominiumId: string;
+  user: JwtPayload;
+};
 
-// Holding ANY view tier reaches the read endpoints; the service then filters
-// records to the confidentiality levels the caller actually unlocks.
 const ANY_VIEW = [
   'residents.dossier.view',
   'residents.dossier.viewRestricted',
   'residents.dossier.viewLegal',
 ] as const;
+
+// Reads a multipart request into plain fields + buffered files (mirrors the
+// support-ticket controller). Non-multipart bodies fall back to req.body (JSON)
+// so the same handler accepts both. Per-file mime/size limits are enforced in
+// the service; the 20 MB Fastify cap is the global backstop.
+async function parseMultipart(
+  req: FastifyRequest,
+): Promise<{ fields: Record<string, unknown>; files: UploadedDossierFile[] }> {
+  const fields: Record<string, unknown> = {};
+  const files: UploadedDossierFile[] = [];
+  if (req.isMultipart()) {
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) chunks.push(chunk as Buffer);
+        const buffer = Buffer.concat(chunks);
+        files.push({
+          buffer,
+          originalName: part.filename,
+          mimeType: part.mimetype,
+          size: buffer.length,
+        });
+      } else {
+        fields[part.fieldname] = part.value;
+      }
+    }
+  } else {
+    Object.assign(fields, (req.body as Record<string, unknown>) ?? {});
+  }
+  return { fields, files };
+}
+
+async function validateOrThrow<T extends object>(
+  cls: new () => T,
+  fields: Record<string, unknown>,
+): Promise<T> {
+  const dto = plainToInstance(cls, fields, { enableImplicitConversion: true });
+  const errors = await validate(dto, {
+    whitelist: true,
+    forbidUnknownValues: false,
+  });
+  if (errors.length > 0) {
+    const messages = errors.flatMap((e) => Object.values(e.constraints ?? {}));
+    throw new BadRequestException(messages.length ? messages : 'Invalid payload');
+  }
+  return dto;
+}
 
 @ApiTags('Resident Dossier')
 @Controller('condominiums/:condominiumSlug/residents/:residentId/dossier')
@@ -63,13 +115,15 @@ export class ResidentDossierController {
 
   @Post()
   @RequirePermission('residents.dossier.manage')
-  @ApiOperation({ summary: 'Create a dossier entry' })
-  create(
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiOperation({ summary: 'Create a dossier entry (optional evidence files)' })
+  async create(
     @Request() req: AuthedRequest,
     @Param('residentId') residentId: string,
-    @Body() dto: CreateDossierEntryDto,
   ) {
-    return this.service.create(req.condominiumId, residentId, req.user.sub, dto);
+    const { fields, files } = await parseMultipart(req);
+    const dto = await validateOrThrow(CreateDossierEntryDto, fields);
+    return this.service.create(req.condominiumId, residentId, req.user.sub, dto, files);
   }
 
   @Patch(':id')
@@ -82,6 +136,67 @@ export class ResidentDossierController {
     @Body() dto: UpdateDossierEntryDto,
   ) {
     return this.service.update(req.condominiumId, residentId, id, req.user.sub, dto);
+  }
+
+  @Post(':id/notes')
+  @RequirePermission('residents.dossier.manage')
+  @ApiOperation({ summary: 'Add a note to a dossier entry' })
+  addNote(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+    @Body() dto: AddDossierNoteDto,
+  ) {
+    return this.service.addNote(req.condominiumId, residentId, id, req.user.sub, dto.note);
+  }
+
+  @Post(':id/attachments')
+  @RequirePermission('residents.dossier.manage')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Add evidence file(s) to a dossier entry' })
+  async addAttachments(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+  ) {
+    const { files } = await parseMultipart(req);
+    return this.service.addAttachments(req.condominiumId, residentId, id, req.user.sub, files);
+  }
+
+  @Get(':id/attachments/:attachmentId/url')
+  @RequirePermission(...ANY_VIEW)
+  @ApiOperation({ summary: 'Presigned URL to view/download an attachment' })
+  attachmentUrl(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    return this.service.getAttachmentUrl(
+      req.condominiumId,
+      residentId,
+      id,
+      attachmentId,
+      req.user.sub,
+    );
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  @RequirePermission('residents.dossier.manage')
+  @ApiOperation({ summary: 'Remove an evidence attachment' })
+  removeAttachment(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    return this.service.removeAttachment(
+      req.condominiumId,
+      residentId,
+      id,
+      attachmentId,
+      req.user.sub,
+    );
   }
 
   @Delete(':id')

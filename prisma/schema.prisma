@@ -1757,6 +1757,8 @@ enum DossierEventType {
   STATUS_CHANGED
   NOTE_ADDED
   UPDATED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
 }
 
 model ResidentDossierEntry {
@@ -1786,9 +1788,10 @@ model ResidentDossierEntry {
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
 
-  condominium Condominium    @relation(fields: [condominiumId], references: [id])
-  resident    Resident       @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  condominium Condominium         @relation(fields: [condominiumId], references: [id])
+  resident    Resident            @relation(fields: [residentId], references: [id], onDelete: Cascade)
   events      DossierEvent[]
+  attachments DossierAttachment[]
 
   @@index([condominiumId])
   @@index([residentId])
@@ -1796,6 +1799,28 @@ model ResidentDossierEntry {
   @@index([confidentiality])
   @@index([deletedAt])
   @@map("resident_dossier_entries")
+}
+
+// Evidence files for a dossier entry (acta/sentencia PDF, guard report, photos),
+// stored in R2. Only metadata lives here; the bytes are in R2 under `storageKey`,
+// which is NEVER exposed to the client — views go through a presigned GET issued
+// on demand. Phase 2B.
+model DossierAttachment {
+  id             String   @id @default(uuid())
+  condominiumId  String
+  dossierEntryId String
+  fileName       String   @db.VarChar(512)
+  storageKey     String   @db.VarChar(1024)
+  mimeType       String   @db.VarChar(128)
+  fileSizeBytes  Int
+  uploadedBy     String?
+  uploadedAt     DateTime @default(now())
+
+  dossierEntry ResidentDossierEntry @relation(fields: [dossierEntryId], references: [id], onDelete: Cascade)
+
+  @@index([dossierEntryId])
+  @@index([condominiumId])
+  @@map("dossier_attachments")
 }
 
 // Append-only history of a dossier entry (creation, status change, notes). Feeds
