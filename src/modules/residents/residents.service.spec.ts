@@ -1148,7 +1148,7 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
     });
 
     it('skips units already reserved in the condominium (active or soft-deleted)', async () => {
-      prisma.resident.findMany.mockResolvedValueOnce([{ unitNumber: '101' }]);
+      prisma.resident.findMany.mockResolvedValueOnce([{ unitNumberNormalized: '101' }]);
       prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
         Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
       );
@@ -1164,6 +1164,30 @@ describe('ResidentsService — Phase 6 tests & maintainability', () => {
         { row: 1, unitNumber: '101', reason: 'UNIT_EXISTS' },
       ]);
       expect(prisma.resident.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats unit numbers case-insensitively (existing + in-file)', async () => {
+      // "A1" already taken (normalized "a1"); the import has "a1" and a "B2"/"b2"
+      // pair that collides within the file.
+      prisma.resident.findMany.mockResolvedValueOnce([{ unitNumberNormalized: 'a1' }]);
+      prisma.resident.create.mockImplementation(({ data }: { data: { unitNumber: string } }) =>
+        Promise.resolve(makeResident({ id: `res-${data.unitNumber}`, unitNumber: data.unitNumber })),
+      );
+
+      const result = await service.bulkCreate(CONDOMINIUM_ID, USER_ID, [
+        row('a1'),
+        row('B2'),
+        row('b2'),
+      ]);
+
+      expect(result.created).toBe(1); // only "B2"
+      expect(result.skipped).toEqual([
+        { row: 1, unitNumber: 'a1', reason: 'UNIT_EXISTS' },
+        { row: 3, unitNumber: 'b2', reason: 'DUPLICATE_IN_FILE' },
+      ]);
+      // The created resident carries the lower-cased normalized unit.
+      const createArg = prisma.resident.create.mock.calls[0][0];
+      expect(createArg.data.unitNumberNormalized).toBe('b2');
     });
 
     it('skips a unit that repeats within the same upload', async () => {

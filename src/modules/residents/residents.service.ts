@@ -251,7 +251,11 @@ export class ResidentsService {
   async create(condominiumId: string, userId: string, dto: CreateResidentDto) {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.resident.findFirst({
-        where: { condominiumId, unitNumber: dto.unitNumber, deletedAt: null },
+        where: {
+          condominiumId,
+          unitNumberNormalized: normalizeUnit(dto.unitNumber),
+          deletedAt: null,
+        },
       });
 
       if (existing) {
@@ -299,13 +303,14 @@ export class ResidentsService {
     userId: string,
     rows: BulkImportResidentDto[],
   ): Promise<BulkCreateResidentsResult> {
-    // Pre-load every unit number the constraint reserves (no deletedAt filter)
-    // so collisions are detected before the insert is attempted.
+    // Pre-load every normalized unit number the constraint reserves (no
+    // deletedAt filter) so case-insensitive collisions are detected before the
+    // insert is attempted.
     const taken = await this.prisma.resident.findMany({
       where: { condominiumId },
-      select: { unitNumber: true },
+      select: { unitNumberNormalized: true },
     });
-    const takenUnits = new Set(taken.map((r) => r.unitNumber));
+    const takenUnits = new Set(taken.map((r) => r.unitNumberNormalized));
 
     const created: string[] = [];
     const skipped: BulkCreateResidentsResult['skipped'] = [];
@@ -316,16 +321,17 @@ export class ResidentsService {
       const dto = rows[i];
       const row = i + 1; // 1-based, matches the spreadsheet line the user sees
       const unit = dto.unitNumber;
+      const unitKey = normalizeUnit(unit);
 
-      if (takenUnits.has(unit)) {
+      if (takenUnits.has(unitKey)) {
         skipped.push({ row, unitNumber: unit, reason: 'UNIT_EXISTS' });
         continue;
       }
-      if (seenInFile.has(unit)) {
+      if (seenInFile.has(unitKey)) {
         skipped.push({ row, unitNumber: unit, reason: 'DUPLICATE_IN_FILE' });
         continue;
       }
-      seenInFile.add(unit);
+      seenInFile.add(unitKey);
 
       try {
         const resident = await this.prisma.$transaction(async (tx) => {
@@ -384,11 +390,14 @@ export class ResidentsService {
         });
         if (!before) throw new NotFoundException('Resident not found');
 
-        if (dto.unitNumber && dto.unitNumber !== before.unitNumber) {
+        if (
+          dto.unitNumber &&
+          normalizeUnit(dto.unitNumber) !== before.unitNumberNormalized
+        ) {
           const collision = await tx.resident.findFirst({
             where: {
               condominiumId,
-              unitNumber: dto.unitNumber,
+              unitNumberNormalized: normalizeUnit(dto.unitNumber),
               deletedAt: null,
               id: { not: id },
             },
@@ -858,6 +867,7 @@ export class ResidentsService {
     return {
       condominiumId,
       unitNumber: dto.unitNumber,
+      unitNumberNormalized: normalizeUnit(dto.unitNumber),
       residentType: dto.residentType,
       firstName: dto.firstName,
       lastName: dto.lastName,
@@ -974,6 +984,9 @@ export class ResidentsService {
   private toResidentUpdateData(dto: UpdateResidentDto): Prisma.ResidentUpdateInput {
     return {
       unitNumber: dto.unitNumber,
+      // Keep the canonical column in lock-step when the unit number changes;
+      // `undefined` leaves it untouched on updates that don't touch the unit.
+      unitNumberNormalized: dto.unitNumber ? normalizeUnit(dto.unitNumber) : undefined,
       residentType: dto.residentType,
       firstName: dto.firstName,
       lastName: dto.lastName,
@@ -1083,6 +1096,13 @@ function isUniqueConstraintError(err: unknown): boolean {
   return (
     err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
   );
+}
+
+// Canonical form of a unit number for uniqueness: trimmed + lower-cased, so
+// "A1", " a1 " and "a1" all collide. Mirrors the migration's
+// `lower(btrim(unitNumber))` backfill and the web parser's lower-cased dedup.
+function normalizeUnit(unitNumber: string): string {
+  return unitNumber.trim().toLowerCase();
 }
 
 // Builds the Prisma where clause for the residents list. Every filter dimension
