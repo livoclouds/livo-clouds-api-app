@@ -363,6 +363,7 @@ model Condominium {
   r2AccessLogs                     R2AccessLog[]
   visitorLogs                      VisitorLog[]
   pushSubscriptions                PushSubscription[]
+  supportTickets                   SupportTicket[]
 
   @@map("condominiums")
 }
@@ -498,6 +499,8 @@ model User {
   uiPreference              UserUiPreference?
   r2AccessLogs              R2AccessLog[]
   pushSubscriptions         PushSubscription[]
+  helpArticleVotes          HelpArticleVote[]
+  supportTickets            SupportTicket[]
 
   @@unique([condominiumId, email])
   @@index([condominiumId])
@@ -1604,4 +1607,107 @@ model VisitorLog {
   @@index([residentId])
   @@index([deletedAt])
   @@map("visitor_logs")
+}
+
+// ─── Support Center ─────────────────────────────────────────────────────────
+// The knowledge-base CONTENT lives in the web repo (i18n + a typed content
+// registry); the API only persists engagement metrics + support tickets.
+
+enum SupportRequestType {
+  TECHNICAL
+  USAGE
+  IMPROVEMENT
+  DATA_ISSUE
+  ADMIN
+}
+
+enum SupportPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum SupportModule {
+  DASHBOARD
+  IMPORTS
+  RECONCILIATION
+  RESIDENTS
+  REPORTS
+  INVENTORY
+  SETTINGS
+  AUTH
+}
+
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum HelpVoteValue {
+  HELPFUL
+  NOT_HELPFUL
+}
+
+// Global (NOT tenant-scoped) per-article aggregate: one row per article slug.
+// helpfulCount / notHelpfulCount are denormalized totals kept in sync with
+// HelpArticleVote inside a transaction on every vote mutation. Rows are created
+// lazily on first view/feedback — there is no canonical slug list in the API.
+model HelpArticleMetric {
+  slug            String   @id @db.VarChar(160)
+  viewCount       Int      @default(0)
+  helpfulCount    Int      @default(0)
+  notHelpfulCount Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  votes HelpArticleVote[]
+
+  @@index([viewCount]) // ORDER BY viewCount DESC for "popular articles"
+  @@map("help_article_metrics")
+}
+
+// One vote per user per article — lets a user change or retract their vote and
+// blocks ballot stuffing. Deleting the vote (retract) is allowed.
+model HelpArticleVote {
+  id        String        @id @default(uuid())
+  slug      String        @db.VarChar(160)
+  userId    String
+  value     HelpVoteValue
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  article HelpArticleMetric @relation(fields: [slug], references: [slug], onDelete: Cascade)
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([slug, userId])
+  @@index([userId])
+  @@map("help_article_votes")
+}
+
+// Support ticket from the "¿No encontraste lo que buscabas?" form. Tenant-scoped
+// and tied to the creating user — both are API-owned (from the session), never
+// from the request body. screenshotKey is the R2 object key (presigned on read).
+model SupportTicket {
+  id            String              @id @default(uuid())
+  condominiumId String
+  userId        String
+  requestType   SupportRequestType
+  priority      SupportPriority
+  module        SupportModule
+  description   String              @db.VarChar(2000)
+  status        SupportTicketStatus @default(OPEN)
+  screenshotKey String?             @db.VarChar(1024)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@index([condominiumId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("support_tickets")
 }
