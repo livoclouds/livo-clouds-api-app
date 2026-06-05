@@ -66,6 +66,10 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   // write one, so an auditor can export for compliance without edit rights; it
   // still respects the exporter's confidentiality tier in the service.
   p('residents.dossier.export', 'residents', 'export', 'tenant', 'dossier'),
+  // ARCO subject packet (Capa 2D) — the resident's own personal data compiled
+  // for an LFPDPPP "Acceso" request. A compliance action (admin/root), audited
+  // separately from the internal export; the packet excludes LEGAL_CONFIDENTIAL.
+  p('residents.dossier.exportArco', 'residents', 'exportArco', 'tenant', 'dossier'),
 
   p('calendar.read', 'calendar', 'read', 'tenant'),
   p('calendar.manage', 'calendar', 'manage', 'tenant'),

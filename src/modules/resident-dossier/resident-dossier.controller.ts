@@ -126,6 +126,29 @@ export class ResidentDossierController {
     return reply.send(buffer);
   }
 
+  // ARCO subject packet — curated personal-data export for the resident.
+  // Declared before `:id` so the static segment wins.
+  @Get('arco-packet.zip')
+  @RequirePermission('residents.dossier.exportArco')
+  @Throttle({ burst: { limit: 2, ttl: 30_000 }, sustained: { limit: 10, ttl: 300_000 } })
+  @ApiOperation({ summary: "Generate the resident's ARCO subject packet (ZIP)" })
+  async arcoPacket(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const { buffer, fileName } = await this.service.exportArcoPacket(
+      req.condominiumId,
+      residentId,
+      req.user.sub,
+    );
+    reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${fileName}"`)
+      .header('Cache-Control', 'no-store');
+    return reply.send(buffer);
+  }
+
   @Get(':id')
   @RequirePermission(...ANY_VIEW)
   @ApiOperation({ summary: 'Get one dossier entry' })

@@ -388,6 +388,11 @@ model CondominiumSettings {
   businessHours     Json      @default("{}")
   defaultLocale     String    @default("es")
 
+  // Resident dossier (antecedentes) retention — Capa 2D. Days after soft-delete
+  // before the recycle bin is auto-purged. 0 = disabled (opt-in per condominium);
+  // LEGAL category / LEGAL_CONFIDENTIAL entries are never auto-purged regardless.
+  dossierRetentionDays Int @default(0)
+
   // Fees
   totalUnits              Int     @default(1)
   ordinaryFeeAmount       Decimal @default(0) @db.Decimal(12, 2)
