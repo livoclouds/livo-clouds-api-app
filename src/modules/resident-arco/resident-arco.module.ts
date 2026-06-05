@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { ResidentDossierModule } from '../resident-dossier/resident-dossier.module';
+import { CondominiumArcoController } from './condominium-arco.controller';
 import { ResidentArcoController } from './resident-arco.controller';
 import { ResidentArcoService } from './resident-arco.service';
 
@@ -9,7 +10,7 @@ import { ResidentArcoService } from './resident-arco.service';
 // ARCO subject packet (exportArcoPacket).
 @Module({
   imports: [AuditModule, ResidentDossierModule],
-  controllers: [ResidentArcoController],
+  controllers: [ResidentArcoController, CondominiumArcoController],
   providers: [ResidentArcoService],
 })
 export class ResidentArcoModule {}

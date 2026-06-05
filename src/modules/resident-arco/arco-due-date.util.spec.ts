@@ -31,4 +31,17 @@ describe('computeArcoDueDate', () => {
     expect(due.toISOString()).toBe(from.toISOString());
     expect(from.toISOString()).toBe('2026-06-04T00:00:00.000Z');
   });
+
+  it('skips official Mexican public holidays', () => {
+    // From Monday 2026-09-14: weekends-only, +2 business days would land on
+    // Wednesday 2026-09-16 — but that is Independence Day (a holiday), so the
+    // deadline rolls to Thursday 2026-09-17.
+    expect(computeArcoDueDate(new Date('2026-09-14'), 2).toISOString().slice(0, 10)).toBe(
+      '2026-09-17',
+    );
+    // Tuesday 2026-09-15 → +1 business day skips Wed 09-16 (holiday) → Thu 09-17.
+    expect(computeArcoDueDate(new Date('2026-09-15'), 1).toISOString().slice(0, 10)).toBe(
+      '2026-09-17',
+    );
+  });
 });
