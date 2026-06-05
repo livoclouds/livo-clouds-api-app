@@ -81,8 +81,12 @@ export class ExtractionRecipeShapeConstraint
     if (value === undefined || value === null) return true;
     if (typeof value !== 'object' || Array.isArray(value)) return false;
 
-    const recipe = value as { nodes?: unknown; captureId?: unknown };
-    const { nodes, captureId } = recipe;
+    const recipe = value as {
+      nodes?: unknown;
+      captureId?: unknown;
+      captureEndId?: unknown;
+    };
+    const { nodes, captureId, captureEndId } = recipe;
 
     if (!Array.isArray(nodes)) return false;
     if (nodes.length < 1 || nodes.length > MAX_EXTRACTION_RECIPE_NODES) {
@@ -96,8 +100,12 @@ export class ExtractionRecipeShapeConstraint
       if (!isValidNode(node)) return false;
       ids.add((node as { id: string }).id);
     }
-    // The capture target must reference an existing block.
+    // The capture target(s) must reference existing blocks. `captureEndId` is the
+    // optional end of a composite capture range (e.g. "A-305"); absent → single.
     if (!ids.has(captureId)) return false;
+    if (captureEndId !== undefined) {
+      if (typeof captureEndId !== 'string' || !ids.has(captureEndId)) return false;
+    }
 
     try {
       if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_EXTRACTION_RECIPE_BYTES) {
