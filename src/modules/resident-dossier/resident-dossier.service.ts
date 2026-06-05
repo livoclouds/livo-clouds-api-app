@@ -6,6 +6,11 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+// archiver v7 ships CommonJS (`export =`); under this repo's tsconfig
+// (esModuleInterop off) a default import compiles but breaks at runtime, so the
+// CJS import-equals form is the correct one here.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import archiver = require('archiver');
 import {
   DossierConfidentiality,
   DossierEventType,
@@ -32,7 +37,11 @@ const AUDIT_ACTION = {
   DOSSIER_NOTE_ADDED: 'DOSSIER_NOTE_ADDED',
   DOSSIER_ATTACHMENT_ADDED: 'DOSSIER_ATTACHMENT_ADDED',
   DOSSIER_ATTACHMENT_REMOVED: 'DOSSIER_ATTACHMENT_REMOVED',
+  DOSSIER_EXPORT_REQUESTED: 'DOSSIER_EXPORT_REQUESTED',
+  DOSSIER_HARD_DELETED: 'DOSSIER_HARD_DELETED',
 } as const;
+
+const MANAGE_PERMISSION = 'residents.dossier.manage';
 
 // Maps a dossier view permission to the confidentiality level it unlocks. A
 // user sees a record only when they hold the permission for its level.
@@ -208,7 +217,16 @@ export class ResidentDossierService {
     query: ListDossierEntriesDto = {},
   ) {
     await this.assertResident(condominiumId, residentId);
-    const levels = await this.allowedLevels(userId);
+    const perms = await this.rbac.getEffectivePermissions(userId);
+    const levels = (Object.keys(LEVEL_PERMISSION) as DossierConfidentiality[]).filter(
+      (level) => perms.has(LEVEL_PERMISSION[level]),
+    );
+
+    // The recycle bin (soft-deleted entries) is a management surface — only
+    // `manage` may list it. Live entries stay open to any view tier.
+    if (query.deleted && !perms.has(MANAGE_PERMISSION)) {
+      throw new ForbiddenException('errors.dossier.forbiddenLevel');
+    }
 
     await this.audit.log({
       condominiumId,
@@ -224,7 +242,7 @@ export class ResidentDossierService {
     const where: Prisma.ResidentDossierEntryWhereInput = {
       condominiumId,
       residentId,
-      deletedAt: null,
+      deletedAt: query.deleted ? { not: null } : null,
       confidentiality: { in: levels },
       ...(query.category ? { category: query.category } : {}),
       ...(query.status ? { status: query.status } : {}),
@@ -580,5 +598,152 @@ export class ResidentDossierService {
 
       return { id: entryId, deleted: true };
     });
+  }
+
+  // ARCO export — an internal admin tool that bundles a resident's dossier into a
+  // ZIP (a structured `dossier.json` + the evidence files). It respects the
+  // exporter's confidentiality tier: only entries they could view are included,
+  // so an auditor's export carries STANDARD-only. The export itself is audited.
+  async exportDossier(
+    condominiumId: string,
+    residentId: string,
+    userId: string,
+  ): Promise<{ buffer: Buffer; fileName: string; entries: number; attachments: number }> {
+    await this.assertResident(condominiumId, residentId);
+    const levels = await this.allowedLevels(userId);
+
+    const entries = await this.prisma.residentDossierEntry.findMany({
+      where: {
+        condominiumId,
+        residentId,
+        deletedAt: null,
+        confidentiality: { in: levels },
+      },
+      include: {
+        events: { orderBy: { createdAt: 'asc' } },
+        attachments: { orderBy: { uploadedAt: 'asc' } },
+      },
+      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    // Manifest mirrors the entries but strips `storageKey` (internal R2 path) —
+    // the evidence files travel as real bytes under attachments/, never as keys.
+    const manifest = {
+      exportedAt: new Date().toISOString(),
+      condominiumId,
+      residentId,
+      tiers: levels,
+      entries: entries.map((e) => ({
+        ...e,
+        attachments: e.attachments.map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          mimeType: a.mimeType,
+          fileSizeBytes: a.fileSizeBytes,
+          uploadedAt: a.uploadedAt,
+        })),
+      })),
+    };
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const finished = new Promise<void>((resolve, reject) => {
+      archive.on('end', () => resolve());
+      archive.on('warning', (err) => reject(err));
+      archive.on('error', (err) => reject(err));
+    });
+
+    archive.append(JSON.stringify(manifest, null, 2), { name: 'dossier.json' });
+
+    let attachmentCount = 0;
+    for (const entry of entries) {
+      for (const att of entry.attachments) {
+        const buffer = await this.storage.downloadFile(att.storageKey, {
+          userId,
+          condominiumId,
+          byteSize: att.fileSizeBytes,
+        });
+        // Prefix with the attachment id so same-named files never collide.
+        archive.append(buffer, {
+          name: `attachments/${entry.id}/${att.id}-${this.sanitizeFileName(att.fileName)}`,
+        });
+        attachmentCount += 1;
+      }
+    }
+
+    await archive.finalize();
+    await finished;
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_EXPORT_REQUESTED,
+      actionCategory: 'READ',
+      module: DOSSIER_MODULE,
+      entityType: 'Resident',
+      entityId: residentId,
+      afterState: { entries: entries.length, attachments: attachmentCount, tiers: levels },
+      result: 'SUCCESS',
+    });
+
+    return {
+      buffer: Buffer.concat(chunks),
+      fileName: `dossier_${residentId}.zip`,
+      entries: entries.length,
+      attachments: attachmentCount,
+    };
+  }
+
+  // Manual hard-delete (purge) of an already soft-deleted entry. Nothing is ever
+  // purged automatically — this is an explicit human action, audited, and it
+  // removes the R2 evidence too. The entry must be soft-deleted first, and the
+  // caller must be able to view its confidentiality tier.
+  async purge(
+    condominiumId: string,
+    residentId: string,
+    entryId: string,
+    userId: string,
+  ) {
+    const entry = await this.prisma.residentDossierEntry.findFirst({
+      where: { id: entryId, condominiumId, residentId },
+      include: { attachments: true },
+    });
+    if (!entry) throw new NotFoundException('Dossier entry not found');
+
+    const levels = await this.allowedLevels(userId);
+    if (!levels.includes(entry.confidentiality)) {
+      throw new ForbiddenException('errors.dossier.forbiddenLevel');
+    }
+    if (!entry.deletedAt) {
+      throw new UnprocessableEntityException('errors.dossier.mustSoftDeleteFirst');
+    }
+
+    // Best-effort R2 cleanup before the row is gone — a storage hiccup must not
+    // block the purge; the object is orphaned, not leaked.
+    for (const att of entry.attachments) {
+      await this.storage
+        .deleteFile(att.storageKey, { condominiumId })
+        .catch(() => undefined);
+    }
+
+    // Hard delete — cascade removes attachments + events.
+    await this.prisma.residentDossierEntry.delete({ where: { id: entry.id } });
+
+    const { attachments, ...entryScalar } = entry;
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.DOSSIER_HARD_DELETED,
+      actionCategory: 'DELETE',
+      module: DOSSIER_MODULE,
+      entityType: 'ResidentDossierEntry',
+      entityId: entryId,
+      beforeState: { ...entryScalar, attachmentCount: attachments.length },
+      afterState: null,
+      result: 'SUCCESS',
+    });
+
+    return { id: entryId, purged: true };
   }
 }

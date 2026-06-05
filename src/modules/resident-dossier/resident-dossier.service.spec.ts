@@ -26,6 +26,7 @@ function makePrismaMock() {
         ...data,
       })),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      delete: jest.fn().mockResolvedValue({}),
     },
     dossierEvent: { create: jest.fn().mockResolvedValue({}) },
     dossierAttachment: {
@@ -48,6 +49,7 @@ function makeStorage() {
     uploadFile: jest.fn().mockResolvedValue('key'),
     getPresignedUrl: jest.fn().mockResolvedValue('https://signed.example/file'),
     deleteFile: jest.fn().mockResolvedValue(undefined),
+    downloadFile: jest.fn().mockResolvedValue(Buffer.from('PDF-BYTES')),
   };
 }
 
@@ -312,6 +314,108 @@ describe('ResidentDossierService', () => {
       expect(prisma.dossierAttachment.delete).toHaveBeenCalled();
       expect(storage.deleteFile).toHaveBeenCalled();
       expect(prisma.dossierEvent.create.mock.calls[0][0].data.type).toBe('ATTACHMENT_REMOVED');
+    });
+  });
+
+  describe('ARCO export (phase 2C)', () => {
+    it('exports only the levels the caller unlocks (auditor → no legal)', async () => {
+      const { service, prisma } = makeService([
+        'residents.dossier.view',
+        'residents.dossier.viewRestricted',
+      ]);
+      prisma.residentDossierEntry.findMany.mockResolvedValue([]);
+      await service.exportDossier(CONDO, RESIDENT, USER);
+      const where = prisma.residentDossierEntry.findMany.mock.calls[0][0].where;
+      expect(where.confidentiality.in).toEqual(['STANDARD', 'RESTRICTED']);
+      expect(where).toMatchObject({ deletedAt: null });
+    });
+
+    it('bundles evidence files from R2 into a ZIP and audits the export', async () => {
+      const { service, prisma, storage, audit } = makeService();
+      prisma.residentDossierEntry.findMany.mockResolvedValue([
+        {
+          id: ENTRY,
+          confidentiality: 'STANDARD',
+          events: [],
+          attachments: [
+            { id: 'att-1', storageKey: 'k1', fileName: 'acta.pdf', mimeType: 'application/pdf', fileSizeBytes: 9, uploadedAt: new Date() },
+          ],
+        },
+      ]);
+      const out = await service.exportDossier(CONDO, RESIDENT, USER);
+      expect(storage.downloadFile).toHaveBeenCalledWith('k1', expect.anything());
+      expect(out.attachments).toBe(1);
+      expect(out.entries).toBe(1);
+      // ZIP magic bytes "PK".
+      expect(out.buffer.slice(0, 2).toString()).toBe('PK');
+      expect(out.fileName).toContain('.zip');
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'DOSSIER_EXPORT_REQUESTED' }),
+      );
+    });
+  });
+
+  describe('manual purge (phase 2C)', () => {
+    it('refuses to purge an entry that is not soft-deleted yet (422)', async () => {
+      const { service, prisma } = makeService();
+      prisma.residentDossierEntry.findFirst.mockResolvedValue({
+        id: ENTRY,
+        confidentiality: 'STANDARD',
+        deletedAt: null,
+        attachments: [],
+      });
+      await expect(
+        service.purge(CONDO, RESIDENT, ENTRY, USER),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it('forbids purging an entry above the caller tier (403)', async () => {
+      const { service, prisma } = makeService(['residents.dossier.view']); // standard only
+      prisma.residentDossierEntry.findFirst.mockResolvedValue({
+        id: ENTRY,
+        confidentiality: 'LEGAL_CONFIDENTIAL',
+        deletedAt: new Date(),
+        attachments: [],
+      });
+      await expect(
+        service.purge(CONDO, RESIDENT, ENTRY, USER),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('hard-deletes the row + R2 evidence and audits DOSSIER_HARD_DELETED', async () => {
+      const { service, prisma, storage, audit } = makeService();
+      prisma.residentDossierEntry.findFirst.mockResolvedValue({
+        id: ENTRY,
+        confidentiality: 'STANDARD',
+        deletedAt: new Date(),
+        attachments: [{ id: 'att-1', storageKey: 'k1', fileName: 'acta.pdf' }],
+      });
+      const out = await service.purge(CONDO, RESIDENT, ENTRY, USER);
+      expect(storage.deleteFile).toHaveBeenCalledWith('k1', expect.anything());
+      expect(prisma.residentDossierEntry.delete).toHaveBeenCalledWith({ where: { id: ENTRY } });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'DOSSIER_HARD_DELETED' }),
+      );
+      expect(out).toMatchObject({ id: ENTRY, purged: true });
+    });
+  });
+
+  describe('recycle bin (deleted=true)', () => {
+    it('lists soft-deleted entries for a manager', async () => {
+      const { service, prisma } = makeService(); // ALL_PERMS includes manage
+      await service.findAll(CONDO, RESIDENT, USER, { deleted: true } as never);
+      const where = prisma.residentDossierEntry.findMany.mock.calls[0][0].where;
+      expect(where.deletedAt).toEqual({ not: null });
+    });
+
+    it('forbids the recycle bin to a non-manager (auditor)', async () => {
+      const { service } = makeService([
+        'residents.dossier.view',
+        'residents.dossier.viewRestricted',
+      ]);
+      await expect(
+        service.findAll(CONDO, RESIDENT, USER, { deleted: true } as never),
+      ).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
 });

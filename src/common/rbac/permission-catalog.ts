@@ -62,6 +62,10 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   p('residents.dossier.viewRestricted', 'residents', 'viewRestricted', 'tenant', 'dossier'),
   p('residents.dossier.viewLegal', 'residents', 'viewLegal', 'tenant', 'dossier'),
   p('residents.dossier.manage', 'residents', 'manage', 'tenant', 'dossier'),
+  // ARCO export (Capa 2C) — per-resident dossier export. A read verb, not a
+  // write one, so an auditor can export for compliance without edit rights; it
+  // still respects the exporter's confidentiality tier in the service.
+  p('residents.dossier.export', 'residents', 'export', 'tenant', 'dossier'),
 
   p('calendar.read', 'calendar', 'read', 'tenant'),
   p('calendar.manage', 'calendar', 'manage', 'tenant'),
@@ -206,6 +210,8 @@ const CONDOMINO_PERMS = [
   // and cannot manage it. Owner decision 2026-06-05.
   'residents.dossier.view',
   'residents.dossier.viewRestricted',
+  // ARCO export for compliance — read-only, scoped to the auditor's view tier.
+  'residents.dossier.export',
 ];
 
 // Seguridad (GUARD): gate operation. Operates the visitor log; reads the

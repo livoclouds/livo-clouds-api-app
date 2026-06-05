@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsEnum, IsOptional } from 'class-validator';
 import { DossierCategoryDto, DossierStatusDto } from './create-dossier-entry.dto';
 
 export class ListDossierEntriesDto {
@@ -12,4 +13,13 @@ export class ListDossierEntriesDto {
   @IsOptional()
   @IsEnum(DossierStatusDto)
   status?: DossierStatusDto;
+
+  // When true, lists soft-deleted entries (the recycle bin) instead of live
+  // ones — gated to `manage` in the service. Accepts the string "true" from the
+  // query string.
+  @ApiPropertyOptional({ type: Boolean })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  deleted?: boolean;
 }

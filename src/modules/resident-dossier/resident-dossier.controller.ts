@@ -9,12 +9,14 @@ import {
   Post,
   Query,
   Request,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
@@ -100,6 +102,28 @@ export class ResidentDossierController {
     @Query() query: ListDossierEntriesDto,
   ) {
     return this.service.findAll(req.condominiumId, residentId, req.user.sub, query);
+  }
+
+  // ARCO export — must be declared before `:id` so the static segment wins.
+  @Get('export.zip')
+  @RequirePermission('residents.dossier.export')
+  @Throttle({ burst: { limit: 2, ttl: 30_000 }, sustained: { limit: 10, ttl: 300_000 } })
+  @ApiOperation({ summary: 'Export a resident dossier as a ZIP (JSON + evidence)' })
+  async exportZip(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const { buffer, fileName } = await this.service.exportDossier(
+      req.condominiumId,
+      residentId,
+      req.user.sub,
+    );
+    reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${fileName}"`)
+      .header('Cache-Control', 'no-store');
+    return reply.send(buffer);
   }
 
   @Get(':id')
@@ -197,6 +221,17 @@ export class ResidentDossierController {
       attachmentId,
       req.user.sub,
     );
+  }
+
+  @Delete(':id/purge')
+  @RequirePermission('residents.dossier.manage')
+  @ApiOperation({ summary: 'Hard-delete (purge) a soft-deleted dossier entry + its evidence' })
+  purge(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+  ) {
+    return this.service.purge(req.condominiumId, residentId, id, req.user.sub);
   }
 
   @Delete(':id')
