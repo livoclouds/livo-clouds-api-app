@@ -39,6 +39,7 @@ import { StorageModule } from './modules/storage/storage.module';
 import { StorageAdminModule } from './modules/storage-admin/storage-admin.module';
 import { PlatformUsersModule } from './modules/platform-users/platform-users.module';
 import { ResidentsModule } from './modules/residents/residents.module';
+import { ResidentDossierModule } from './modules/resident-dossier/resident-dossier.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
@@ -94,6 +95,7 @@ import { SupportModule } from './modules/support/support.module';
     PettyCashModule,
     ReportsModule,
     ResidentsModule,
+    ResidentDossierModule,
     SettingsModule,
     UsersModule,
     RolesModule,
