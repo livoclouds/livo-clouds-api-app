@@ -13,5 +13,8 @@ import { DossierRetentionService } from './resident-dossier-retention.service';
   imports: [AuditModule, CollectionModule],
   controllers: [ResidentDossierController],
   providers: [ResidentDossierService, DossierRetentionService],
+  // Exported so the ARCO request tracker (Capa 2F) can reuse exportArcoPacket
+  // for an ACCESS-type request.
+  exports: [ResidentDossierService],
 })
 export class ResidentDossierModule {}
