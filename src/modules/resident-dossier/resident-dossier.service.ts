@@ -22,6 +22,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { StorageService } from '../storage/storage.service';
 import { AuditService } from '../audit/audit.service';
+import { CollectionService } from '../collection/collection.service';
 import { CreateDossierEntryDto } from './dto/create-dossier-entry.dto';
 import { ListDossierEntriesDto } from './dto/list-dossier-entries.dto';
 import { UpdateDossierEntryDto } from './dto/update-dossier-entry.dto';
@@ -93,6 +94,7 @@ export class ResidentDossierService {
     private readonly audit: AuditService,
     private readonly rbac: RbacService,
     private readonly storage: StorageService,
+    private readonly collection: CollectionService,
   ) {}
 
   // The confidentiality levels the user is allowed to see, derived from their
@@ -704,6 +706,97 @@ export class ResidentDossierService {
       .replace(/"/g, '&quot;');
   }
 
+  // ─── Cross-module ARCO compilation (Capa 2E) ────────────────────────────────
+  // Each method returns a REDACTED projection via an explicit `select` allow-list,
+  // so third-party PII can never leak in: counterpart phone/name/message content,
+  // visitor identity (name/plate/notes), and raw bank text (description/payerName/
+  // unitNumbersDetected) are all excluded by construction, not by post-filtering.
+
+  private async compileFinancials(condominiumId: string, residentId: string) {
+    // Reuse the collection account statement for the summary + monthly records —
+    // it partitions split payments correctly. Don't reinvent financial logic.
+    const statement = await this.collection.getAccountStatement(condominiumId, residentId);
+    const allocations = await this.prisma.paymentAllocation.findMany({
+      where: { condominiumId, residentId },
+      select: {
+        paymentPeriodYear: true,
+        paymentPeriodMonth: true,
+        allocatedAmount: true,
+        unitNumber: true,
+      },
+      orderBy: [{ paymentPeriodYear: 'desc' }, { paymentPeriodMonth: 'desc' }],
+    });
+    // Redacted transaction projection — amounts/dates/concept only. NEVER
+    // `description`, `payerName`, or `unitNumbersDetected` (third party / other units).
+    const transactions = await this.prisma.transaction.findMany({
+      where: { condominiumId, residentId },
+      select: {
+        transactionDate: true,
+        credits: true,
+        charges: true,
+        paymentConcept: true,
+        paymentPeriodYear: true,
+        paymentPeriodMonth: true,
+        classificationStatus: true,
+      },
+      orderBy: { transactionDate: 'desc' },
+    });
+    return {
+      summary: statement.summary,
+      collectionRecords: statement.collectionRecords,
+      allocations,
+      transactions,
+    };
+  }
+
+  private async compileCommunications(condominiumId: string, residentId: string) {
+    // Facts only: dates, status, message count — NO content, NO counterpart
+    // phone/name.
+    const conversations = await this.prisma.whatsAppConversation.findMany({
+      where: { condominiumId, residentId },
+      select: {
+        createdAt: true,
+        lastInboundAt: true,
+        lastOutboundAt: true,
+        status: true,
+        _count: { select: { messages: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return conversations.map((c) => ({
+      createdAt: c.createdAt,
+      lastInboundAt: c.lastInboundAt,
+      lastOutboundAt: c.lastOutboundAt,
+      status: c.status,
+      messageCount: c._count.messages,
+    }));
+  }
+
+  private async compileVisits(condominiumId: string, residentId: string) {
+    // Redacted facts: visit timestamps only — NO visitorName, plate, or notes.
+    return this.prisma.visitorLog.findMany({
+      where: { condominiumId, residentId, deletedAt: null },
+      select: { checkInAt: true, checkOutAt: true },
+      orderBy: { checkInAt: 'desc' },
+    });
+  }
+
+  private async compileCalendar(condominiumId: string, residentId: string) {
+    // The subject's own bookings/events — NO `metadata` (may list third-party guests).
+    return this.prisma.calendarEvent.findMany({
+      where: { condominiumId, residentId },
+      select: {
+        title: true,
+        eventType: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        unitNumber: true,
+      },
+      orderBy: { startDate: 'desc' },
+    });
+  }
+
   // ARCO subject packet (Capa 2D) — a CURATED export of the resident's own
   // personal data for an LFPDPPP "Acceso" request. Distinct from the internal
   // export: it compiles the resident profile + sub-entities (vehicles, pets,
@@ -749,6 +842,19 @@ export class ResidentDossierService {
       },
     });
 
+    // Cross-module compilation (Capa 2E) — every section is already redacted.
+    const [finanzas, comunicaciones, visitas, calendario] = await Promise.all([
+      this.compileFinancials(condominiumId, residentId),
+      this.compileCommunications(condominiumId, residentId),
+      this.compileVisits(condominiumId, residentId),
+      this.compileCalendar(condominiumId, residentId),
+    ]);
+
+    const redactionNotice =
+      'Por protección de datos de terceros se omiten las identidades de contactos ' +
+      'y visitantes, el contenido de los mensajes y el texto bancario en bruto; ' +
+      'se conservan los hechos (fechas, montos, conteos).';
+
     const data = {
       generatedAt: new Date().toISOString(),
       condominiumId,
@@ -775,7 +881,11 @@ export class ResidentDossierService {
           uploadedAt: a.uploadedAt,
         })),
       })),
-      notice: { reservedLegalConfidential },
+      finanzas,
+      comunicaciones,
+      visitas,
+      calendario,
+      notice: { reservedLegalConfidential, redaction: redactionNotice },
     };
 
     const reservedNotice =
@@ -799,8 +909,13 @@ export class ResidentDossierService {
 <li>Mascotas: ${resident.pets.length}</li>
 <li>Residentes adicionales: ${resident.additionalResidents.length}</li>
 <li>Antecedentes incluidos: ${entries.length}</li>
+<li>Movimientos financieros: ${finanzas.transactions.length} · meses registrados: ${finanzas.collectionRecords.length}</li>
+<li>Conversaciones (solo hechos): ${comunicaciones.length}</li>
+<li>Visitas (solo fechas): ${visitas.length}</li>
+<li>Eventos de calendario: ${calendario.length}</li>
 </ul>
 ${reservedNotice}
+<p><strong>Protección de datos de terceros:</strong> ${this.escapeHtml(redactionNotice)}</p>
 <p>El detalle estructurado está en <code>datos.json</code>; la evidencia documental, en la carpeta <code>evidencia/</code>.</p>
 </body></html>`;
 
@@ -843,6 +958,11 @@ ${reservedNotice}
       afterState: {
         entries: entries.length,
         reservedLegalConfidential,
+        transactions: finanzas.transactions.length,
+        collectionRecords: finanzas.collectionRecords.length,
+        conversations: comunicaciones.length,
+        visits: visitas.length,
+        calendarEvents: calendario.length,
       },
       result: 'SUCCESS',
     });
