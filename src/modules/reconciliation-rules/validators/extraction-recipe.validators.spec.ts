@@ -36,6 +36,24 @@ describe('ExtractionRecipeShapeConstraint', () => {
     expect(c.validate(recipe)).toBe(true);
   });
 
+  it('accepts a capture range whose captureEndId references a node', () => {
+    const recipe = {
+      nodes: [node('a', 'letters'), node('b', 'separator'), node('c', 'digits')],
+      captureId: 'a',
+      captureEndId: 'c',
+    };
+    expect(c.validate(recipe)).toBe(true);
+  });
+
+  it('rejects a captureEndId that references no node', () => {
+    const recipe = {
+      nodes: [node('a', 'digits')],
+      captureId: 'a',
+      captureEndId: 'zzz',
+    };
+    expect(c.validate(recipe)).toBe(false);
+  });
+
   it('rejects a non-object', () => {
     expect(c.validate('nope')).toBe(false);
     expect(c.validate(42)).toBe(false);
