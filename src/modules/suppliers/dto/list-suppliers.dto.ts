@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
@@ -10,7 +11,12 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { SupplierStatusDto, SupplierTypeDto } from './create-supplier.dto';
+import {
+  SupplierCategoryDto,
+  SupplierEngagementDto,
+  SupplierStatusDto,
+  SupplierTypeDto,
+} from './create-supplier.dto';
 
 // Allow-list of sortable columns. The service maps each value to a fixed Prisma
 // `orderBy` expression — a client-supplied `sortBy` is never interpolated into
@@ -74,6 +80,33 @@ export class ListSuppliersDto {
   @IsOptional()
   @IsEnum(SupplierStatusDto)
   status?: SupplierStatusDto;
+
+  @ApiPropertyOptional({
+    enum: SupplierCategoryDto,
+    description: 'Exact match on the coarse directory category.',
+  })
+  @IsOptional()
+  @IsEnum(SupplierCategoryDto)
+  category?: SupplierCategoryDto;
+
+  @ApiPropertyOptional({
+    enum: SupplierEngagementDto,
+    description: 'Exact match on the engagement type (FIXED/OCCASIONAL).',
+  })
+  @IsOptional()
+  @IsEnum(SupplierEngagementDto)
+  engagementType?: SupplierEngagementDto;
+
+  @ApiPropertyOptional({
+    type: Boolean,
+    default: false,
+    description:
+      'When true, returns archived (soft-deleted) suppliers instead of active ones.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  archived?: boolean;
 
   @ApiPropertyOptional({ enum: SUPPLIER_SORT_FIELDS, default: 'supplierName' })
   @IsOptional()

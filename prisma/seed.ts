@@ -797,23 +797,49 @@ async function main() {
   console.log(`✅ Inventory Items: ${totalItems}`);
 
   // ─── Suppliers ─────────────────────────────────────────────────────────────
-  const SUPPLIER_SEED: Prisma.SupplierCreateManyInput[] = [
-    { condominiumId: '', supplierName: 'Constructora Vidal Hermanos', type: 'MAINTENANCE', contactName: 'Luis Vidal', email: 'lvidal@vidal.mx', phone: '555-201-4432', address: 'Av. Industrial 330', taxId: 'CVH220801VH3', registrationDate: new Date('2026-05-06'), status: 'ACTIVE' },
-    { condominiumId: '', supplierName: 'Seguridad Privada Escudo', type: 'SECURITY', contactName: 'María Escobedo', email: 'mescobedo@escudo.mx', phone: '555-301-7890', address: 'Blvd. Seguridad 12', taxId: 'SPE190515SE1', registrationDate: new Date('2026-04-29'), status: 'ACTIVE' },
-    { condominiumId: '', supplierName: 'Electro Soluciones del Centro', type: 'ELECTRICAL', contactName: 'Jorge Ramírez', email: 'jramirez@electrosol.mx', phone: '555-440-1122', address: 'Calle Voltio 45', taxId: 'ESC210310EC7', registrationDate: new Date('2026-03-18'), status: 'ACTIVE' },
-    { condominiumId: '', supplierName: 'Plomería Aqua Express', type: 'PLUMBING', contactName: 'Sofía Marín', email: 'smarin@aquaexpress.mx', phone: '555-555-9090', address: 'Av. Tubería 88', taxId: 'PAE200722PE5', registrationDate: new Date('2026-02-11'), status: 'PENDING' },
-    { condominiumId: '', supplierName: 'Jardines y Paisajes Verde Vivo', type: 'LANDSCAPING', contactName: 'Andrés Lozano', email: 'alozano@verdevivo.mx', phone: '555-612-3344', address: 'Camino Real 210', taxId: 'JPV180905VV2', registrationDate: new Date('2025-11-30'), status: 'INACTIVE' },
-    { condominiumId: '', supplierName: 'Limpieza Integral Brillo Total', type: 'CLEANING', contactName: 'Patricia Núñez', email: 'pnunez@brillototal.mx', phone: '555-778-5566', address: 'Privada Aseo 9', taxId: 'LIB220114BT8', registrationDate: new Date('2026-01-20'), status: 'ACTIVE' },
+  // `type` is the legacy fine-grained enum kept for the dashboard + reconciliation;
+  // `category`/`engagementType` drive the new Proveedores directory. `ratings` is
+  // a seed-only helper (not a column) used to create the SupplierRating history.
+  type SupplierSeed = Prisma.SupplierCreateManyInput & { ratings?: number[] };
+  const SUPPLIER_SEED: SupplierSeed[] = [
+    // ── Proveedores fijos (recurrentes) ──────────────────────────────────────
+    { condominiumId: '', supplierName: 'Administradora Profesional del Valle', type: 'ADMINISTRATION', category: 'ADMINISTRATION', engagementType: 'FIXED', contactName: 'Laura Pérez', email: 'admin@apvalle.mx', phone: '33 3390 1100', whatsapp: '33 3390 1100', address: 'Av. Central 100, Zapopan', availability: 'Lun–Vie · 9:00–18:00', servesResidents: false, references: 'Administradora del coto desde la entrega.', taxId: 'APV200101QP4', registrationDate: new Date('2021-01-15'), status: 'ACTIVE', ratings: [5, 4] },
+    { condominiumId: '', supplierName: 'Seguridad Privada Escudo', type: 'SECURITY', category: 'SURVEILLANCE', engagementType: 'FIXED', contactName: 'Ing. Raúl Méndez', email: 'operaciones@escudoseg.mx', phone: '33 2042 7781', whatsapp: '33 2042 7781', address: 'Calle Hidalgo 145, Zapopan', availability: '24/7 · 3 turnos', servesResidents: true, references: 'También presta servicio a 2 cotos vecinos del fraccionamiento.', taxId: 'SPE200615KL9', registrationDate: new Date('2020-06-14'), status: 'ACTIVE', ratings: [5, 4, 5] },
+    { condominiumId: '', supplierName: 'Jardines y Paisajes Verde Vivo', type: 'LANDSCAPING', category: 'GARDENING', engagementType: 'FIXED', contactName: 'Laura Pérez', email: 'hola@jardinesdelvalle.mx', phone: '33 3390 1102', whatsapp: '33 3390 1102', address: 'Periférico Sur 880, Tlaquepaque', availability: 'Mar y Vie · 7:00–13:00', servesResidents: true, references: 'Excelente reputación, atiende jardines privados de varios vecinos.', taxId: 'JDV220301QP4', registrationDate: new Date('2022-02-28'), status: 'ACTIVE', ratings: [5, 5] },
+    { condominiumId: '', supplierName: 'Limpieza Integral Brillo Total', type: 'CLEANING', category: 'CLEANING', engagementType: 'FIXED', contactName: 'Patricia Núñez', email: 'pnunez@brillototal.mx', phone: '555-778-5566', whatsapp: '555-778-5566', address: 'Privada Aseo 9', availability: 'Lun–Sáb · 6:00–14:00', servesResidents: false, references: null, taxId: 'LIB220114BT8', registrationDate: new Date('2023-01-20'), status: 'ACTIVE', ratings: [4, 5, 4] },
+    { condominiumId: '', supplierName: 'Mantenimiento General del Coto', type: 'MAINTENANCE', category: 'MAINTENANCE', engagementType: 'FIXED', contactName: 'Luis Vidal', email: 'mantenimiento@mgcoto.mx', phone: '555-201-4400', whatsapp: '555-201-4400', address: 'Av. Industrial 330', availability: 'Lun–Vie · 8:00–17:00', servesResidents: false, references: 'Cuadrilla fija para reparaciones generales.', taxId: 'MGC210801VH3', registrationDate: new Date('2022-09-01'), status: 'ACTIVE', ratings: [4, 5] },
+    // ── Proveedores eventuales ───────────────────────────────────────────────
+    { condominiumId: '', supplierName: 'Constructora Vidal Hermanos', type: 'MAINTENANCE', category: 'MAINTENANCE', engagementType: 'OCCASIONAL', contactName: 'Luis Vidal', email: 'lvidal@vidal.mx', phone: '555-201-4432', address: 'Av. Industrial 330', taxId: 'CVH220801VH3', registrationDate: new Date('2024-05-06'), status: 'ACTIVE', ratings: [4, 4] },
+    { condominiumId: '', supplierName: 'Electro Soluciones del Centro', type: 'ELECTRICAL', category: 'MAINTENANCE', engagementType: 'OCCASIONAL', contactName: 'Jorge Ramírez', email: 'jramirez@electrosol.mx', phone: '555-440-1122', address: 'Calle Voltio 45', taxId: 'ESC210310EC7', registrationDate: new Date('2024-03-18'), status: 'ACTIVE', ratings: [5, 4] },
+    { condominiumId: '', supplierName: 'Plomería Aqua Express', type: 'PLUMBING', category: 'MAINTENANCE', engagementType: 'OCCASIONAL', contactName: 'Sofía Marín', email: 'smarin@aquaexpress.mx', phone: '555-555-9090', address: 'Av. Tubería 88', taxId: 'PAE200722PE5', registrationDate: new Date('2024-02-11'), status: 'PENDING', ratings: [3, 4] },
+    { condominiumId: '', supplierName: 'Fumigaciones Aguilar', type: 'MAINTENANCE', category: 'SERVICES', engagementType: 'OCCASIONAL', contactName: 'Pedro Aguilar', email: 'contacto@fumiaguilar.mx', phone: '555-330-2211', address: 'Calle Pinos 14', taxId: 'FAG230510AG1', registrationDate: new Date('2023-09-10'), status: 'ACTIVE', ratings: [4, 3] },
+    { condominiumId: '', supplierName: 'Herrería y Soldadura Núñez', type: 'MAINTENANCE', category: 'MAINTENANCE', engagementType: 'OCCASIONAL', contactName: 'Armando Núñez', email: 'armando@herrerianunez.mx', phone: '555-880-4567', address: 'Av. Forja 77', taxId: 'HSN240115NZ2', registrationDate: new Date('2024-03-03'), status: 'ACTIVE', ratings: [5] },
   ];
 
   let totalSuppliers = 0;
+  let totalSupplierRatings = 0;
   for (let ci = 0; ci < condominiums.length; ci++) {
     const condoId = condominiums[ci].id;
-    const rows = SUPPLIER_SEED.map((s) => ({ ...s, condominiumId: condoId }));
-    await prisma.supplier.createMany({ data: rows });
-    totalSuppliers += rows.length;
+    for (const { ratings, ...data } of SUPPLIER_SEED) {
+      const created = await prisma.supplier.create({
+        data: { ...data, condominiumId: condoId },
+      });
+      totalSuppliers += 1;
+      if (ratings?.length) {
+        await prisma.supplierRating.createMany({
+          data: ratings.map((score) => ({
+            condominiumId: condoId,
+            supplierId: created.id,
+            score,
+          })),
+        });
+        totalSupplierRatings += ratings.length;
+      }
+    }
   }
-  console.log(`✅ Suppliers: ${totalSuppliers}`);
+  console.log(
+    `✅ Suppliers: ${totalSuppliers} (ratings: ${totalSupplierRatings})`,
+  );
 
   // ─── Expense Categories + EXPENSE reconciliation rules ─────────────────────
   // The income side keeps the hardcoded paymentConcept enum; expenses are

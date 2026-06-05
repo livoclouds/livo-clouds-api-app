@@ -16,6 +16,7 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { JwtPayload } from '../../common/types';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
+import { RateSupplierDto } from './dto/rate-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { SuppliersService } from './suppliers.service';
 
@@ -70,8 +71,40 @@ export class SuppliersController {
 
   @Delete(':id')
   @RequirePermission('suppliers.manage')
-  @ApiOperation({ summary: 'Delete supplier' })
+  @ApiOperation({ summary: 'Archive (soft-delete) supplier' })
   remove(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.suppliersService.remove(req.condominiumId, req.user.sub, id);
+  }
+
+  @Post(':id/restore')
+  @RequirePermission('suppliers.manage')
+  @ApiOperation({ summary: 'Restore an archived supplier' })
+  restore(@Request() req: AuthedRequest, @Param('id') id: string) {
+    return this.suppliersService.restore(req.condominiumId, req.user.sub, id);
+  }
+
+  @Get(':id/ratings')
+  @ApiOperation({ summary: 'List a supplier rating history' })
+  listRatings(
+    @Request() req: { condominiumId: string },
+    @Param('id') id: string,
+  ) {
+    return this.suppliersService.listRatings(req.condominiumId, id);
+  }
+
+  @Post(':id/ratings')
+  @RequirePermission('suppliers.manage')
+  @ApiOperation({ summary: 'Rate a supplier (appends to its history)' })
+  rate(
+    @Request() req: AuthedRequest,
+    @Param('id') id: string,
+    @Body() dto: RateSupplierDto,
+  ) {
+    return this.suppliersService.addRating(
+      req.condominiumId,
+      req.user.sub,
+      id,
+      dto,
+    );
   }
 }
