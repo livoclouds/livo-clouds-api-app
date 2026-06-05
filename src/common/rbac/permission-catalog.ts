@@ -54,6 +54,14 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
 
   p('residents.read', 'residents', 'read', 'tenant'),
   p('residents.manage', 'residents', 'manage', 'tenant'),
+  // Resident dossier (antecedentes) — Capa 2. Three view tiers gate per-record
+  // confidentiality (STANDARD / RESTRICTED / LEGAL_CONFIDENTIAL); `manage`
+  // covers create/edit/delete. Distinct action verbs (not `read`) keep them out
+  // of the broad READ() sweep so each role is granted them explicitly.
+  p('residents.dossier.view', 'residents', 'view', 'tenant', 'dossier'),
+  p('residents.dossier.viewRestricted', 'residents', 'viewRestricted', 'tenant', 'dossier'),
+  p('residents.dossier.viewLegal', 'residents', 'viewLegal', 'tenant', 'dossier'),
+  p('residents.dossier.manage', 'residents', 'manage', 'tenant', 'dossier'),
 
   p('calendar.read', 'calendar', 'read', 'tenant'),
   p('calendar.manage', 'calendar', 'manage', 'tenant'),
@@ -175,6 +183,9 @@ const ADMIN_PERMS = ALL_TENANT.filter(
 // management, no condominium creation.
 const SUPERVISOR_PERMS = [
   ...READ('tenant'),
+  // Dossier: standard + restricted (NOT legal-confidential, NOT manage).
+  'residents.dossier.view',
+  'residents.dossier.viewRestricted',
   'files.read',
   'audit.read',
   'platform.condominiums.read',
@@ -191,6 +202,10 @@ const CONDOMINO_PERMS = [
   'reports.read',
   'calendar.read',
   'notifications.read',
+  // Auditor sees the dossier (standard + restricted) but NOT legal-confidential,
+  // and cannot manage it. Owner decision 2026-06-05.
+  'residents.dossier.view',
+  'residents.dossier.viewRestricted',
 ];
 
 // Seguridad (GUARD): gate operation. Operates the visitor log; reads the

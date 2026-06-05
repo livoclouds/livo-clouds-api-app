@@ -73,7 +73,27 @@ describe('permission-catalog', () => {
     it('Resident/Condomino is read-only', () => {
       const condo = presetForRole('READ_ONLY');
       expect(condo).toContain('dashboard.read');
-      expect(condo.every((k) => k.endsWith('.read'))).toBe(true);
+      // Read-only = no mutating actions. (Dossier introduced read-tier verbs
+      // `view`/`viewRestricted`/`viewLegal` that gate confidentiality, so the
+      // invariant is "no write verb", not a literal `.read` suffix.)
+      const WRITE_ACTIONS = [
+        'manage',
+        'create',
+        'update',
+        'delete',
+        'send',
+        'upload',
+        'override',
+      ];
+      expect(
+        condo.every((k) => !WRITE_ACTIONS.some((a) => k.endsWith(`.${a}`))),
+      ).toBe(true);
+      // Auditor sees the dossier (standard + restricted) but never the
+      // legal-confidential tier, and cannot manage it.
+      expect(condo).toContain('residents.dossier.view');
+      expect(condo).toContain('residents.dossier.viewRestricted');
+      expect(condo).not.toContain('residents.dossier.viewLegal');
+      expect(condo).not.toContain('residents.dossier.manage');
     });
   });
 

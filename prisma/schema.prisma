@@ -364,6 +364,7 @@ model Condominium {
   visitorLogs                      VisitorLog[]
   pushSubscriptions                PushSubscription[]
   supportTickets                   SupportTicket[]
+  residentDossierEntries           ResidentDossierEntry[]
 
   @@map("condominiums")
 }
@@ -378,14 +379,14 @@ model CondominiumSettings {
   logoUrl           String?
   logoUpdatedAt     DateTime?
   logoUpdatedByName String?
-  timezone      String  @default("America/Monterrey")
-  country       String  @default("MX")
-  currency      String  @default("MXN")
-  address       String?
-  adminPhone    String?
-  contactEmail  String?
-  businessHours Json    @default("{}")
-  defaultLocale String  @default("es")
+  timezone          String    @default("America/Monterrey")
+  country           String    @default("MX")
+  currency          String    @default("MXN")
+  address           String?
+  adminPhone        String?
+  contactEmail      String?
+  businessHours     Json      @default("{}")
+  defaultLocale     String    @default("es")
 
   // Fees
   totalUnits              Int     @default(1)
@@ -438,33 +439,33 @@ enum UiLocale {
 }
 
 model User {
-  id              String    @id @default(uuid())
-  condominiumId   String?
-  email           String
-  passwordHash    String
+  id                    String    @id @default(uuid())
+  condominiumId         String?
+  email                 String
+  passwordHash          String
   // Dynamic RBAC (RBAC Phase 2). The assigned Role row is the single source of
   // truth for role + permissions; the legacy `role` enum column was removed. The
   // role key (Role.key) and effective permissions are read via roleRef.
-  roleId          String?
-  firstName       String
-  lastName        String
-  phone           String?
-  avatarUrl       String?
-  sessionDuration Int       @default(8)
+  roleId                String?
+  firstName             String
+  lastName              String
+  phone                 String?
+  avatarUrl             String?
+  sessionDuration       Int       @default(8)
   // Minutes of inactivity before the in-app screen lock engages. Per-user so an
   // office shared workstation (admin) can be tighter than a low-risk profile.
   // Enforced server-side via RefreshToken.lastActivityAt — see InactivityLockGuard.
-  inactivityLockMinutes Int @default(15)
-  isActive        Boolean   @default(true)
+  inactivityLockMinutes Int       @default(15)
+  isActive              Boolean   @default(true)
   // Per-user permission overrides (RBAC Phase 3). NULL = inherit the assigned
   // role's permissions; a JSON array of catalog keys = the explicit effective
   // set for this user (independent of the role). Resolved by
   // resolveEffectivePermissions: overrides ?? roleRef.permissions.
-  permissionOverrides Json?
-  lastLoginAt     DateTime?
-  deletedAt       DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  permissionOverrides   Json?
+  lastLoginAt           DateTime?
+  deletedAt             DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   // Dashboard onboarding tour — per-user progress so it survives cookie/storage
   // clears and follows the user across devices. onboardingStep stores the last
@@ -581,29 +582,29 @@ model PasswordResetToken {
 }
 
 model Resident {
-  id             String        @id @default(uuid())
-  condominiumId  String
-  unitNumber     String
+  id                   String        @id @default(uuid())
+  condominiumId        String
+  unitNumber           String
   // Canonical (trimmed, lower-cased) unit number. Uniqueness is enforced on
   // this so "A1" and "a1" are the same unit within a condominium; `unitNumber`
   // keeps the original casing for display. Always set by the service.
   unitNumberNormalized String
-  residentType   ResidentType  @default(OWNER)
-  firstName      String
-  lastName       String
-  phone          String?
-  secondaryPhone String?
-  email          String?
-  paymentStatus  PaymentStatus @default(CURRENT)
-  debt           Decimal       @default(0) @db.Decimal(12, 2)
-  monthlyFee     Decimal       @default(0) @db.Decimal(12, 2)
-  parkingSpots   Int           @default(0)
-  houseModel     String?
-  documentation  Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
-  notes          String?
-  deletedAt      DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  residentType         ResidentType  @default(OWNER)
+  firstName            String
+  lastName             String
+  phone                String?
+  secondaryPhone       String?
+  email                String?
+  paymentStatus        PaymentStatus @default(CURRENT)
+  debt                 Decimal       @default(0) @db.Decimal(12, 2)
+  monthlyFee           Decimal       @default(0) @db.Decimal(12, 2)
+  parkingSpots         Int           @default(0)
+  houseModel           String?
+  documentation        Json          @default("{\"propertyTax\":false,\"titleDeed\":false,\"ownerDocumentation\":false,\"nationalId\":false,\"proofOfAddress\":false}")
+  notes                String?
+  deletedAt            DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 
   condominium                      Condominium                       @relation(fields: [condominiumId], references: [id])
   vehicles                         Vehicle[]
@@ -616,6 +617,7 @@ model Resident {
   calendarEvents                   CalendarEvent[]
   whatsAppConversations            WhatsAppConversation[]
   visitorLogs                      VisitorLog[]
+  dossierEntries                   ResidentDossierEntry[]
 
   @@unique([condominiumId, unitNumberNormalized])
   @@index([condominiumId])
@@ -783,29 +785,29 @@ model InventoryItem {
 }
 
 model Supplier {
-  id               String         @id @default(uuid())
-  condominiumId    String
-  supplierName     String
-  type             SupplierType
-  contactName      String?
-  email            String?
-  phone            String?
-  address          String?
-  taxId            String?
+  id                       String         @id @default(uuid())
+  condominiumId            String
+  supplierName             String
+  type                     SupplierType
+  contactName              String?
+  email                    String?
+  phone                    String?
+  address                  String?
+  taxId                    String?
   // When set, classifying an EXPENSE to this supplier auto-fills this category
   // (in the review modal and via EXPENSE reconciliation rules). Optional.
   defaultExpenseCategoryId String?
-  registrationDate DateTime?      @db.Date
-  status           SupplierStatus @default(ACTIVE)
-  notes            String?
-  deletedAt        DateTime?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  registrationDate         DateTime?      @db.Date
+  status                   SupplierStatus @default(ACTIVE)
+  notes                    String?
+  deletedAt                DateTime?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
   // Audit-trail actor ids (the JWT `sub` of the acting user). API-owned: set
   // from the session on create/update, never accepted from the request body.
   // Nullable so rows created before this column existed remain valid.
-  createdBy        String?
-  updatedBy        String?
+  createdBy                String?
+  updatedBy                String?
 
   condominium            Condominium          @relation(fields: [condominiumId], references: [id])
   defaultExpenseCategory ExpenseCategory?     @relation(fields: [defaultExpenseCategoryId], references: [id])
@@ -1188,23 +1190,23 @@ enum ReconciliationRuleKind {
 }
 
 model ReconciliationRule {
-  id                  String                 @id @default(uuid())
-  condominiumId       String
-  name                String
-  ruleKind            ReconciliationRuleKind @default(CONCEPT)
-  keywords            String[]
+  id                    String                 @id @default(uuid())
+  condominiumId         String
+  name                  String
+  ruleKind              ReconciliationRuleKind @default(CONCEPT)
+  keywords              String[]
   // CONDITION trigger: regex strings tested against the description. NOT a unit
   // extractor — it only decides whether the rule fires.
-  unitPatterns        String[]
+  unitPatterns          String[]
   // CONCEPT outcome.
-  conceptType         String?
+  conceptType           String?
   // UNIT outcome — flavor 1 (direct assignment): a fixed unit number, e.g. "307".
-  assignedUnitNumber  String?
+  assignedUnitNumber    String?
   // UNIT outcome — flavor 2 (format extraction): a regex with one capture group
   // that pulls the unit out of the description (e.g. "APT-(\\d+)"), and the index
   // of the group to read (defaults to 1).
   unitExtractionPattern String?
-  unitExtractionGroup   Int?                 @default(1)
+  unitExtractionGroup   Int?                   @default(1)
   // UNIT outcome — flavor 2 metadata. The visual block recipe the admin built in
   // the editor's advanced (block-builder) mode. The classification engine IGNORES
   // this — it runs `unitExtractionPattern` (the compiled regex). It exists purely
@@ -1214,13 +1216,13 @@ model ReconciliationRule {
   // EXPENSE outcome: which category (and optionally which supplier) to assign when
   // this rule fires on an EXPENSE transaction. At least one must be set for an
   // EXPENSE rule; both ignored for CONCEPT/UNIT rules.
-  expenseCategoryId   String?
-  supplierId          String?
-  confidenceThreshold Decimal                @default(0.80) @db.Decimal(3, 2)
-  isActive            Boolean                @default(true)
-  priority            Int                    @default(0)
-  createdAt           DateTime               @default(now())
-  updatedAt           DateTime               @updatedAt
+  expenseCategoryId     String?
+  supplierId            String?
+  confidenceThreshold   Decimal                @default(0.80) @db.Decimal(3, 2)
+  isActive              Boolean                @default(true)
+  priority              Int                    @default(0)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
   condominium     Condominium      @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
   expenseCategory ExpenseCategory? @relation(fields: [expenseCategoryId], references: [id])
@@ -1714,4 +1716,104 @@ model SupportTicket {
   @@index([userId, createdAt])
   @@index([status])
   @@map("support_tickets")
+}
+
+// ─── Resident dossier (antecedentes) — Capa 2 ───────────────────────────────
+// Case-management record of non-financial resident antecedents (sanctions,
+// legal cases, coexistence conflicts, property/vehicle issues, dangerous pets).
+// Sensitive legal/reputational data: per-record confidentiality (filtered by
+// permission), HIGH severity requires documentary backing, and reads/writes are
+// audited via AuditLog. See web `resident-dossier` namespace + module.
+
+enum DossierCategory {
+  SANCTION
+  LEGAL
+  COEXISTENCE
+  PROPERTY
+  DANGEROUS_PET
+}
+
+enum DossierSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum DossierStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  ARCHIVED
+}
+
+enum DossierConfidentiality {
+  STANDARD
+  RESTRICTED
+  LEGAL_CONFIDENTIAL
+}
+
+enum DossierEventType {
+  CREATED
+  STATUS_CHANGED
+  NOTE_ADDED
+  UPDATED
+}
+
+model ResidentDossierEntry {
+  id              String                 @id @default(uuid())
+  condominiumId   String
+  residentId      String
+  category        DossierCategory
+  severity        DossierSeverity        @default(LOW)
+  status          DossierStatus          @default(OPEN)
+  confidentiality DossierConfidentiality @default(STANDARD)
+  title           String
+  description     String
+  // Documentary backing: acta #, expediente legal, folio de guardia. Required by
+  // the service when severity is HIGH (evidence rule). File attachments arrive
+  // in phase 2B.
+  referenceFolio  String?
+  // Fine/sanction amount or cost-to-condominium of a lawsuit.
+  amount          Decimal?               @db.Decimal(12, 2)
+  occurredAt      DateTime               @db.Date
+  resolvedAt      DateTime?              @db.Date
+  // Category-specific structured extras (e.g. legal: lawsuitCount, courtCase).
+  metadata        Json?
+  // API-owned actor fields — JWT sub of the acting user, never request input.
+  createdBy       String?
+  updatedBy       String?
+  deletedAt       DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  condominium Condominium    @relation(fields: [condominiumId], references: [id])
+  resident    Resident       @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  events      DossierEvent[]
+
+  @@index([condominiumId])
+  @@index([residentId])
+  @@index([residentId, category])
+  @@index([confidentiality])
+  @@index([deletedAt])
+  @@map("resident_dossier_entries")
+}
+
+// Append-only history of a dossier entry (creation, status change, notes). Feeds
+// the case timeline, independent of the global AuditLog.
+model DossierEvent {
+  id             String           @id @default(uuid())
+  condominiumId  String
+  dossierEntryId String
+  type           DossierEventType
+  fromStatus     DossierStatus?
+  toStatus       DossierStatus?
+  note           String?
+  createdBy      String?
+  createdAt      DateTime         @default(now())
+
+  dossierEntry ResidentDossierEntry @relation(fields: [dossierEntryId], references: [id], onDelete: Cascade)
+
+  @@index([dossierEntryId])
+  @@index([condominiumId])
+  @@map("dossier_events")
 }
