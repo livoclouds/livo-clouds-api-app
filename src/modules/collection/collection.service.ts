@@ -5,6 +5,11 @@ import { PaginatedResult } from '../../common/types';
 import { AccountStatementDto } from './dto/account-statement.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
+import {
+  buildScoreHistory,
+  computeFinancialHealth,
+  ScoreRecordInput,
+} from './financial-health.util';
 
 @Injectable()
 export class CollectionService {
@@ -225,8 +230,43 @@ export class CollectionService {
         totalExpected,
         monthsPaid,
         monthsUnpaid,
-        balance: totalPaid - totalExpected,
+        // Outstanding debt: POSITIVE = the resident owes, negative = credit. The
+        // whole profile (Balance KPI, headline status, health score) reads it
+        // this way; computing it as paid − expected inverted the sign for every
+        // consumer (Capa 1 bug, fixed in Fase 3).
+        balance: totalExpected - totalPaid,
       },
+    };
+  }
+
+  // Explainable financial-health score (Fase 3) + a derived per-month history.
+  // The scorer lives server-side now (the web only renders the DTO). Reads the
+  // resident's full collection history once and computes both the current score
+  // and the trend line from it — no new storage. Same tenant gate as the account
+  // statement (controller-level CondominiumAccessGuard).
+  async getFinancialHealth(
+    condominiumId: string,
+    residentId: string,
+    historyMonths = 12,
+  ) {
+    const statement = await this.getAccountStatement(condominiumId, residentId, {
+      crPage: 1,
+      crLimit: 1000,
+    });
+    const records: ScoreRecordInput[] = statement.collectionRecords.map((r) => ({
+      year: r.year,
+      month: r.month,
+      status: r.status,
+      amountPaid: Number(r.amountPaid),
+      amountExpected: Number(r.amountExpected),
+    }));
+    const now = new Date();
+    const health = computeFinancialHealth(statement.summary, records, now);
+    const months = Math.min(36, Math.max(1, Math.floor(historyMonths || 12)));
+    const history = buildScoreHistory(records, months, now);
+    return {
+      current: { ...health, computedAt: now.toISOString() },
+      history,
     };
   }
 

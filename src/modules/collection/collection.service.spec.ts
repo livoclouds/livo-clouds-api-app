@@ -165,8 +165,8 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       // totalExpected = Σ amountExpected = 12500 + 5000 + 7500 + 2500 = 27500
       expect(result.summary.totalExpected).toBe(27500);
       expect(result.summary.totalPaid).toBe(7000);
-      // balance = totalPaid − totalExpected = 7000 − 27500
-      expect(result.summary.balance).toBe(7000 - 27500);
+      // balance = totalExpected − totalPaid (POSITIVE = owes) = 27500 − 7000
+      expect(result.summary.balance).toBe(27500 - 7000);
     });
 
     it('adds this resident\'s allocation shares to totalPaid without double-counting', async () => {
@@ -306,6 +306,51 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       expect(result.summary.monthsPaid).toBe(0);
       expect(result.summary.monthsUnpaid).toBe(0);
       expect(result.summary.balance).toBe(0);
+    });
+  });
+
+  describe('Fase 3 — getFinancialHealth', () => {
+    beforeEach(() => {
+      prisma.resident.findFirst.mockResolvedValue(makeResident());
+    });
+
+    it('returns the current 7-factor score (debt-positive balance flows in) + a derived history', async () => {
+      // Two unpaid months, $1000 expected each, $0 paid → balance +2000 (owes).
+      prisma.transaction.aggregate.mockResolvedValue({ _sum: { credits: 0 } });
+      prisma.collectionRecord.groupBy.mockResolvedValue([
+        { status: 'UNPAID', _count: { _all: 2 }, _sum: { amountExpected: 2000 } },
+      ]);
+      prisma.collectionRecord.findMany.mockResolvedValue([
+        { year: 2026, month: 1, status: 'UNPAID', amountPaid: 0, amountExpected: 1000 },
+        { year: 2026, month: 2, status: 'UNPAID', amountPaid: 0, amountExpected: 1000 },
+      ]);
+
+      const result = await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID, 12);
+
+      expect(result.current.factors).toHaveLength(7);
+      const balance = result.current.factors.find((f) => f.key === 'balance')!;
+      expect(balance.rawValue).toBe(2000); // positive = debt reaches the scorer
+      expect(typeof result.current.computedAt).toBe('string');
+      expect(Array.isArray(result.history)).toBe(true);
+      expect(result.history.length).toBeGreaterThan(0);
+      expect(result.history[0]).toEqual(
+        expect.objectContaining({ year: expect.any(Number), month: expect.any(Number), score: expect.any(Number) }),
+      );
+    });
+
+    it('pulls the full collection history (large crLimit) and is tenant-scoped', async () => {
+      prisma.collectionRecord.groupBy.mockResolvedValue([]);
+      await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID);
+      const findArg = prisma.collectionRecord.findMany.mock.calls[0][0];
+      expect(findArg.take).toBeGreaterThan(24); // not the bounded 24-row window
+      expect(findArg.where).toMatchObject({ condominiumId: CONDOMINIUM_ID, residentId: RESIDENT_ID });
+    });
+
+    it('throws NotFound for a resident outside the tenant', async () => {
+      prisma.resident.findFirst.mockResolvedValue(null);
+      await expect(
+        service.getFinancialHealth(CONDOMINIUM_ID, 'ghost'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });
