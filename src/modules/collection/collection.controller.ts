@@ -4,6 +4,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { CollectionService } from './collection.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
+import { FinancialHealthDto } from './dto/financial-health.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
 
@@ -44,6 +45,20 @@ export class CollectionController {
     @Query() dto: AccountStatementDto,
   ) {
     return this.collectionService.getAccountStatement(req.condominiumId, residentId, dto);
+  }
+
+  @Get('residents/:residentId/financial-health')
+  @ApiOperation({ summary: 'Explainable financial-health score + derived trend history for a resident' })
+  getFinancialHealth(
+    @Request() req: { condominiumId: string },
+    @Param('residentId') residentId: string,
+    @Query() dto: FinancialHealthDto,
+  ) {
+    return this.collectionService.getFinancialHealth(
+      req.condominiumId,
+      residentId,
+      dto.historyMonths,
+    );
   }
 
   @Patch(':id')
