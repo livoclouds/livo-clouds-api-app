@@ -184,13 +184,13 @@ export class DashboardService {
     type TrendRow = { month: number; income: number; expenses: number };
     const rows = await this.prisma.$queryRaw<TrendRow[]>`
       SELECT
-        EXTRACT(MONTH FROM transaction_date)::int AS month,
-        COALESCE(SUM(CASE WHEN flow_type = 'INCOME' THEN credits ELSE 0 END), 0)::float  AS income,
-        COALESCE(SUM(CASE WHEN flow_type = 'EXPENSE' THEN charges ELSE 0 END), 0)::float AS expenses
-      FROM transactions
-      WHERE condominium_id = ${condominiumId}
-        AND EXTRACT(YEAR FROM transaction_date) = ${year}
-      GROUP BY EXTRACT(MONTH FROM transaction_date)
+        EXTRACT(MONTH FROM "transactionDate")::int AS month,
+        COALESCE(SUM(CASE WHEN "flowType" = 'INCOME' THEN "credits" ELSE 0 END), 0)::float  AS income,
+        COALESCE(SUM(CASE WHEN "flowType" = 'EXPENSE' THEN "charges" ELSE 0 END), 0)::float AS expenses
+      FROM "transactions"
+      WHERE "condominiumId" = ${condominiumId}
+        AND EXTRACT(YEAR FROM "transactionDate") = ${year}
+      GROUP BY EXTRACT(MONTH FROM "transactionDate")
       ORDER BY month
     `;
 
