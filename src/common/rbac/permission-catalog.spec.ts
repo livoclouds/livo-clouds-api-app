@@ -94,6 +94,8 @@ describe('permission-catalog', () => {
       expect(condo).toContain('residents.dossier.viewRestricted');
       expect(condo).not.toContain('residents.dossier.viewLegal');
       expect(condo).not.toContain('residents.dossier.manage');
+      // ARCO export is a read-tier action the auditor holds (no write verb).
+      expect(condo).toContain('residents.dossier.export');
     });
   });
 
