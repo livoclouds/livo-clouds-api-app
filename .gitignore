@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# pnpm is the only supported package manager — never commit an npm lockfile
+package-lock.json
+
 # Build output
 dist/
 
