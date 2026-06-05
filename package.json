@@ -5,12 +5,18 @@
   "author": "LivoClouds",
   "private": true,
   "license": "UNLICENSED",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "re2"
     ]
   },
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "build": "rm -rf dist && nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "nest start",
@@ -67,7 +73,6 @@
     "@nestjs/cli": "^10.4.9",
     "@nestjs/schematics": "^10.2.3",
     "@nestjs/testing": "^10.4.15",
-    "@types/bcryptjs": "^3.0.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.3",
     "@types/passport-jwt": "^4.0.1",
