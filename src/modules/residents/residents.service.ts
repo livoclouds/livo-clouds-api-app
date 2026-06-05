@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
 import { AuditService } from '../audit/audit.service';
+import { BulkImportResidentDto } from './dto/bulk-import-resident.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
 import { CreateResidentDto } from './dto/create-resident.dto';
@@ -296,7 +297,7 @@ export class ResidentsService {
   async bulkCreate(
     condominiumId: string,
     userId: string,
-    rows: CreateResidentDto[],
+    rows: BulkImportResidentDto[],
   ): Promise<BulkCreateResidentsResult> {
     // Pre-load every unit number the constraint reserves (no deletedAt filter)
     // so collisions are detected before the insert is attempted.
@@ -328,8 +329,11 @@ export class ResidentsService {
 
       try {
         const resident = await this.prisma.$transaction(async (tx) => {
+          // One nested insert creates the resident, its documentation, and all
+          // its sub-entities; `include` returns the children with their ids so
+          // each gets its own audit row (parity with the single-create paths).
           const r = await tx.resident.create({
-            data: this.toResidentCreateData(condominiumId, dto),
+            data: this.toBulkResidentCreateData(condominiumId, dto),
             include: RESIDENT_INCLUDE,
           });
           await this.audit.log(
@@ -346,6 +350,7 @@ export class ResidentsService {
             },
             tx,
           );
+          await this.logImportedChildren(tx, condominiumId, userId, r);
           return r;
         });
         created.push(resident.id);
@@ -861,8 +866,109 @@ export class ResidentsService {
       email: dto.email,
       monthlyFee: dto.monthlyFee ?? 0,
       parkingSpots: dto.parkingSpots ?? 0,
+      houseModel: dto.houseModel,
       notes: dto.notes,
     };
+  }
+
+  // Extends the core create data with the 1:1 documentation flags and the 1:N
+  // sub-entities as Prisma nested creates, so the whole resident tree is written
+  // in a single insert. Documentation is mapped field-by-field (clean JSON, no
+  // class instance / stray keys); when absent the column keeps its all-false
+  // default. Vehicle/Pet carry condominiumId; AdditionalResident has no such
+  // column (isolation is via the parent resident).
+  private toBulkResidentCreateData(
+    condominiumId: string,
+    dto: BulkImportResidentDto,
+  ): Prisma.ResidentUncheckedCreateInput {
+    return {
+      ...this.toResidentCreateData(condominiumId, dto),
+      documentation: dto.documentation
+        ? {
+            propertyTax: dto.documentation.propertyTax,
+            titleDeed: dto.documentation.titleDeed,
+            ownerDocumentation: dto.documentation.ownerDocumentation,
+            nationalId: dto.documentation.nationalId,
+            proofOfAddress: dto.documentation.proofOfAddress,
+          }
+        : undefined,
+      vehicles: dto.vehicles?.length
+        ? {
+            create: dto.vehicles.map((v) => ({
+              condominiumId,
+              make: v.make,
+              model: v.model,
+              color: v.color,
+              plates: v.plates,
+              hasTag: v.hasTag,
+              tagId: v.tagId,
+            })),
+          }
+        : undefined,
+      pets: dto.pets?.length
+        ? {
+            create: dto.pets.map((p) => ({
+              condominiumId,
+              name: p.name,
+              petType: p.petType,
+              description: p.description,
+            })),
+          }
+        : undefined,
+      additionalResidents: dto.additionalResidents?.length
+        ? {
+            create: dto.additionalResidents.map((a) => ({
+              name: a.name,
+              residentType: a.residentType,
+              phone: a.phone,
+              secondaryPhone: a.secondaryPhone,
+              email: a.email,
+              relationship: a.relationship,
+            })),
+          }
+        : undefined,
+    };
+  }
+
+  // Writes one CREATE audit row per imported sub-entity (parity with the
+  // single add-vehicle / add-pet / add-additional-resident paths). Bounded by
+  // the per-resident child caps on BulkImportResidentDto.
+  private async logImportedChildren(
+    tx: Prisma.TransactionClient,
+    condominiumId: string,
+    userId: string,
+    resident: Prisma.ResidentGetPayload<{ include: typeof RESIDENT_INCLUDE }>,
+  ): Promise<void> {
+    const log = (
+      action: string,
+      entityType: string,
+      entityId: string,
+      afterState: unknown,
+    ) =>
+      this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action,
+          actionCategory: 'CREATE',
+          module: RESIDENTS_MODULE,
+          entityType,
+          entityId,
+          afterState,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+    for (const v of resident.vehicles) {
+      await log(AUDIT_ACTION.VEHICLE_ADDED, 'Vehicle', v.id, v);
+    }
+    for (const p of resident.pets) {
+      await log(AUDIT_ACTION.PET_ADDED, 'Pet', p.id, p);
+    }
+    for (const a of resident.additionalResidents) {
+      await log(AUDIT_ACTION.ADDITIONAL_RESIDENT_ADDED, 'AdditionalResident', a.id, a);
+    }
   }
 
   private toResidentUpdateData(dto: UpdateResidentDto): Prisma.ResidentUpdateInput {
