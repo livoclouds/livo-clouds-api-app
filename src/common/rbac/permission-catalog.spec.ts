@@ -67,6 +67,7 @@ describe('permission-catalog', () => {
       expect(admin).toContain('residents.manage');
       expect(admin).toContain('settings.update');
       expect(admin).toContain('residents.dossier.exportArco'); // ARCO packet (Capa 2D)
+      expect(admin).toContain('residents.arco.manage'); // ARCO request tracker (Capa 2F)
       expect(admin.some((k) => k.startsWith('platform.'))).toBe(false);
       expect(admin).not.toContain('files.delete');
     });
@@ -99,6 +100,9 @@ describe('permission-catalog', () => {
       expect(condo).toContain('residents.dossier.export');
       // The ARCO subject packet is a compliance action — admin/root only.
       expect(condo).not.toContain('residents.dossier.exportArco');
+      // ARCO request tracker: auditor oversees (view) but cannot manage.
+      expect(condo).toContain('residents.arco.view');
+      expect(condo).not.toContain('residents.arco.manage');
     });
   });
 

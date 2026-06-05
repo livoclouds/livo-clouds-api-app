@@ -365,6 +365,7 @@ model Condominium {
   pushSubscriptions                PushSubscription[]
   supportTickets                   SupportTicket[]
   residentDossierEntries           ResidentDossierEntry[]
+  arcoRequests                     ArcoRequest[]
 
   @@map("condominiums")
 }
@@ -623,6 +624,7 @@ model Resident {
   whatsAppConversations            WhatsAppConversation[]
   visitorLogs                      VisitorLog[]
   dossierEntries                   ResidentDossierEntry[]
+  arcoRequests                     ArcoRequest[]
 
   @@unique([condominiumId, unitNumberNormalized])
   @@index([condominiumId])
@@ -1846,4 +1848,115 @@ model DossierEvent {
   @@index([dossierEntryId])
   @@index([condominiumId])
   @@map("dossier_events")
+}
+
+// ─── ARCO data-subject requests (Capa 2F) ───────────────────────────────────
+// Case-management tracker for LFPDPPP ARCO rights — Acceso / Rectificación /
+// Cancelación / Oposición. An admin LOGS a request a resident submitted and
+// tracks it to resolution; the actual data change is performed elsewhere and
+// recorded here (v1 = tracker). An ACCESS request can trigger the existing
+// dossier ARCO packet (Capa 2D/2E).
+enum ArcoRequestType {
+  ACCESS
+  RECTIFICATION
+  CANCELLATION
+  OPPOSITION
+}
+
+enum ArcoRequestStatus {
+  RECEIVED
+  IN_REVIEW
+  COMPLETED
+  REJECTED
+}
+
+enum ArcoRequestEventType {
+  CREATED
+  STATUS_CHANGED
+  NOTE_ADDED
+  UPDATED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
+  ACCESS_PACKET_GENERATED
+}
+
+model ArcoRequest {
+  id             String            @id @default(uuid())
+  condominiumId  String
+  residentId     String
+  type           ArcoRequestType
+  status         ArcoRequestStatus @default(RECEIVED)
+  // How the request arrived (in person, email, …) — free text.
+  channel        String?
+  // What the data subject asked for.
+  description    String
+  // Admin's resolution notes once handled.
+  resolution     String?
+  // Official reference (oficio/acta) backing the request or its resolution.
+  referenceFolio String?
+  // When the resident submitted it (admin-set; defaults to now).
+  receivedAt     DateTime          @default(now())
+  // LFPDPPP legal response deadline — denormalized at creation
+  // (receivedAt + ARCO_RESPONSE_BUSINESS_DAYS business days).
+  dueDate        DateTime
+  resolvedAt     DateTime?
+  // API-owned actor fields — JWT sub of the acting user, never request input.
+  createdBy      String?
+  updatedBy      String?
+  deletedAt      DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  condominium Condominium             @relation(fields: [condominiumId], references: [id])
+  resident    Resident                @relation(fields: [residentId], references: [id], onDelete: Cascade)
+  events      ArcoRequestEvent[]
+  attachments ArcoRequestAttachment[]
+
+  @@index([condominiumId])
+  @@index([residentId])
+  @@index([residentId, status])
+  @@index([dueDate])
+  @@index([deletedAt])
+  @@map("arco_requests")
+}
+
+// Evidence files for an ARCO request (the written request, ID, resolution oficio),
+// stored in R2. Only metadata here; bytes live in R2 under `storageKey`, never
+// exposed to the client — views go through a presigned GET on demand.
+model ArcoRequestAttachment {
+  id            String   @id @default(uuid())
+  condominiumId String
+  arcoRequestId String
+  fileName      String   @db.VarChar(512)
+  storageKey    String   @db.VarChar(1024)
+  mimeType      String   @db.VarChar(128)
+  fileSizeBytes Int
+  uploadedBy    String?
+  uploadedAt    DateTime @default(now())
+
+  arcoRequest ArcoRequest @relation(fields: [arcoRequestId], references: [id], onDelete: Cascade)
+
+  @@index([arcoRequestId])
+  @@index([condominiumId])
+  @@map("arco_request_attachments")
+}
+
+// Append-only history of an ARCO request (creation, status change, notes,
+// access-packet generation). Feeds the case timeline, independent of AuditLog.
+model ArcoRequestEvent {
+  id            String               @id @default(uuid())
+  condominiumId String
+  arcoRequestId String
+  type          ArcoRequestEventType
+  fromStatus    ArcoRequestStatus?
+  toStatus      ArcoRequestStatus?
+  note          String?
+  createdBy     String?
+  createdAt     DateTime             @default(now())
+
+  arcoRequest ArcoRequest @relation(fields: [arcoRequestId], references: [id], onDelete: Cascade)
+
+  @@index([arcoRequestId])
+  @@index([condominiumId])
+  @@map("arco_request_events")
 }

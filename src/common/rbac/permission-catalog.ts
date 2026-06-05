@@ -70,6 +70,11 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   // for an LFPDPPP "Acceso" request. A compliance action (admin/root), audited
   // separately from the internal export; the packet excludes LEGAL_CONFIDENTIAL.
   p('residents.dossier.exportArco', 'residents', 'exportArco', 'tenant', 'dossier'),
+  // ARCO data-subject request tracker (Capa 2F) — log + track LFPDPPP
+  // Acceso/Rectificación/Cancelación/Oposición requests. `view` is a read verb
+  // (auditor/supervisor can oversee compliance); `manage` covers create/track/resolve.
+  p('residents.arco.view', 'residents', 'view', 'tenant', 'arco'),
+  p('residents.arco.manage', 'residents', 'manage', 'tenant', 'arco'),
 
   p('calendar.read', 'calendar', 'read', 'tenant'),
   p('calendar.manage', 'calendar', 'manage', 'tenant'),
@@ -194,6 +199,8 @@ const SUPERVISOR_PERMS = [
   // Dossier: standard + restricted (NOT legal-confidential, NOT manage).
   'residents.dossier.view',
   'residents.dossier.viewRestricted',
+  // ARCO request tracker: oversight (view), no manage.
+  'residents.arco.view',
   'files.read',
   'audit.read',
   'platform.condominiums.read',
@@ -216,6 +223,8 @@ const CONDOMINO_PERMS = [
   'residents.dossier.viewRestricted',
   // ARCO export for compliance — read-only, scoped to the auditor's view tier.
   'residents.dossier.export',
+  // ARCO request tracker: oversight (view), no manage.
+  'residents.arco.view',
 ];
 
 // Seguridad (GUARD): gate operation. Operates the visitor log; reads the
