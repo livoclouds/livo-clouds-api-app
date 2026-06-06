@@ -1,5 +1,28 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsEmail,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+
+// Per-condominium financial-health score weights (Fase 4). Each is a relative
+// importance 0–100; the scorer auto-normalizes the seven to sum 100. All seven
+// keys are required when the object is sent.
+export class FinancialHealthWeightsDto {
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) onTime!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) collectionRate!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) monthsCurrent!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) delinquencyAge!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) balance!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) recurrence!: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsNumber() @Min(0) @Max(100) trend!: number;
+}
 
 export class UpdateGeneralSettingsDto {
   @ApiPropertyOptional()
@@ -54,4 +77,12 @@ export class UpdateGeneralSettingsDto {
   @Min(0)
   @Max(3650)
   dossierRetentionDays?: number;
+
+  // Per-condominium financial-health score weights (Fase 4). Relative importances;
+  // auto-normalized to sum 100 at compute time. The service rejects an all-zero set.
+  @ApiPropertyOptional({ type: FinancialHealthWeightsDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => FinancialHealthWeightsDto)
+  financialHealthWeights?: FinancialHealthWeightsDto;
 }

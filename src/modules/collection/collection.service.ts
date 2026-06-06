@@ -8,6 +8,7 @@ import { ListCollectionDto } from './dto/list-collection.dto';
 import {
   buildScoreHistory,
   computeFinancialHealth,
+  HealthFactorKey,
   ScoreRecordInput,
 } from './financial-health.util';
 
@@ -261,9 +262,18 @@ export class CollectionService {
       amountExpected: Number(r.amountExpected),
     }));
     const now = new Date();
-    const health = computeFinancialHealth(statement.summary, records, now);
+    // Per-condominium score weights (Fase 4) — null/invalid falls back to the
+    // documented defaults inside the scorer (normalizeWeights).
+    const settings = await this.prisma.condominiumSettings.findUnique({
+      where: { condominiumId },
+      select: { financialHealthWeights: true },
+    });
+    const weights = (settings?.financialHealthWeights ?? undefined) as
+      | Record<HealthFactorKey, number>
+      | undefined;
+    const health = computeFinancialHealth(statement.summary, records, now, weights);
     const months = Math.min(36, Math.max(1, Math.floor(historyMonths || 12)));
-    const history = buildScoreHistory(records, months, now);
+    const history = buildScoreHistory(records, months, now, weights);
     return {
       current: { ...health, computedAt: now.toISOString() },
       history,
