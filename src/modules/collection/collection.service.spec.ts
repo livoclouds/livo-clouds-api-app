@@ -21,6 +21,9 @@ interface PrismaMock {
   paymentAllocation: {
     aggregate: jest.Mock;
   };
+  condominiumSettings: {
+    findUnique: jest.Mock;
+  };
 }
 
 function makePrismaMock(): PrismaMock {
@@ -40,6 +43,9 @@ function makePrismaMock(): PrismaMock {
     },
     paymentAllocation: {
       aggregate: jest.fn().mockResolvedValue({ _sum: { allocatedAmount: null } }),
+    },
+    condominiumSettings: {
+      findUnique: jest.fn().mockResolvedValue(null),
     },
   };
 }
@@ -344,6 +350,31 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       const findArg = prisma.collectionRecord.findMany.mock.calls[0][0];
       expect(findArg.take).toBeGreaterThan(24); // not the bounded 24-row window
       expect(findArg.where).toMatchObject({ condominiumId: CONDOMINIUM_ID, residentId: RESIDENT_ID });
+    });
+
+    it('Fase 4 — applies the condominium score weights (null → defaults)', async () => {
+      prisma.collectionRecord.groupBy.mockResolvedValue([]);
+      prisma.collectionRecord.findMany.mockResolvedValue([
+        { year: 2026, month: 1, status: 'PAID_ON_TIME', amountPaid: 1000, amountExpected: 1000 },
+      ]);
+      // Custom weights: all on punctuality → onTime weight 100, others 0.
+      prisma.condominiumSettings.findUnique.mockResolvedValue({
+        financialHealthWeights: {
+          onTime: 100, collectionRate: 0, monthsCurrent: 0, delinquencyAge: 0,
+          balance: 0, recurrence: 0, trend: 0,
+        },
+      });
+      const custom = await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID);
+      expect(custom.current.factors.find((f) => f.key === 'onTime')!.weight).toBe(100);
+      expect(custom.current.factors.find((f) => f.key === 'balance')!.weight).toBe(0);
+      expect(prisma.condominiumSettings.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { condominiumId: CONDOMINIUM_ID } }),
+      );
+
+      // null settings → documented defaults (onTime weight 22).
+      prisma.condominiumSettings.findUnique.mockResolvedValue(null);
+      const def = await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID);
+      expect(def.current.factors.find((f) => f.key === 'onTime')!.weight).toBe(22);
     });
 
     it('throws NotFound for a resident outside the tenant', async () => {

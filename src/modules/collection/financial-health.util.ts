@@ -62,7 +62,8 @@ export interface ScoreRecordInput {
   amountExpected: number;
 }
 
-// Documented weights — sum to 100, tunable. (Future: per-condominium config.)
+// Documented default weights — sum to 100. Per-condominium overrides (Fase 4) are
+// stored on CondominiumSettings and auto-normalized to 100 at compute time.
 export const HEALTH_WEIGHTS: Record<HealthFactorKey, number> = {
   onTime: 22,
   collectionRate: 16,
@@ -72,6 +73,43 @@ export const HEALTH_WEIGHTS: Record<HealthFactorKey, number> = {
   recurrence: 12,
   trend: 12,
 };
+
+export const FACTOR_KEYS: HealthFactorKey[] = [
+  "onTime",
+  "collectionRate",
+  "monthsCurrent",
+  "delinquencyAge",
+  "balance",
+  "recurrence",
+  "trend",
+];
+
+// True when `input` is a complete, non-negative weight set with a positive sum
+// (so it can be normalized). Anything else falls back to the defaults.
+export function isValidWeights(input: unknown): input is Record<HealthFactorKey, number> {
+  if (!input || typeof input !== "object") return false;
+  const w = input as Record<string, unknown>;
+  let sum = 0;
+  for (const k of FACTOR_KEYS) {
+    const v = w[k];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return false;
+    sum += v;
+  }
+  return sum > 0;
+}
+
+// Scales a raw weight set so the seven weights sum to 100 (relative importances →
+// points), keeping the score 0–100 and the factor breakdown explainable. Falls
+// back to the documented defaults when the input is invalid.
+export function normalizeWeights(
+  raw: Record<HealthFactorKey, number> = HEALTH_WEIGHTS,
+): Record<HealthFactorKey, number> {
+  const source = isValidWeights(raw) ? raw : HEALTH_WEIGHTS;
+  const sum = FACTOR_KEYS.reduce((s, k) => s + source[k], 0);
+  const out = {} as Record<HealthFactorKey, number>;
+  for (const k of FACTOR_KEYS) out[k] = (source[k] / sum) * 100;
+  return out;
+}
 
 // Thresholds where factors bottom out.
 const UNPAID_FLOOR = 6; // months unpaid → monthsCurrent hits 0
@@ -170,7 +208,12 @@ export function computeFinancialHealth(
   summary: ScoreSummaryInput,
   records: ScoreRecordInput[],
   now: Date,
+  rawWeights: Record<HealthFactorKey, number> = HEALTH_WEIGHTS,
 ): FinancialHealth {
+  // Per-condominium weights are relative importances → normalize to sum 100 so
+  // the score stays 0–100 and the reported per-factor weights still add up.
+  const W = normalizeWeights(rawWeights);
+
   const hasData =
     records.length > 0 ||
     summary.monthsPaid + summary.monthsUnpaid > 0 ||
@@ -211,13 +254,13 @@ export function computeFinancialHealth(
   const trend = clamp01(1 + Math.min(0, delta));
 
   const points: Record<HealthFactorKey, number> = {
-    onTime: onTime * HEALTH_WEIGHTS.onTime,
-    collectionRate: collectionRate * HEALTH_WEIGHTS.collectionRate,
-    monthsCurrent: monthsCurrent * HEALTH_WEIGHTS.monthsCurrent,
-    delinquencyAge: delinquencyAge * HEALTH_WEIGHTS.delinquencyAge,
-    balance: balanceFactor * HEALTH_WEIGHTS.balance,
-    recurrence: recurrence * HEALTH_WEIGHTS.recurrence,
-    trend: trend * HEALTH_WEIGHTS.trend,
+    onTime: onTime * W.onTime,
+    collectionRate: collectionRate * W.collectionRate,
+    monthsCurrent: monthsCurrent * W.monthsCurrent,
+    delinquencyAge: delinquencyAge * W.delinquencyAge,
+    balance: balanceFactor * W.balance,
+    recurrence: recurrence * W.recurrence,
+    trend: trend * W.trend,
   };
 
   const score = Math.round(
@@ -225,13 +268,13 @@ export function computeFinancialHealth(
   );
 
   const factors: HealthFactor[] = [
-    { key: "onTime", weight: HEALTH_WEIGHTS.onTime, contribution: Math.round(points.onTime), rawValue: Math.round(onTime * 100), unit: "percent" },
-    { key: "collectionRate", weight: HEALTH_WEIGHTS.collectionRate, contribution: Math.round(points.collectionRate), rawValue: Math.round(collectionRate * 100), unit: "percent" },
-    { key: "monthsCurrent", weight: HEALTH_WEIGHTS.monthsCurrent, contribution: Math.round(points.monthsCurrent), rawValue: summary.monthsUnpaid, unit: "months" },
-    { key: "delinquencyAge", weight: HEALTH_WEIGHTS.delinquencyAge, contribution: Math.round(points.delinquencyAge), rawValue: ageMonths, unit: "months" },
-    { key: "balance", weight: HEALTH_WEIGHTS.balance, contribution: Math.round(points.balance), rawValue: summary.balance, unit: "currency" },
-    { key: "recurrence", weight: HEALTH_WEIGHTS.recurrence, contribution: Math.round(points.recurrence), rawValue: problems, unit: "months" },
-    { key: "trend", weight: HEALTH_WEIGHTS.trend, contribution: Math.round(points.trend), rawValue: Math.round(delta * 100), unit: "signedPercent" },
+    { key: "onTime", weight: Math.round(W.onTime), contribution: Math.round(points.onTime), rawValue: Math.round(onTime * 100), unit: "percent" },
+    { key: "collectionRate", weight: Math.round(W.collectionRate), contribution: Math.round(points.collectionRate), rawValue: Math.round(collectionRate * 100), unit: "percent" },
+    { key: "monthsCurrent", weight: Math.round(W.monthsCurrent), contribution: Math.round(points.monthsCurrent), rawValue: summary.monthsUnpaid, unit: "months" },
+    { key: "delinquencyAge", weight: Math.round(W.delinquencyAge), contribution: Math.round(points.delinquencyAge), rawValue: ageMonths, unit: "months" },
+    { key: "balance", weight: Math.round(W.balance), contribution: Math.round(points.balance), rawValue: summary.balance, unit: "currency" },
+    { key: "recurrence", weight: Math.round(W.recurrence), contribution: Math.round(points.recurrence), rawValue: problems, unit: "months" },
+    { key: "trend", weight: Math.round(W.trend), contribution: Math.round(points.trend), rawValue: Math.round(delta * 100), unit: "signedPercent" },
   ];
 
   return { score, band: bandFor(score), hasData, factors };
@@ -246,6 +289,7 @@ export function buildScoreHistory(
   records: ScoreRecordInput[],
   months: number,
   now: Date,
+  rawWeights: Record<HealthFactorKey, number> = HEALTH_WEIGHTS,
 ): ScoreHistoryPoint[] {
   const points: ScoreHistoryPoint[] = [];
   const nowIndex = now.getUTCFullYear() * 12 + now.getUTCMonth(); // 0-based month
@@ -277,7 +321,7 @@ export function buildScoreHistory(
     };
     // As-of date = end of that month (UTC), for delinquency-age relative to it.
     const asOf = new Date(Date.UTC(year, month, 0));
-    const health = computeFinancialHealth(summary, upTo, asOf);
+    const health = computeFinancialHealth(summary, upTo, asOf, rawWeights);
     points.push({ year, month, score: health.score, band: health.band });
   }
 
