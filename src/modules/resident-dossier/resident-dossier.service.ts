@@ -258,6 +258,36 @@ export class ResidentDossierService {
     });
   }
 
+  async getNextFolio(
+    condominiumId: string,
+    residentId: string,
+    category: string,
+  ): Promise<{ folio: string }> {
+    await this.assertResident(condominiumId, residentId);
+
+    const PREFIXES: Record<string, string> = {
+      SANCTION: 'SAN',
+      LEGAL: 'LEG',
+      COEXISTENCE: 'CON',
+      PROPERTY: 'PRO',
+      DANGEROUS_PET: 'MAS',
+    };
+
+    const prefix = PREFIXES[category];
+    if (!prefix) throw new BadRequestException('Invalid category');
+
+    // Count ALL entries (including soft-deleted) in this condominium whose
+    // referenceFolio starts with the prefix, so generated folios never collide.
+    const count = await this.prisma.residentDossierEntry.count({
+      where: {
+        condominiumId,
+        referenceFolio: { startsWith: `${prefix}-` },
+      },
+    });
+
+    return { folio: `${prefix}-${String(count + 1).padStart(3, '0')}` };
+  }
+
   async findOne(
     condominiumId: string,
     residentId: string,

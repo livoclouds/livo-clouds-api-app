@@ -149,6 +149,18 @@ export class ResidentDossierController {
     return reply.send(buffer);
   }
 
+  // Next auto-folio — must be declared before `:id` so the static segment wins.
+  @Get('next-folio')
+  @RequirePermission('residents.dossier.manage')
+  @ApiOperation({ summary: 'Get the next available auto-generated folio for a given category' })
+  nextFolio(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Query('category') category: string,
+  ) {
+    return this.service.getNextFolio(req.condominiumId, residentId, category);
+  }
+
   @Get(':id')
   @RequirePermission(...ANY_VIEW)
   @ApiOperation({ summary: 'Get one dossier entry' })
