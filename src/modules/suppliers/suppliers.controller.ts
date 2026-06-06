@@ -83,6 +83,16 @@ export class SuppliersController {
     return this.suppliersService.restore(req.condominiumId, req.user.sub, id);
   }
 
+  @Delete(':id/permanent')
+  @RequirePermission('suppliers.manage')
+  @ApiOperation({
+    summary:
+      'Permanently delete a supplier (refused with 409 when it has transactions)',
+  })
+  hardDelete(@Request() req: AuthedRequest, @Param('id') id: string) {
+    return this.suppliersService.hardDelete(req.condominiumId, req.user.sub, id);
+  }
+
   @Get(':id/ratings')
   @ApiOperation({ summary: 'List a supplier rating history' })
   listRatings(
