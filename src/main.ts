@@ -1,3 +1,7 @@
+// Sentry must be the FIRST import so the SDK instruments the runtime before any
+// other module loads. Disabled (no-op) until SENTRY_DSN is provisioned.
+import './instrument';
+
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
