@@ -61,7 +61,26 @@ export class PrismaService
     });
     this.$on('error', (event: Prisma.LogEvent) => {
       this.logger.error(event.message);
+      if (
+        event.message?.includes('Closed') ||
+        event.message?.includes('Server has closed')
+      ) {
+        void this.reconnectOnDrop();
+      }
     });
+  }
+
+  private async reconnectOnDrop(): Promise<void> {
+    this.logger.warn('[PrismaService] Connection dropped — reconnecting…');
+    try {
+      await this.$disconnect();
+      await this.$connect();
+      this.logger.log('[PrismaService] Reconnected to PostgreSQL');
+    } catch (err) {
+      this.logger.error(
+        `[PrismaService] Reconnect failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   async onModuleInit() {
