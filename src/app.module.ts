@@ -21,6 +21,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RbacModule } from './common/rbac/rbac.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { SentryContextInterceptor } from './common/interceptors/sentry-context.interceptor';
+import { PrismaReconnectInterceptor } from './prisma/prisma-reconnect.interceptor';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuditModule } from './modules/audit/audit.module';
@@ -126,6 +127,8 @@ import { SupportModule } from './modules/support/support.module';
     // RBAC Phase 2: enforces @RequirePermission. No-op for routes without it, so
     // it coexists with the legacy @Roles guard during the migration.
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // Outermost interceptor: retries once on Prisma P1017 (Neon idle drop).
+    { provide: APP_INTERCEPTOR, useClass: PrismaReconnectInterceptor },
     // Runs after the guards, so request.user + request.condominiumId are set;
     // stamps each Sentry event with the tenant + actor.
     { provide: APP_INTERCEPTOR, useClass: SentryContextInterceptor },
