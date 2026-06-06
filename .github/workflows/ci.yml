@@ -50,6 +50,60 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Integration tests — exercise the core pipeline (import → classification →
+  # reconciliation → summary → dashboard) against a real Postgres service container.
+  # Separate from the unit `ci` job (whose Jest rootDir is src/), runs on PRs/pushes.
+  integration-tests:
+    name: integration-tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: prisma
+          POSTGRES_PASSWORD: prisma
+          POSTGRES_DB: livoclouds_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # All three point at the throwaway service DB. TEST_DATABASE_URL is the opt-in
+      # that flips the integration suites on (see test/integration/jest.setup.ts).
+      TEST_DATABASE_URL: postgresql://prisma:prisma@localhost:5432/livoclouds_test
+      DATABASE_URL: postgresql://prisma:prisma@localhost:5432/livoclouds_test
+      DIRECT_URL: postgresql://prisma:prisma@localhost:5432/livoclouds_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Apply schema to test database
+        run: pnpm prisma migrate deploy
+
+      - name: Integration tests
+        run: pnpm test:integration
+
   # Migration gating (Phase 3 — DB-002/DB-003 naming, DB-007 drift). Runs on PRs/pushes,
   # independent of the `ci` job. Provisions an ephemeral Postgres shadow database because
   # `prisma migrate diff --from-migrations` requires `--shadow-database-url`.
