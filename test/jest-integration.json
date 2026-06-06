@@ -1,0 +1,9 @@
+{
+  "rootDir": "..",
+  "testMatch": ["<rootDir>/test/integration/**/*.integration.spec.ts"],
+  "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+  "moduleNameMapper": { "^@/(.*)$": "<rootDir>/src/$1" },
+  "setupFiles": ["<rootDir>/test/integration/jest.setup.ts"],
+  "testEnvironment": "node",
+  "testTimeout": 60000
+}
