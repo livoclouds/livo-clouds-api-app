@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -32,6 +36,7 @@ const AUDIT_ACTION = {
   SUPPLIER_DELETED: 'SUPPLIER_DELETED',
   SUPPLIER_RESTORED: 'SUPPLIER_RESTORED',
   SUPPLIER_RATED: 'SUPPLIER_RATED',
+  SUPPLIER_DELETED_PERMANENT: 'SUPPLIER_DELETED_PERMANENT',
 } as const;
 
 // Derived, read-only aggregates attached to each supplier for the directory UI.
@@ -381,6 +386,55 @@ export class SuppliersService {
     return this.prisma.supplierRating.findMany({
       where: { condominiumId, supplierId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // Permanently deletes a supplier registered by mistake. Refuses when the
+  // supplier is referenced by any transaction (history must be preserved — the
+  // caller should archive instead). When safe, it unlinks any reconciliation
+  // rules (supplierId → null), removes the rating history, then hard-deletes the
+  // row. Use `remove()` (archive) for the normal lifecycle.
+  async hardDelete(condominiumId: string, userId: string, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.supplier.findFirst({
+        where: { id, condominiumId },
+      });
+      if (!before) throw new NotFoundException('Supplier not found');
+
+      const txCount = await tx.transaction.count({
+        where: { condominiumId, supplierId: id },
+      });
+      if (txCount > 0) {
+        // i18n KEY surfaced to the web layer (mapped to a localized toast).
+        throw new ConflictException('errors.supplierHasTransactions');
+      }
+
+      // Detach reconciliation rules so the FK does not block the delete; the
+      // rules keep firing on keywords, just without a supplier outcome.
+      await tx.reconciliationRule.updateMany({
+        where: { condominiumId, supplierId: id },
+        data: { supplierId: null },
+      });
+      await tx.supplierRating.deleteMany({ where: { condominiumId, supplierId: id } });
+      await tx.supplier.delete({ where: { id } });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: AUDIT_ACTION.SUPPLIER_DELETED_PERMANENT,
+          actionCategory: 'DELETE',
+          module: SUPPLIERS_MODULE,
+          entityType: 'Supplier',
+          entityId: id,
+          beforeState: before,
+          afterState: null,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return before;
     });
   }
 }

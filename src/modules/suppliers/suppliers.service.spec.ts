@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -11,13 +11,17 @@ interface PrismaMock {
     findFirst: jest.Mock;
     create: jest.Mock;
     updateMany: jest.Mock;
+    delete: jest.Mock;
   };
   supplierRating: {
     groupBy: jest.Mock;
     aggregate: jest.Mock;
     create: jest.Mock;
     findMany: jest.Mock;
+    deleteMany: jest.Mock;
   };
+  reconciliationRule: { updateMany: jest.Mock };
+  transaction: { count: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -29,6 +33,7 @@ function makePrismaMock(): PrismaMock {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'sup-1' }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      delete: jest.fn().mockResolvedValue({ id: 'sup-1' }),
     },
     supplierRating: {
       groupBy: jest.fn().mockResolvedValue([]),
@@ -37,7 +42,10 @@ function makePrismaMock(): PrismaMock {
         .mockResolvedValue({ _avg: { score: null }, _count: { _all: 0 } }),
       create: jest.fn().mockResolvedValue({ id: 'rat-1' }),
       findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    reconciliationRule: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    transaction: { count: jest.fn().mockResolvedValue(0) },
     $transaction: jest.fn(),
   };
   mock.$transaction.mockImplementation(async (arg: unknown) => {
@@ -324,6 +332,51 @@ describe('SuppliersService', () => {
       });
       expect(call.orderBy).toEqual({ createdAt: 'desc' });
       expect(rows).toEqual([{ id: 'rat-1' }]);
+    });
+  });
+
+  describe('hardDelete', () => {
+    it('throws NotFound when the supplier is absent', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue(null);
+      const service = makeService(prisma, makeAuditMock());
+      await expect(
+        service.hardDelete(CONDOMINIUM_ID, USER_ID, 'x'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('refuses (409) when the supplier has transactions, without deleting', async () => {
+      const prisma = makePrismaMock();
+      prisma.supplier.findFirst.mockResolvedValue({ id: 'sup-1' });
+      prisma.transaction.count.mockResolvedValue(3);
+      const service = makeService(prisma, makeAuditMock());
+
+      await expect(
+        service.hardDelete(CONDOMINIUM_ID, USER_ID, 'sup-1'),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.supplier.delete).not.toHaveBeenCalled();
+    });
+
+    it('unlinks rules, cascades ratings, deletes and audits when unused', async () => {
+      const prisma = makePrismaMock();
+      const audit = makeAuditMock();
+      prisma.supplier.findFirst.mockResolvedValue({ id: 'sup-1' });
+      prisma.transaction.count.mockResolvedValue(0);
+      const service = makeService(prisma, audit);
+
+      await service.hardDelete(CONDOMINIUM_ID, USER_ID, 'sup-1');
+
+      expect(prisma.reconciliationRule.updateMany).toHaveBeenCalledWith({
+        where: { condominiumId: CONDOMINIUM_ID, supplierId: 'sup-1' },
+        data: { supplierId: null },
+      });
+      expect(prisma.supplierRating.deleteMany).toHaveBeenCalledWith({
+        where: { condominiumId: CONDOMINIUM_ID, supplierId: 'sup-1' },
+      });
+      expect(prisma.supplier.delete).toHaveBeenCalledWith({
+        where: { id: 'sup-1' },
+      });
+      expect(audit.log).toHaveBeenCalledTimes(1);
     });
   });
 });
