@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -19,6 +20,7 @@ import { InactivityLockGuard } from './common/guards/inactivity-lock.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RbacModule } from './common/rbac/rbac.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { SentryContextInterceptor } from './common/interceptors/sentry-context.interceptor';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuditModule } from './modules/audit/audit.module';
@@ -56,6 +58,9 @@ import { SupportModule } from './modules/support/support.module';
 @Module({
   controllers: [HealthController],
   imports: [
+    // Wires Sentry's request handler + error capture into the Nest lifecycle.
+    // Inert until SENTRY_DSN is set (see src/instrument.ts).
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       ignoreEnvFile: process.env.NODE_ENV === 'production',
@@ -121,6 +126,9 @@ import { SupportModule } from './modules/support/support.module';
     // RBAC Phase 2: enforces @RequirePermission. No-op for routes without it, so
     // it coexists with the legacy @Roles guard during the migration.
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // Runs after the guards, so request.user + request.condominiumId are set;
+    // stamps each Sentry event with the tenant + actor.
+    { provide: APP_INTERCEPTOR, useClass: SentryContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
   ],
 })

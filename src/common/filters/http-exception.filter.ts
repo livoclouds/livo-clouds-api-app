@@ -6,12 +6,17 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
 
+  // This catch-all filter would otherwise swallow exceptions before Sentry's
+  // automatic capture sees them; the decorator forwards each one to Sentry while
+  // the filter keeps full ownership of the normalized error response.
+  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const reply = ctx.getResponse<FastifyReply>();
