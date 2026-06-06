@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   DeleteObjectCommand,
@@ -19,6 +19,7 @@ export interface AccessLogContext {
 
 @Injectable()
 export class StorageService {
+  private readonly logger = new Logger(StorageService.name);
   private readonly client: S3Client | null;
   private readonly bucket: string;
   private readonly configured: boolean;
@@ -59,7 +60,7 @@ export class StorageService {
   }
 
   getClient(): S3Client {
-    if (!this.client) throw new Error('External storage is not configured');
+    if (!this.client) throw new InternalServerErrorException('Storage service is not configured');
     return this.client;
   }
 
@@ -69,10 +70,8 @@ export class StorageService {
     mimeType: string,
     ctx?: AccessLogContext,
   ): Promise<string> {
-    if (!this.client) throw new Error('External storage is not configured');
-    console.log(
-      `[StorageService] uploadFile: bucket=${this.bucket}, key=${key}, size=${buffer.length}B`,
-    );
+    if (!this.client) throw new InternalServerErrorException('Storage service is not configured');
+    this.logger.log(`uploadFile: bucket=${this.bucket}, key=${key}, size=${buffer.length}B`);
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -81,7 +80,7 @@ export class StorageService {
         ContentType: mimeType,
       }),
     );
-    console.log(`[StorageService] uploadFile: success, key=${key}`);
+    this.logger.log(`uploadFile: success, key=${key}`);
     await this.recordAccess(key, R2AccessType.UPLOAD, {
       ...ctx,
       byteSize: ctx?.byteSize ?? buffer.length,
@@ -102,7 +101,7 @@ export class StorageService {
     ctx?: AccessLogContext,
     log = true,
   ): Promise<string> {
-    if (!this.client) throw new Error('External storage is not configured');
+    if (!this.client) throw new InternalServerErrorException('Storage service is not configured');
     const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
     const url = await getSignedUrl(this.client, command, { expiresIn });
     if (log) await this.recordAccess(key, R2AccessType.PRESIGNED_GET, ctx);
@@ -110,12 +109,12 @@ export class StorageService {
   }
 
   async downloadFile(key: string, ctx?: AccessLogContext): Promise<Buffer> {
-    if (!this.client) throw new Error('External storage is not configured');
+    if (!this.client) throw new InternalServerErrorException('Storage service is not configured');
     const response = await this.client.send(
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
     );
     if (!response.Body) {
-      throw new Error(`Storage object not found: ${key}`);
+      throw new NotFoundException('Storage object not found');
     }
     const chunks: Buffer[] = [];
     for await (const chunk of response.Body as Readable) {
@@ -130,7 +129,7 @@ export class StorageService {
   }
 
   async deleteFile(key: string, ctx?: AccessLogContext): Promise<void> {
-    if (!this.client) throw new Error('External storage is not configured');
+    if (!this.client) throw new InternalServerErrorException('Storage service is not configured');
     await this.client.send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
@@ -154,9 +153,8 @@ export class StorageService {
         },
       });
     } catch (err) {
-      console.warn(
-        `[StorageService] recordAccess failed (key=${objectKey}, type=${accessType}):`,
-        err instanceof Error ? err.message : err,
+      this.logger.warn(
+        `recordAccess failed (key=${objectKey}, type=${accessType}): ${err instanceof Error ? err.message : err}`,
       );
     }
   }
