@@ -1518,7 +1518,7 @@ export class ClassificationService {
       where: { id: residentId, condominiumId, deletedAt: null },
     });
     if (!resident) {
-      throw new Error('Resident not found in this condominium');
+      throw new NotFoundException('Resident not found in this condominium');
     }
 
     await this.prisma.$transaction(async (tx) => {

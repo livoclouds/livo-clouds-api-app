@@ -278,4 +278,38 @@ describeIntegration('classification pipeline (integration)', () => {
     expect(kpis.totalExpenses).toBe(800);
     expect(kpis.netBalance).toBe(2700);
   });
+
+  it('re-running classifyBatch on the same batch is idempotent (no double-counting)', async () => {
+    // First run — establishes the baseline classification.
+    const first = await ctx.classification.classifyBatch(fx.condominiumId, fx.batchId);
+
+    // Second run — simulates a retry or re-trigger (network error recovery, manual
+    // re-classify). The engine must produce the same summary and must not corrupt the
+    // FinancialMonthlySummary counters or the dashboard totals.
+    const second = await ctx.classification.classifyBatch(fx.condominiumId, fx.batchId);
+
+    expect(second).toEqual(first);
+
+    // The monthly summary must not double-count rows. transactionCount is a SET
+    // operation (upsert), not an increment, so re-running must leave it unchanged.
+    const monthly = await ctx.prisma.financialMonthlySummary.findUniqueOrThrow({
+      where: {
+        condominiumId_year_month: {
+          condominiumId: fx.condominiumId,
+          year: YEAR,
+          month: MONTH,
+        },
+      },
+    });
+
+    expect(monthly.transactionCount).toBe(3);
+    expect(monthly.classifiedCount).toBe(2);
+    expect(monthly.needsReviewCount).toBe(1);
+
+    // Dashboard KPIs must remain stable across reruns.
+    const { kpis } = await ctx.dashboard.getKpis(fx.condominiumId, YEAR, MONTH);
+    expect(kpis.totalIncome).toBe(3500);
+    expect(kpis.totalExpenses).toBe(800);
+    expect(kpis.netBalance).toBe(2700);
+  });
 });
