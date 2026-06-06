@@ -6,6 +6,7 @@ import {
   PayloadTooLargeException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { SettingsCacheService } from './settings-cache.service';
@@ -111,10 +112,31 @@ export class SettingsService {
   }
 
   async updateGeneral(condominiumId: string, dto: UpdateGeneralSettingsDto) {
+    // Score weights (Fase 4) are relative importances auto-normalized to 100 — the
+    // DTO bounds each to 0–100; reject only an all-zero set (would divide by zero).
+    // Score weights (Fase 4): the DTO is a class instance — pull it out and re-add
+    // as a plain JSON object so it satisfies Prisma's Json input type. Reject only
+    // an all-zero set (would divide by zero when auto-normalizing to 100).
+    const { financialHealthWeights, ...rest } = dto;
+    if (financialHealthWeights) {
+      const sum = Object.values(financialHealthWeights).reduce(
+        (a, b) => a + Number(b),
+        0,
+      );
+      if (!(sum > 0)) {
+        throw new BadRequestException('errors.settings.weightsInvalid');
+      }
+    }
+    const data = {
+      ...rest,
+      ...(financialHealthWeights
+        ? { financialHealthWeights: { ...financialHealthWeights } as Prisma.InputJsonValue }
+        : {}),
+    };
     const result = await this.prisma.condominiumSettings.upsert({
       where: { condominiumId },
-      create: { condominiumId, ...dto },
-      update: dto,
+      create: { condominiumId, ...data },
+      update: data,
     });
     this.settingsCache.invalidate(condominiumId);
     return result;

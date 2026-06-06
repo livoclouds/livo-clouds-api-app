@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 
 /**
@@ -56,5 +57,26 @@ describe('SettingsService cache invalidation', () => {
     const { service, cache } = setup();
     await service.updateProfile(CONDO, {} as never);
     expect(cache.invalidate).toHaveBeenCalledWith(CONDO);
+  });
+
+  // Fase 4 — per-condominium score weights are auto-normalized; reject all-zero.
+  const validWeights = {
+    onTime: 22, collectionRate: 16, monthsCurrent: 14, delinquencyAge: 14,
+    balance: 10, recurrence: 12, trend: 12,
+  };
+
+  it('updateGeneral accepts a positive weight set and upserts it', async () => {
+    const { service, prisma } = setup();
+    await service.updateGeneral(CONDO, { financialHealthWeights: validWeights } as never);
+    expect(prisma.condominiumSettings.upsert).toHaveBeenCalled();
+  });
+
+  it('updateGeneral rejects an all-zero weight set (would divide by zero)', async () => {
+    const { service, prisma } = setup();
+    const zeros = Object.fromEntries(Object.keys(validWeights).map((k) => [k, 0]));
+    await expect(
+      service.updateGeneral(CONDO, { financialHealthWeights: zeros } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.condominiumSettings.upsert).not.toHaveBeenCalled();
   });
 });

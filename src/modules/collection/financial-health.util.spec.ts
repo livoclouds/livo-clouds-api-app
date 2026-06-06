@@ -1,7 +1,11 @@
 import {
   buildScoreHistory,
   computeFinancialHealth,
+  FACTOR_KEYS,
   HEALTH_WEIGHTS,
+  HealthFactorKey,
+  isValidWeights,
+  normalizeWeights,
   ScoreRecordInput,
   ScoreSummaryInput,
 } from './financial-health.util';
@@ -182,5 +186,48 @@ describe('buildScoreHistory', () => {
 
   it('returns empty for a resident with no records', () => {
     expect(buildScoreHistory([], 12, NOW)).toEqual([]);
+  });
+});
+
+describe('weights (Fase 4 — per-condominium config)', () => {
+  const sum = (w: Record<string, number>) => Object.values(w).reduce((a, b) => a + b, 0);
+
+  it('normalizeWeights scales any positive set to sum 100; default is identity', () => {
+    expect(Math.round(sum(normalizeWeights()))).toBe(100);
+    // Halving every weight keeps the proportions → same normalized result.
+    const half = Object.fromEntries(
+      FACTOR_KEYS.map((k) => [k, HEALTH_WEIGHTS[k] / 2]),
+    ) as Record<HealthFactorKey, number>;
+    const n = normalizeWeights(half);
+    expect(Math.round(sum(n))).toBe(100);
+    expect(Math.round(n.onTime)).toBe(HEALTH_WEIGHTS.onTime);
+  });
+
+  it('isValidWeights rejects null, missing keys, negatives and all-zero', () => {
+    expect(isValidWeights(HEALTH_WEIGHTS)).toBe(true);
+    expect(isValidWeights(null)).toBe(false);
+    expect(isValidWeights({ ...HEALTH_WEIGHTS, trend: -1 })).toBe(false);
+    const missing = { ...HEALTH_WEIGHTS } as Record<string, number>;
+    delete missing.trend;
+    expect(isValidWeights(missing)).toBe(false);
+    const zeros = Object.fromEntries(FACTOR_KEYS.map((k) => [k, 0]));
+    expect(isValidWeights(zeros)).toBe(false);
+  });
+
+  it('normalizeWeights falls back to the defaults for an invalid set', () => {
+    expect(normalizeWeights({ onTime: 0 } as never)).toEqual(normalizeWeights(HEALTH_WEIGHTS));
+  });
+
+  it('custom weights change the score and the reported per-factor weight', () => {
+    const records = [rec('PAID_ON_TIME', 2026, 1), rec('UNPAID', 2026, 2)];
+    const s = summary({ monthsUnpaid: 1, totalExpected: 2000 });
+    // All weight on punctuality → score == on-time ratio (1 of 2 counted = 50%).
+    const allOnTime = Object.fromEntries(
+      FACTOR_KEYS.map((k) => [k, k === 'onTime' ? 100 : 0]),
+    ) as Record<HealthFactorKey, number>;
+    const h = computeFinancialHealth(s, records, NOW, allOnTime);
+    expect(h.factors.find((f) => f.key === 'onTime')!.weight).toBe(100);
+    expect(h.factors.find((f) => f.key === 'balance')!.weight).toBe(0);
+    expect(h.score).toBe(50);
   });
 });

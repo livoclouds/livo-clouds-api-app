@@ -415,6 +415,12 @@ model CondominiumSettings {
   // LEGAL category / LEGAL_CONFIDENTIAL entries are never auto-purged regardless.
   dossierRetentionDays Int @default(0)
 
+  // Financial-health score weights — Fase 4. Per-condominium override of the 7
+  // factor weights (onTime, collectionRate, monthsCurrent, delinquencyAge,
+  // balance, recurrence, trend). Null = documented defaults. Auto-normalized to
+  // sum 100 at compute time, so the stored values are relative importances.
+  financialHealthWeights Json?
+
   // Fees
   totalUnits              Int     @default(1)
   ordinaryFeeAmount       Decimal @default(0) @db.Decimal(12, 2)
