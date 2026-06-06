@@ -84,6 +84,7 @@ export async function closePipelineContext(ctx: PipelineContext): Promise<void> 
 export async function resetDb(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
     `TRUNCATE TABLE
+       "audit_logs",
        "transactions",
        "financial_monthly_summaries",
        "reconciliation_rules",
