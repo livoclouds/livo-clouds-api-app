@@ -173,6 +173,22 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       expect(result.summary.totalPaid).toBe(7000);
       // balance = totalExpected − totalPaid (POSITIVE = owes) = 27500 − 7000
       expect(result.summary.balance).toBe(27500 - 7000);
+      // compliancePercent = totalPaid / totalExpected · 100 = 7000 / 27500 · 100
+      expect(result.summary.compliancePercent).toBeCloseTo((7000 / 27500) * 100);
+    });
+
+    it('returns null compliancePercent when nothing is expected yet (no history)', async () => {
+      prisma.transaction.aggregate.mockResolvedValue({ _sum: { credits: 0 } });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({
+        _sum: { allocatedAmount: 0 },
+      });
+      prisma.collectionRecord.groupBy.mockResolvedValue([]);
+
+      const result = await service.getAccountStatement(CONDOMINIUM_ID, RESIDENT_ID);
+
+      expect(result.summary.totalExpected).toBe(0);
+      // Null (not 0%) so the web renders a dash instead of a misleading "0%".
+      expect(result.summary.compliancePercent).toBeNull();
     });
 
     it('adds this resident\'s allocation shares to totalPaid without double-counting', async () => {

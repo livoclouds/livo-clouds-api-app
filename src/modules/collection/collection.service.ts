@@ -236,6 +236,12 @@ export class CollectionService {
         // this way; computing it as paid − expected inverted the sign for every
         // consumer (Capa 1 bug, fixed in Fase 3).
         balance: totalExpected - totalPaid,
+        // Share of the amount expected "as of today" that has been settled, in
+        // percent (0–100+). Computed server-side over the same filtered window as
+        // totalPaid/totalExpected so the web only renders it (no client-side
+        // financial math). Null when nothing is expected yet (no history) — the
+        // web shows a dash instead of a misleading 0%.
+        compliancePercent: totalExpected > 0 ? (totalPaid / totalExpected) * 100 : null,
       },
     };
   }
