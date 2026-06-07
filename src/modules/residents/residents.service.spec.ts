@@ -238,7 +238,7 @@ describe('ResidentsService — RP-026 composite profile', () => {
 
     expect(result.resident).toEqual(expect.objectContaining({ id: RESIDENT_ID }));
     expect(result.accountStatement).toEqual({ summary: { balance: 0 } });
-    expect(result.financialHealth.current.score).toBe(88);
+    expect(result.financialHealth?.current.score).toBe(88);
     expect(result.currency).toBe('USD');
     expect(collection.getAccountStatement).toHaveBeenCalledWith(CONDOMINIUM_ID, RESIDENT_ID, {});
     expect(collection.getFinancialHealth).toHaveBeenCalledWith(CONDOMINIUM_ID, RESIDENT_ID);
