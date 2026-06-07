@@ -79,4 +79,19 @@ describe('SettingsService cache invalidation', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.condominiumSettings.upsert).not.toHaveBeenCalled();
   });
+
+  // Capa 2D — the auto-purge toggle persists alongside the retention window.
+  it('updateGeneral persists dossierRetentionDays + autopurgeEnabled', async () => {
+    const { service, prisma } = setup();
+    await service.updateGeneral(CONDO, {
+      dossierRetentionDays: 365,
+      autopurgeEnabled: true,
+    } as never);
+    expect(prisma.condominiumSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ dossierRetentionDays: 365, autopurgeEnabled: true }),
+        update: expect.objectContaining({ dossierRetentionDays: 365, autopurgeEnabled: true }),
+      }),
+    );
+  });
 });
