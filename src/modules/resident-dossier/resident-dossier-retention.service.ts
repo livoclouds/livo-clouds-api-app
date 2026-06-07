@@ -55,7 +55,8 @@ export class DossierRetentionService {
 
   async sweep(now: Date = new Date()): Promise<DossierRetentionSweepResult> {
     const configs = await this.prisma.condominiumSettings.findMany({
-      where: { dossierRetentionDays: { gt: 0 } },
+      // Purge only where the toggle is on AND a positive window is configured.
+      where: { autopurgeEnabled: true, dossierRetentionDays: { gt: 0 } },
       select: { condominiumId: true, dossierRetentionDays: true },
     });
 

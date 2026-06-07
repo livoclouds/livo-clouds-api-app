@@ -440,9 +440,13 @@ model CondominiumSettings {
   defaultLocale     String    @default("es")
 
   // Resident dossier (antecedentes) retention — Capa 2D. Days after soft-delete
-  // before the recycle bin is auto-purged. 0 = disabled (opt-in per condominium);
+  // before the recycle bin is auto-purged. 0 = no window (opt-in per condominium);
   // LEGAL category / LEGAL_CONFIDENTIAL entries are never auto-purged regardless.
   dossierRetentionDays Int @default(0)
+  // Whether the scheduled auto-purge actually runs. The sweep only purges when
+  // this is true AND dossierRetentionDays > 0, so an admin can pause the purge
+  // without losing the configured window.
+  autopurgeEnabled Boolean @default(false)
 
   // Financial-health score weights — Fase 4. Per-condominium override of the 7
   // factor weights (onTime, collectionRate, monthsCurrent, delinquencyAge,
