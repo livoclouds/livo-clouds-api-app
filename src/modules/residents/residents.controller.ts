@@ -15,6 +15,7 @@ import { Throttle } from '@nestjs/throttler';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
+import { AccountStatementDto } from '../collection/dto/account-statement.dto';
 import { BulkCreateResidentsDto } from './dto/bulk-create-residents.dto';
 import { BulkDeleteResidentsDto } from './dto/bulk-delete-residents.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
@@ -51,6 +52,23 @@ export class ResidentsController {
   @ApiOperation({ summary: 'Get resident with full profile' })
   findOne(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.residentsService.findOne(req.condominiumId, id);
+  }
+
+  // Composite resident 360 profile in one orchestrated call (RP-026): core
+  // record + account statement + financial-health score + tenant currency. The
+  // static 'profile' segment does not collide with the dynamic ':id' routes.
+  // Dossier/ARCO are NOT included — they keep their own permission-gated endpoints.
+  @Get(':id/profile')
+  @RequirePermission('residents.read')
+  @ApiOperation({
+    summary: 'Composite resident 360 profile (core + account statement + financial health + currency)',
+  })
+  getProfile(
+    @Request() req: AuthedRequest,
+    @Param('id') id: string,
+    @Query() dto: AccountStatementDto,
+  ) {
+    return this.residentsService.getProfile(req.condominiumId, id, dto);
   }
 
   @Post()

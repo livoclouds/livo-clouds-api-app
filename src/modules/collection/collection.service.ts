@@ -16,6 +16,12 @@ import {
 
 const COLLECTION_MODULE = 'collection';
 
+// The financial-health score needs the resident's COMPLETE collection history,
+// so the internal account-statement read intentionally uses a cap ABOVE the
+// public crLimit (600). Named + documented so it is not a silent magic number
+// (RP-027). 1200 = a century of monthly records, far beyond any real account.
+const FINANCIAL_HEALTH_HISTORY_CAP = 1200;
+
 @Injectable()
 export class CollectionService {
   constructor(
@@ -265,7 +271,7 @@ export class CollectionService {
   ) {
     const statement = await this.getAccountStatement(condominiumId, residentId, {
       crPage: 1,
-      crLimit: 1000,
+      crLimit: FINANCIAL_HEALTH_HISTORY_CAP,
     });
     const records: ScoreRecordInput[] = statement.collectionRecords.map((r) => ({
       year: r.year,
@@ -285,11 +291,35 @@ export class CollectionService {
       | Record<HealthFactorKey, number>
       | undefined;
     const health = computeFinancialHealth(statement.summary, records, now, weights);
-    const months = Math.min(36, Math.max(1, Math.floor(historyMonths || 12)));
+    // historyMonths is clamped to 1–36; months with no records are skipped. Both
+    // mean the caller can get fewer points than requested, so the response carries
+    // explicit availability metadata instead of leaving it silent (RP-018). All
+    // period math is UTC (RP-029).
+    const requestedMonths = Math.floor(historyMonths || 12);
+    const months = Math.min(36, Math.max(1, requestedMonths));
     const history = buildScoreHistory(records, months, now, weights);
+    const earliest = history.length
+      ? { year: history[0].year, month: history[0].month }
+      : null;
+    const latest = history.length
+      ? { year: history[history.length - 1].year, month: history[history.length - 1].month }
+      : null;
+    const coverageMonths =
+      earliest && latest
+        ? latest.year * 12 + latest.month - (earliest.year * 12 + earliest.month) + 1
+        : 0;
     return {
       current: { ...health, computedAt: now.toISOString() },
       history,
+      historyMeta: {
+        requestedMonths,
+        effectiveMonths: months,
+        returnedPoints: history.length,
+        coverageMonths,
+        earliest,
+        latest,
+        timezone: 'UTC' as const,
+      },
     };
   }
 

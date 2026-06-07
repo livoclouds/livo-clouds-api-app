@@ -144,6 +144,60 @@ describe('computeFinancialHealth', () => {
     expect(computeFinancialHealth(summary(), [], NOW).hasData).toBe(false);
   });
 
+  it('keeps 2-decimal precision on factors instead of forcing integers (RP-028)', () => {
+    // 2 of 3 counted months on-time → 66.666…% — must round to 66.67, not 67.
+    const records = [
+      rec('PAID_ON_TIME', 2026, 1),
+      rec('PAID_ON_TIME', 2026, 2),
+      rec('UNPAID', 2026, 3),
+    ];
+    const h = computeFinancialHealth(
+      summary({ monthsUnpaid: 1, totalExpected: 3000 }),
+      records,
+      NOW,
+    );
+    const ot = factor(h, 'onTime');
+    expect(ot.rawValue).toBeCloseTo(66.67, 2);
+    expect(Number.isInteger(ot.rawValue)).toBe(false);
+    // contribution carries decimals too (≈ 0.6667 × weight 22) and stays ≤ weight.
+    expect(ot.contribution).toBeCloseTo(14.67, 2);
+    expect(ot.contribution).toBeLessThanOrEqual(ot.weight);
+  });
+
+  it('excludes AGREEMENT from the collection rate but keeps EXTRAORDINARY (RP-030)', () => {
+    // On-time month fully paid + an unpaid AGREEMENT month → agreement ignored → 100%.
+    const withAgreement = [rec('PAID_ON_TIME', 2026, 1), rec('AGREEMENT', 2026, 2)];
+    const hA = computeFinancialHealth(summary({ totalExpected: 2000 }), withAgreement, NOW);
+    expect(factor(hA, 'collectionRate').rawValue).toBe(100);
+
+    // Same shape but EXTRAORDINARY → a real obligation → drags the rate to 50%.
+    const withExtraordinary = [rec('PAID_ON_TIME', 2026, 1), rec('EXTRAORDINARY', 2026, 2)];
+    const hE = computeFinancialHealth(summary({ totalExpected: 2000 }), withExtraordinary, NOW);
+    expect(factor(hE, 'collectionRate').rawValue).toBe(50);
+  });
+
+  it('removes the AGREEMENT net from the scoring balance but not EXTRAORDINARY (RP-030)', () => {
+    // A $1000 debt entirely from an AGREEMENT month → "under management" → scoring
+    // balance 0 → full credit, while rawValue still shows the real displayed debt.
+    const agreement = [rec('AGREEMENT', 2026, 2)]; // 0 paid / 1000 expected
+    const hA = computeFinancialHealth(
+      summary({ balance: 1000, totalExpected: 1000 }),
+      agreement,
+      NOW,
+    );
+    expect(factor(hA, 'balance').rawValue).toBe(1000);
+    expect(factor(hA, 'balance').contribution).toBe(HEALTH_WEIGHTS.balance);
+
+    // Same $1000 debt as an EXTRAORDINARY charge → counts → penalised to 0.
+    const extraordinary = [rec('EXTRAORDINARY', 2026, 2)];
+    const hX = computeFinancialHealth(
+      summary({ balance: 1000, totalExpected: 1000 }),
+      extraordinary,
+      NOW,
+    );
+    expect(factor(hX, 'balance').contribution).toBeLessThan(HEALTH_WEIGHTS.balance);
+  });
+
   it('exposes every factor with raw value, weight and a capped contribution', () => {
     const h = computeFinancialHealth(
       summary({ monthsUnpaid: 3, balance: 1000, totalExpected: 2000 }),

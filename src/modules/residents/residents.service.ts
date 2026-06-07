@@ -7,6 +7,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
 import { AuditService } from '../audit/audit.service';
+import { CollectionService } from '../collection/collection.service';
+import { AccountStatementDto } from '../collection/dto/account-statement.dto';
 import { BulkImportResidentDto } from './dto/bulk-import-resident.dto';
 import { CreateAdditionalResidentDto } from './dto/create-additional-resident.dto';
 import { CreatePetDto } from './dto/create-pet.dto';
@@ -68,6 +70,7 @@ export class ResidentsService {
   constructor(
     private prisma: PrismaService,
     private audit: AuditService,
+    private collection: CollectionService,
   ) {}
 
   async findAll(
@@ -246,6 +249,40 @@ export class ResidentsService {
     }
 
     return resident;
+  }
+
+  // Orchestrated resident 360 profile in a single call (RP-026): core record,
+  // full account statement, explainable financial-health score + trend, and the
+  // tenant currency — so the web profile page loads with one request instead of
+  // four parallel ones. Dossier + ARCO are deliberately NOT bundled: they are
+  // confidentiality / permission-gated (Capa 2) and stay on their own guarded
+  // endpoints. `findOne` runs first so a missing resident 404s before the rest.
+  async getProfile(
+    condominiumId: string,
+    id: string,
+    statementDto: AccountStatementDto = {},
+  ) {
+    // findOne first so a missing resident 404s before anything else. The three
+    // sub-resources are settled independently so a transient statement/health
+    // failure degrades that section to null (the web renders an unavailable
+    // state) instead of failing the whole profile — preserving the resilience
+    // the page had when it made these as separate parallel calls.
+    const resident = await this.findOne(condominiumId, id);
+    const [stmtRes, healthRes, settingsRes] = await Promise.allSettled([
+      this.collection.getAccountStatement(condominiumId, id, statementDto),
+      this.collection.getFinancialHealth(condominiumId, id),
+      this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { currency: true },
+      }),
+    ]);
+    return {
+      resident,
+      accountStatement: stmtRes.status === 'fulfilled' ? stmtRes.value : null,
+      financialHealth: healthRes.status === 'fulfilled' ? healthRes.value : null,
+      currency:
+        settingsRes.status === 'fulfilled' ? settingsRes.value?.currency ?? 'MXN' : 'MXN',
+    };
   }
 
   async create(condominiumId: string, userId: string, dto: CreateResidentDto) {
