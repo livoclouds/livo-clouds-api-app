@@ -137,6 +137,33 @@ enum SupplierEngagement {
   OCCASIONAL
 }
 
+// Quotation enums intentionally use the exact camelCase values the web app's
+// QuotationCategory / QuotationStatus unions already ship (see
+// livo-clouds-web-app/src/types/quotations.types.ts). Prisma permits these
+// identifiers, and matching them removes any lossy API<->web mapping layer.
+enum QuotationCategory {
+  carpentry
+  hardware
+  gateRepair
+  masonry
+  gardening
+  surveillance
+  lighting
+  stationery
+  signage
+  painting
+  other
+}
+
+enum QuotationStatus {
+  received
+  pendingReview
+  providerSelected
+  inProgress
+  completed
+  cancelled
+}
+
 enum FlowType {
   INCOME
   EXPENSE
@@ -387,6 +414,8 @@ model Condominium {
   supportTickets                   SupportTicket[]
   residentDossierEntries           ResidentDossierEntry[]
   arcoRequests                     ArcoRequest[]
+  quotationRequests                QuotationRequest[]
+  quotations                       Quotation[]
 
   @@map("condominiums")
 }
@@ -891,6 +920,68 @@ model SupplierRating {
   @@index([supplierId])
   @@index([condominiumId, supplierId])
   @@map("supplier_ratings")
+}
+
+/// A request for quotes on a piece of work (painting, gate repair, etc.). Each
+/// request gathers one or more provider Quotations; the chosen one is tracked by
+/// `selectedQuotationId` (a plain id, validated in the service against the
+/// request's own quotations — no FK cycle). Soft-deleted via `deletedAt`.
+model QuotationRequest {
+  id            String            @id @default(uuid())
+  condominiumId String
+  title         String
+  description   String            @default("")
+  category      QuotationCategory
+  status        QuotationStatus   @default(received)
+  targetStartDate DateTime?       @db.Date
+  targetEndDate   DateTime?       @db.Date
+  // Id of the winning Quotation (one of this request's `quotations`), or null.
+  selectedQuotationId String?
+  beforePhotos  String[]          @default([])
+  afterPhotos   String[]          @default([])
+  comments      String            @default("")
+  // JWT `sub` of the actor. API-owned, never from the request body.
+  createdBy     String?
+  updatedBy     String?
+  deletedAt     DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  quotations  Quotation[]
+
+  @@index([condominiumId])
+  @@index([condominiumId, status])
+  @@index([condominiumId, category])
+  @@index([deletedAt])
+  @@map("quotation_requests")
+}
+
+/// A single provider's quote attached to a QuotationRequest. Hard-deleted (it is
+/// a child row of the request); the parent FK cascades on request deletion.
+model Quotation {
+  id                 String    @id @default(uuid())
+  condominiumId      String
+  requestId          String
+  providerName       String
+  providerPhone      String?
+  providerEmail      String?
+  amount             Decimal   @db.Decimal(12, 2)
+  currency           String    @default("MXN")
+  quoteDate          DateTime  @db.Date
+  estimatedStartDate DateTime? @db.Date
+  estimatedEndDate   DateTime? @db.Date
+  documentUrl        String?
+  notes              String    @default("")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  condominium Condominium      @relation(fields: [condominiumId], references: [id])
+  request     QuotationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([condominiumId])
+  @@map("quotations")
 }
 
 /// Condo-editable catalog that classifies EXPENSE transactions (e.g.
