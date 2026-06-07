@@ -90,10 +90,11 @@ describe('permission-catalog', () => {
       expect(
         condo.every((k) => !WRITE_ACTIONS.some((a) => k.endsWith(`.${a}`))),
       ).toBe(true);
-      // Auditor sees the dossier (standard + restricted) but never the
-      // legal-confidential tier, and cannot manage it.
+      // Auditor sees STANDARD dossier entries only — not RESTRICTED or LEGAL_CONFIDENTIAL.
+      // Phase 5 audit (RP-008): viewRestricted removed from CONDOMINO_PERMS to align the
+      // API grant with the UI filter (dossier-filters.ts already shows STANDARD-only).
       expect(condo).toContain('residents.dossier.view');
-      expect(condo).toContain('residents.dossier.viewRestricted');
+      expect(condo).not.toContain('residents.dossier.viewRestricted');
       expect(condo).not.toContain('residents.dossier.viewLegal');
       expect(condo).not.toContain('residents.dossier.manage');
       // ARCO export is a read-tier action the auditor holds (no write verb).
