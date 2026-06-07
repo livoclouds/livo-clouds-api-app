@@ -2,9 +2,11 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { CollectionStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
+import { AuditService } from '../audit/audit.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
+import { UpdateCollectionRecordDto } from './dto/update-collection-record.dto';
 import {
   buildScoreHistory,
   computeFinancialHealth,
@@ -12,9 +14,14 @@ import {
   ScoreRecordInput,
 } from './financial-health.util';
 
+const COLLECTION_MODULE = 'collection';
+
 @Injectable()
 export class CollectionService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
 
   async findAll(
     condominiumId: string,
@@ -288,30 +295,44 @@ export class CollectionService {
 
   async update(
     condominiumId: string,
+    userId: string,
     id: string,
-    dto: {
-      status?: string;
-      amountPaid?: number;
-      paymentDate?: string;
-      notes?: string;
-    },
+    dto: UpdateCollectionRecordDto,
   ) {
-    const record = await this.prisma.collectionRecord.findFirst({
-      where: { id, condominiumId },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.collectionRecord.findFirst({
+        where: { id, condominiumId },
+      });
 
-    if (!record) {
-      throw new NotFoundException('Collection record not found');
-    }
+      if (!before) throw new NotFoundException('Collection record not found');
 
-    return this.prisma.collectionRecord.update({
-      where: { id },
-      data: {
-        status: dto.status ? (dto.status as CollectionStatus) : undefined,
-        amountPaid: dto.amountPaid,
-        notes: dto.notes,
-        paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : undefined,
-      },
+      const updated = await tx.collectionRecord.update({
+        where: { id },
+        data: {
+          status: dto.status,
+          amountPaid: dto.amountPaid,
+          notes: dto.notes,
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : undefined,
+        },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: 'COLLECTION_RECORD_UPDATED',
+          actionCategory: 'FINANCIAL',
+          module: COLLECTION_MODULE,
+          entityType: 'CollectionRecord',
+          entityId: id,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
     });
   }
 }

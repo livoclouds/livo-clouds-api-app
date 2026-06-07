@@ -545,6 +545,10 @@ export class ResidentDossierService {
     });
     if (!attachment) throw new NotFoundException('Attachment not found');
 
+    // 3600 s (1 h) expiry: short enough to limit post-revocation risk (a user whose
+    // permission is removed cannot use a cached URL for more than 1 hour) while giving
+    // a comfortable download window. For LEGAL_CONFIDENTIAL attachments the tradeoff
+    // is accepted — reduce to 600 s if compliance policy changes. Phase 5 audit (RP-009).
     const url = await this.storage.getPresignedUrl(attachment.storageKey, 3600, {
       userId,
       condominiumId,

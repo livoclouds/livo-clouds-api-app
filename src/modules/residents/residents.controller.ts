@@ -40,12 +40,14 @@ export class ResidentsController {
   constructor(private readonly residentsService: ResidentsService) {}
 
   @Get()
+  @RequirePermission('residents.read')
   @ApiOperation({ summary: 'List residents' })
   findAll(@Request() req: AuthedRequest, @Query() dto: ListResidentsDto) {
     return this.residentsService.findAll(req.condominiumId, dto);
   }
 
   @Get(':id')
+  @RequirePermission('residents.read')
   @ApiOperation({ summary: 'Get resident with full profile' })
   findOne(@Request() req: AuthedRequest, @Param('id') id: string) {
     return this.residentsService.findOne(req.condominiumId, id);

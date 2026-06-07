@@ -50,8 +50,10 @@ function makePrismaMock(): PrismaMock {
   };
 }
 
+const auditMock = { log: jest.fn().mockResolvedValue(undefined) };
+
 function makeService(prisma: PrismaMock): CollectionService {
-  return new CollectionService(prisma as never);
+  return new CollectionService(prisma as never, auditMock as never);
 }
 
 function makeResident(
