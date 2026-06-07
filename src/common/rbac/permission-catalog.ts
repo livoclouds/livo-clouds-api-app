@@ -217,10 +217,10 @@ const CONDOMINO_PERMS = [
   'reports.read',
   'calendar.read',
   'notifications.read',
-  // Auditor sees the dossier (standard + restricted) but NOT legal-confidential,
-  // and cannot manage it. Owner decision 2026-06-05.
+  // Auditor sees STANDARD dossier entries only — not RESTRICTED or LEGAL_CONFIDENTIAL.
+  // Aligns with dossier-filters.ts which already gates read_only to STANDARD-only.
+  // Phase 5 audit (RP-008): viewRestricted removed to close the API/UI mismatch.
   'residents.dossier.view',
-  'residents.dossier.viewRestricted',
   // ARCO export for compliance — read-only, scoped to the auditor's view tier.
   'residents.dossier.export',
   // ARCO request tracker: oversight (view), no manage.
