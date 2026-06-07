@@ -100,8 +100,24 @@ function makeAuditMock(): AuditMock {
   return { log: jest.fn().mockResolvedValue(undefined) };
 }
 
-function makeService(prisma: PrismaMock, audit: AuditMock): ResidentsService {
-  return new ResidentsService(prisma as never, audit as never);
+interface CollectionMock {
+  getAccountStatement: jest.Mock;
+  getFinancialHealth: jest.Mock;
+}
+
+function makeCollectionMock(): CollectionMock {
+  return {
+    getAccountStatement: jest.fn().mockResolvedValue({ summary: {} }),
+    getFinancialHealth: jest.fn().mockResolvedValue({ current: {}, history: [], historyMeta: {} }),
+  };
+}
+
+function makeService(
+  prisma: PrismaMock,
+  audit: AuditMock,
+  collection: CollectionMock = makeCollectionMock(),
+): ResidentsService {
+  return new ResidentsService(prisma as never, audit as never, collection as never);
 }
 
 function makeResident(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -198,6 +214,52 @@ const createAdditionalResidentDto: CreateAdditionalResidentDto = {
   residentType: ResidentTypeDto.RESIDENT,
   relationship: 'Spouse',
 };
+
+describe('ResidentsService — RP-026 composite profile', () => {
+  let prisma: PrismaMock;
+  let audit: AuditMock;
+  let collection: CollectionMock;
+  let service: ResidentsService;
+
+  beforeEach(() => {
+    prisma = makePrismaMock();
+    audit = makeAuditMock();
+    collection = makeCollectionMock();
+    service = makeService(prisma, audit, collection);
+  });
+
+  it('orchestrates resident + account statement + financial health + currency in one call', async () => {
+    prisma.resident.findFirst.mockResolvedValue(makeResident());
+    prisma.condominiumSettings.findUnique.mockResolvedValue({ currency: 'USD' });
+    collection.getAccountStatement.mockResolvedValue({ summary: { balance: 0 } });
+    collection.getFinancialHealth.mockResolvedValue({ current: { score: 88 }, history: [], historyMeta: {} });
+
+    const result = await service.getProfile(CONDOMINIUM_ID, RESIDENT_ID);
+
+    expect(result.resident).toEqual(expect.objectContaining({ id: RESIDENT_ID }));
+    expect(result.accountStatement).toEqual({ summary: { balance: 0 } });
+    expect(result.financialHealth.current.score).toBe(88);
+    expect(result.currency).toBe('USD');
+    expect(collection.getAccountStatement).toHaveBeenCalledWith(CONDOMINIUM_ID, RESIDENT_ID, {});
+    expect(collection.getFinancialHealth).toHaveBeenCalledWith(CONDOMINIUM_ID, RESIDENT_ID);
+  });
+
+  it('defaults the currency to MXN when no settings row exists', async () => {
+    prisma.resident.findFirst.mockResolvedValue(makeResident());
+    prisma.condominiumSettings.findUnique.mockResolvedValue(null);
+    const result = await service.getProfile(CONDOMINIUM_ID, RESIDENT_ID);
+    expect(result.currency).toBe('MXN');
+  });
+
+  it('404s before fetching statement/health for a resident outside the tenant', async () => {
+    prisma.resident.findFirst.mockResolvedValue(null);
+    await expect(service.getProfile(CONDOMINIUM_ID, 'ghost')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(collection.getAccountStatement).not.toHaveBeenCalled();
+    expect(collection.getFinancialHealth).not.toHaveBeenCalled();
+  });
+});
 
 describe('ResidentsService — Phase 1 API safety net', () => {
   let prisma: PrismaMock;

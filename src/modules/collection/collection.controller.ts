@@ -52,7 +52,16 @@ export class CollectionController {
   }
 
   @Get('residents/:residentId/financial-health')
-  @ApiOperation({ summary: 'Explainable financial-health score + derived trend history for a resident' })
+  @ApiOperation({
+    summary: 'Explainable financial-health score + derived trend history for a resident',
+    description:
+      'Returns the current score (0–100 integer; factor weight/contribution/rawValue at ' +
+      '2-decimal precision), a per-month trend line, and `historyMeta` describing how much ' +
+      'history was actually available vs requested (months with no records are skipped and ' +
+      'the requested span is clamped to 1–36). All period boundaries and the "as-of" date ' +
+      'used for delinquency age are computed in UTC. AGREEMENT (convenio) debt is excluded ' +
+      "from the balance & collection-rate factors (under management); EXTRAORDINARY counts.",
+  })
   getFinancialHealth(
     @Request() req: AuthedRequest,
     @Param('residentId') residentId: string,
