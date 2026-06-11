@@ -1326,20 +1326,32 @@ export class ClassificationService {
 
     let summary: ClassificationSummary;
     try {
-      await this.prisma.transaction.updateMany({
-        where: { condominiumId, importBatchId: batchId },
-        data: {
-          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-          residentId: null,
-          matchSource: null,
-          confidenceScore: null,
-          matchedAt: null,
-          requiresReviewReason: null,
-          matchedRuleId: null,
-          matchedCalendarEventId: null,
-          classificationVersion: { increment: 1 },
-        },
-      });
+      // The reset wipes every manual resident link, so the batch's manual
+      // splits must go with it — atomically, or a crash between the two
+      // writes leaves allocations pointing at unlinked transactions
+      // (ENGINE-006).
+      await this.prisma.$transaction([
+        this.prisma.transaction.updateMany({
+          where: { condominiumId, importBatchId: batchId },
+          data: {
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+            residentId: null,
+            matchSource: null,
+            confidenceScore: null,
+            matchedAt: null,
+            requiresReviewReason: null,
+            matchedRuleId: null,
+            matchedCalendarEventId: null,
+            classificationVersion: { increment: 1 },
+          },
+        }),
+        this.prisma.paymentAllocation.deleteMany({
+          where: {
+            condominiumId,
+            transaction: { importBatchId: batchId, condominiumId },
+          },
+        }),
+      ]);
       summary = await this.classifyBatch(condominiumId, batchId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1617,6 +1629,12 @@ export class ClassificationService {
         });
       }
 
+      // A single-resident link supersedes any prior multi-unit split; stale
+      // allocations would keep paying the old residents (ENGINE-006).
+      await tx.paymentAllocation.deleteMany({
+        where: { transactionId, condominiumId },
+      });
+
       await tx.auditLog.create({
         data: {
           condominiumId,
@@ -1743,6 +1761,9 @@ export class ClassificationService {
           classificationStatus: true,
           requiresReviewReason: true,
           matchedRuleId: true,
+          paymentAllocations: {
+            select: { residentId: true, unitNumber: true, allocatedAmount: true },
+          },
         },
       });
       if (!existingTx) throw new NotFoundException('Transaction not found');
@@ -1775,6 +1796,15 @@ export class ClassificationService {
         throw new ConflictException({
           code: 'STALE_OVERRIDE',
           reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      // Re-linking to a single unit supersedes any prior multi-unit split.
+      // Concept/period-only edits (unitNumber undefined) must NOT touch a
+      // valid split — only linkage rewrites clean up (ENGINE-006).
+      if (dto.unitNumber !== undefined) {
+        await tx.paymentAllocation.deleteMany({
+          where: { transactionId, condominiumId },
         });
       }
 
@@ -1828,6 +1858,15 @@ export class ClassificationService {
             classificationStatus: existingTx.classificationStatus,
             requiresReviewReason: existingTx.requiresReviewReason,
             matchedRuleId: existingTx.matchedRuleId,
+            // Splits removed by a single-unit re-link (ENGINE-006 cleanup).
+            ...(dto.unitNumber !== undefined &&
+              (existingTx.paymentAllocations?.length ?? 0) > 0 && {
+                removedAllocations: existingTx.paymentAllocations.map((a) => ({
+                  residentId: a.residentId,
+                  unitNumber: a.unitNumber,
+                  allocatedAmount: Number(a.allocatedAmount),
+                })),
+              }),
           },
           afterState: {
             residentId: residentId !== undefined ? residentId : (existingTx.residentId ?? null),
@@ -2078,6 +2117,12 @@ export class ClassificationService {
           reason: 'Transaction was modified by another user. Refresh and try again.',
         });
       }
+
+      // Unlinked means zero allocations — a surviving split would keep paying
+      // residents out of a transaction that belongs to no one (ENGINE-006).
+      await tx.paymentAllocation.deleteMany({
+        where: { transactionId, condominiumId },
+      });
 
       await tx.auditLog.create({
         data: {
