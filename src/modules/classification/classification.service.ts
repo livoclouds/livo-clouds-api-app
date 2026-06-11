@@ -17,6 +17,7 @@ import { SettingsCacheService } from '../settings/settings-cache.service';
 import { isBanBajio } from '../bank-profiles/known-banks';
 import { STALE_PROCESSING_MS } from '../imports/imports.constants';
 import { round2, toCents } from '../../common/utils/money.util';
+import { summaryLockKey, upsertSummaryForMonthCore } from './monthly-summary.util';
 
 /**
  * Phase 6 (A4): page size for cursor-batched loading of classification
@@ -1547,12 +1548,7 @@ export class ClassificationService {
     // Recompute monthly summaries for every period that had at least one
     // touched transaction. classifyBatch does this scoped by batchId; here
     // we span batches but the per-month aggregation is the same.
-    await Promise.all(
-      Array.from(affectedMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, affectedMonths);
 
     if (actorUserId) {
       await this.prisma.auditLog.create({
@@ -2168,12 +2164,7 @@ export class ClassificationService {
       uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
     }
 
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, uniqueMonths);
   }
 
   // ENGINE-002 — public recompute for callers that delete transactions and
@@ -2184,10 +2175,9 @@ export class ClassificationService {
     condominiumId: string,
     months: Array<{ year: number; month: number }>,
   ): Promise<void> {
-    await Promise.all(
-      months.map(({ year, month }) =>
-        this.upsertSummaryForMonth(condominiumId, year, month),
-      ),
+    await this.recomputeMonths(
+      condominiumId,
+      months.map(({ year, month }) => `${year}-${month}`),
     );
   }
 
@@ -2223,100 +2213,34 @@ export class ClassificationService {
     year: number,
     month: number,
   ): Promise<void> {
-    const start = new Date(year, month - 1, 1);
-    const end = new Date(year, month, 1);
-
-    // Only APPROVED transactions affect official income/expense totals
-    const [incomeAgg, expenseAgg, classificationCounts, reconciliationCounts] = await Promise.all([
-      this.prisma.transaction.aggregate({
-        where: {
-          condominiumId,
-          flowType: 'INCOME',
-          transactionDate: { gte: start, lt: end },
-          reconciliationStatus: ReconciliationStatus.APPROVED,
-        },
-        _sum: { credits: true },
-        _count: true,
-      }),
-      this.prisma.transaction.aggregate({
-        where: {
-          condominiumId,
-          flowType: 'EXPENSE',
-          transactionDate: { gte: start, lt: end },
-          reconciliationStatus: ReconciliationStatus.APPROVED,
-        },
-        _sum: { charges: true },
-        _count: true,
-      }),
-      this.prisma.transaction.groupBy({
-        by: ['classificationStatus'],
-        where: { condominiumId, transactionDate: { gte: start, lt: end } },
-        _count: true,
-      }),
-      this.prisma.transaction.groupBy({
-        by: ['reconciliationStatus'],
-        where: { condominiumId, transactionDate: { gte: start, lt: end } },
-        _count: true,
-      }),
-    ]);
-
-    const totalIncome = Number(incomeAgg._sum.credits ?? 0);
-    const totalExpenses = Number(expenseAgg._sum.charges ?? 0);
-    const approvedCount = incomeAgg._count + expenseAgg._count;
-
-    const totalAll = await this.prisma.transaction.count({
-      where: { condominiumId, transactionDate: { gte: start, lt: end } },
+    // ENGINE-022 — the six reads + upsert run inside one transaction,
+    // serialized per (tenant, month) by a Postgres advisory xact-lock
+    // (first advisory-lock use in this codebase). $transaction alone is
+    // READ COMMITTED — each statement takes its own snapshot — so without
+    // the lock two concurrent recomputes could persist internally
+    // inconsistent counts (pending+approved+ignored ≠ transactionCount).
+    // pg_advisory_xact_lock(int4, int4): key1 = hashtext(condominiumId),
+    // key2 = year*100+month; auto-released at commit/rollback.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${condominiumId}), ${summaryLockKey(year, month)})`;
+      await upsertSummaryForMonthCore(tx, condominiumId, year, month);
     });
+  }
 
-    const classifiedCount =
-      classificationCounts.find((s) => s.classificationStatus === 'AUTO')?._count ?? 0;
-    const needsReviewCount =
-      classificationCounts.find((s) => s.classificationStatus === 'NEEDS_REVIEW')?._count ?? 0;
-
-    const pendingCount =
-      reconciliationCounts.find((s) => s.reconciliationStatus === 'PENDING')?._count ?? 0;
-    const ignoredCount =
-      reconciliationCounts.find((s) => s.reconciliationStatus === 'IGNORED')?._count ?? 0;
-
-    const unmatchedRows = await this.prisma.transaction.count({
-      where: {
-        condominiumId,
-        transactionDate: { gte: start, lt: end },
-        classificationStatus: 'NEEDS_REVIEW',
-        residentId: null,
-      },
-    });
-
-    await this.prisma.financialMonthlySummary.upsert({
-      where: { condominiumId_year_month: { condominiumId, year, month } },
-      create: {
-        condominiumId,
-        year,
-        month,
-        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-        transactionCount: totalAll,
-        classifiedCount,
-        needsReviewCount,
-        unmatchedCount: unmatchedRows,
-        approvedCount,
-        pendingCount,
-        ignoredCount,
-      },
-      update: {
-        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-        transactionCount: totalAll,
-        classifiedCount,
-        needsReviewCount,
-        unmatchedCount: unmatchedRows,
-        approvedCount,
-        pendingCount,
-        ignoredCount,
-      },
-    });
+  /**
+   * Coalesced month recompute (ENGINE-039): dedupes the month keys and runs
+   * the recomputes SEQUENTIALLY — a request touches 1-13 months at most, and
+   * a parallel fan-out would only queue on the advisory lock while exhausting
+   * the connection pool.
+   */
+  private async recomputeMonths(
+    condominiumId: string,
+    monthKeys: Iterable<string>,
+  ): Promise<void> {
+    for (const key of new Set(monthKeys)) {
+      const [year, month] = key.split('-').map(Number);
+      await this.upsertSummaryForMonth(condominiumId, year, month);
+    }
   }
 
   async approveTransaction(
@@ -2578,15 +2502,10 @@ export class ClassificationService {
       });
     });
 
-    const uniqueMonths = new Set<string>();
     const d = new Date(capturedDate!);
-    uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, [
+      `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
+    ]);
 
     if (capturedCalendarEventId) {
       await this.unmarkTerraceEventPaid(capturedCalendarEventId, transactionId, condominiumId, userId);
@@ -2628,16 +2547,12 @@ export class ClassificationService {
       }),
     ]);
 
-    // Recalculate summaries for all affected months
-    const uniqueMonths = new Set<string>();
-    for (const tx of existing) {
-      const d = new Date(tx.transactionDate);
-      uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
-    }
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
+    // Recalculate summaries for all affected months (deduped, sequential)
+    await this.recomputeMonths(
+      condominiumId,
+      existing.map((tx) => {
+        const d = new Date(tx.transactionDate);
+        return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
       }),
     );
 
