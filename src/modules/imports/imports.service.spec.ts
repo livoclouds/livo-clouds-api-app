@@ -1,5 +1,7 @@
 import * as crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { ImportsService } from './imports.service';
+import { ImportProfileMismatchError } from './parser';
 import {
   IMPORT_DUPLICATE_EVENT,
   IMPORT_FAILED_EVENT,
@@ -312,16 +314,26 @@ function makeFullDeps() {
   return {
     tx,
     prisma: {
-      $transaction: jest.fn(async (cb: (t: typeof tx) => unknown) => cb(tx)),
+      // Supports both forms: callback (confirm's interactive tx) and array
+      // (remove's batched deleteMany + updateMany).
+      $transaction: jest.fn(async (arg: unknown) =>
+        Array.isArray(arg)
+          ? Promise.all(arg)
+          : (arg as (t: typeof tx) => unknown)(tx),
+      ),
       importBatch: {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn(),
         findUnique: jest.fn(),
         create: jest.fn(),
         update: jest.fn().mockResolvedValue({}),
-        updateMany: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         delete: jest.fn().mockResolvedValue({}),
         count: jest.fn(),
+      },
+      transaction: {
+        groupBy: jest.fn().mockResolvedValue([]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       condominiumSettings: {
         findUnique: jest.fn().mockResolvedValue({ currency: 'MXN' }),
@@ -334,12 +346,15 @@ function makeFullDeps() {
       isConfigured: jest.fn().mockReturnValue(true),
       uploadFile: jest.fn().mockResolvedValue(undefined),
       downloadFile: jest.fn(),
+      deleteFile: jest.fn().mockResolvedValue(undefined),
       getPresignedUrl: jest.fn(),
     },
     classification: {
       classifyBatch: jest
         .fn()
         .mockResolvedValue({ total: 1, classified: 1, needsReview: 0, unmatched: 0 }),
+      revertTerraceLinksForBatch: jest.fn().mockResolvedValue(undefined),
+      recomputeSummariesForMonths: jest.fn().mockResolvedValue(undefined),
     },
     settings: {
       validateFeesConfigured: jest.fn().mockResolvedValue({ valid: true }),
@@ -354,7 +369,13 @@ function makeFullDeps() {
       get: jest.fn().mockReturnValue(true),
     },
     bankProfiles: {
-      resolveFieldsForBatch: jest.fn(),
+      // ENGINE-005: confirm resolves the bank-profile fields exactly as
+      // preview does. Default to the no-profile fallback shape.
+      resolveFieldsForBatch: jest.fn().mockResolvedValue({
+        profileId: null,
+        profileName: null,
+        fields: undefined,
+      }),
     },
     events: {
       emit: jest.fn(),
@@ -838,5 +859,625 @@ describe('ImportsService.runClassificationAsync — failure handling', () => {
         data: expect.objectContaining({ status: 'COMPLETED' }),
       }),
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2 — Import pipeline integrity & recovery (ENGINE-002/005/017/026/028/
+// 048/051). Reuses makeFullDeps()/makeFullService() from the ENGINE-032 block.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ImportsService.confirm — bank-profile field parity (ENGINE-005)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+  const clientRow = {
+    date: '2025-11-01',
+    description: 'PAGO UNIDAD 1',
+    charges: 0,
+    credits: 1500,
+    balance: 1500,
+  };
+  const serverRow = { ...clientRow, flowType: 'income' as const };
+  const CUSTOM_FIELDS = [
+    { key: 'date', label: 'Fecha', aliases: ['fecha operación'] },
+  ];
+
+  function makeDtoWithProfile() {
+    return {
+      bankProfileId: 'bp-1',
+      files: [
+        {
+          fileName: 'movimientos.xlsx',
+          fileType: 'xlsx',
+          fileHash: R2_HASH,
+          fileSizeBytes: 2048,
+          warnings: [],
+          transactions: [clientRow],
+        },
+      ],
+    };
+  }
+
+  function setup(deps: ReturnType<typeof makeFullDeps>) {
+    deps.prisma.bankProfile.findFirst.mockResolvedValue({
+      id: 'bp-1',
+      bankName: 'BanBajío',
+    });
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/movimientos.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    deps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    deps.bankProfiles.resolveFieldsForBatch.mockResolvedValue({
+      profileId: 'bp-1',
+      profileName: 'Custom BanBajío',
+      fields: CUSTOM_FIELDS,
+    });
+    deps.parser.parseBuffer.mockResolvedValue({
+      transactions: [serverRow],
+      warnings: [],
+    });
+    deps.tx.importBatch.findUniqueOrThrow.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PROCESSING',
+    });
+  }
+
+  it('resolves fields via resolveFieldsForBatch with dto.bankProfileId and passes them to parseBuffer', async () => {
+    const deps = makeFullDeps();
+    setup(deps);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      makeDtoWithProfile() as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing' });
+    expect(deps.bankProfiles.resolveFieldsForBatch).toHaveBeenCalledWith({
+      condominiumId: CONDOMINIUM_ID,
+      bankProfileId: 'bp-1',
+      fileType: 'xlsx',
+    });
+    expect(deps.parser.parseBuffer).toHaveBeenCalledWith(
+      R2_BUFFER,
+      'xlsx',
+      CUSTOM_FIELDS,
+    );
+  });
+
+  it('maps ImportProfileMismatchError from the server re-parse to 400 PROFILE_MISMATCH (never a 500)', async () => {
+    const deps = makeFullDeps();
+    setup(deps);
+    deps.parser.parseBuffer.mockRejectedValue(
+      new ImportProfileMismatchError(
+        [{ key: 'date', label: 'Fecha' }],
+        ['Columna rara'],
+      ),
+    );
+    const service = makeFullService(deps);
+
+    await expect(
+      service.confirm(CONDOMINIUM_ID, makeDtoWithProfile() as never, {
+        sub: 'user-1',
+      } as never),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'PROFILE_MISMATCH',
+        bankProfileId: 'bp-1',
+        profileName: 'Custom BanBajío',
+      },
+    });
+    expect(deps.tx.transaction.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('ImportsService.confirm — order-resilient reconciliation (ENGINE-051)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+  const rowA = {
+    date: '2025-11-01',
+    description: 'PAGO UNIDAD 1',
+    charges: 0,
+    credits: 1500,
+    balance: 1500,
+  };
+  const rowB = {
+    date: '2025-11-03',
+    description: 'PAGO UNIDAD 2',
+    charges: 0,
+    credits: 800,
+    balance: 2300,
+  };
+
+  function setup(
+    deps: ReturnType<typeof makeFullDeps>,
+    serverRows: Array<Record<string, unknown>>,
+  ) {
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/movimientos.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    deps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    deps.parser.parseBuffer.mockResolvedValue({
+      transactions: serverRows,
+      warnings: [],
+    });
+    deps.tx.importBatch.findUniqueOrThrow.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PROCESSING',
+    });
+  }
+
+  function dtoWithClientRows(rows: Array<Record<string, unknown>>) {
+    return {
+      files: [
+        {
+          fileName: 'movimientos.xlsx',
+          fileType: 'xlsx',
+          fileHash: R2_HASH,
+          fileSizeBytes: 2048,
+          warnings: [],
+          transactions: rows,
+        },
+      ],
+    };
+  }
+
+  it('accepts a confirm payload whose rows arrive in a different order than the server parse', async () => {
+    const deps = makeFullDeps();
+    // Server emits A then B; the client echoes B then A (e.g. a parser-version
+    // emission-order change between preview and confirm).
+    setup(deps, [
+      { ...rowA, flowType: 'income' as const },
+      { ...rowB, flowType: 'income' as const },
+    ]);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      dtoWithClientRows([rowB, rowA]) as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing', imported: 2 });
+  });
+
+  it('still rejects a modified amount with PAYLOAD_MISMATCH after sorting', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      { ...rowA, flowType: 'income' as const },
+      { ...rowB, flowType: 'income' as const },
+    ]);
+    const service = makeFullService(deps);
+
+    await expect(
+      service.confirm(
+        CONDOMINIUM_ID,
+        dtoWithClientRows([rowB, { ...rowA, credits: 9999 }]) as never,
+        { sub: 'user-1' } as never,
+      ),
+    ).rejects.toMatchObject({ response: { code: 'PAYLOAD_MISMATCH' } });
+    expect(deps.tx.transaction.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('ImportsService.preview — row validation parity (ENGINE-026/028)', () => {
+  // Valid XLSX magic bytes so preview reaches the parser branch.
+  const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+  const XLSX_MIME =
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  function makePreviewFile() {
+    return {
+      buffer: XLSX_BUFFER,
+      originalname: 'estado_cuenta.xlsx',
+      mimetype: XLSX_MIME,
+      size: XLSX_BUFFER.length,
+    };
+  }
+
+  function setup(
+    deps: ReturnType<typeof makeFullDeps>,
+    rows: Array<Record<string, unknown>>,
+  ) {
+    deps.prisma.importBatch.findMany.mockResolvedValue([]);
+    deps.bankProfiles.resolveFieldsForBatch.mockResolvedValue({
+      profileId: null,
+      profileName: null,
+      fields: undefined,
+    });
+    deps.parser.parseBuffer.mockResolvedValue({
+      transactions: rows,
+      warnings: [],
+    });
+  }
+
+  const validRow1 = {
+    date: '2026-01-15',
+    description: 'PAGO 1',
+    charges: 0,
+    credits: 100,
+    balance: 100,
+    flowType: 'income' as const,
+  };
+  const futureRow = {
+    date: '2030-01-01',
+    description: 'PAGO FUTURO',
+    charges: 0,
+    credits: 999,
+    balance: 1099,
+    flowType: 'income' as const,
+  };
+  const validRow2 = {
+    date: '2026-01-20',
+    description: 'PAGO 2',
+    charges: 0,
+    credits: 50,
+    balance: 150,
+    flowType: 'income' as const,
+  };
+  const validRow3 = {
+    date: '2026-01-25',
+    description: 'PAGO 3',
+    charges: 0,
+    credits: 25,
+    balance: 175,
+    flowType: 'income' as const,
+  };
+
+  it('excludes invalid rows from transactions, totals, transactionCount and finalBalance and reports them under validation', async () => {
+    const deps = makeFullDeps();
+    // 1 invalid of 4 rows = 25% — under the 30% abort threshold.
+    setup(deps, [validRow1, futureRow, validRow2, validRow3]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0]).toMatchObject({
+      status: 'warning',
+      transactionCount: 3,
+      totalIncome: 175,
+      totalExpenses: 0,
+      // ENGINE-026 — chronologically latest VALID row (the future-dated row
+      // is invalid and must not contribute its balance).
+      finalBalance: 175,
+      validation: {
+        totalRows: 4,
+        validRows: 3,
+        invalidRows: 1,
+      },
+    });
+    expect(results[0].transactions).toHaveLength(3);
+    expect(results[0].validation?.sampleErrors).toEqual([
+      expect.objectContaining({ rowIndex: 1, field: 'date' }),
+    ]);
+  });
+
+  it('caps validation.sampleErrors at 20', async () => {
+    const deps = makeFullDeps();
+    const valid = Array.from({ length: 75 }, (_, i) => ({
+      ...validRow1,
+      description: `PAGO ${i}`,
+    }));
+    const invalid = Array.from({ length: 25 }, (_, i) => ({
+      ...futureRow,
+      description: `FUTURO ${i}`,
+    }));
+    setup(deps, [...valid, ...invalid]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({
+      totalRows: 100,
+      validRows: 75,
+      invalidRows: 25,
+    });
+    expect(results[0].validation?.sampleErrors).toHaveLength(20);
+  });
+
+  it('returns status error when the invalid-row ratio exceeds 30%', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [validRow1, futureRow, { ...futureRow, description: 'OTRO' }]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].status).toBe('error');
+    expect(results[0].statusMessage).toContain('2 of 3 rows are invalid');
+    expect(results[0].validation).toMatchObject({ invalidRows: 2 });
+  });
+});
+
+describe('ImportsService.upload — concurrent duplicate (ENGINE-017)', () => {
+  const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+  const XLSX_MIME =
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  function makeUploadFile() {
+    return {
+      buffer: XLSX_BUFFER,
+      originalname: 'estado_cuenta.xlsx',
+      mimetype: XLSX_MIME,
+      size: XLSX_BUFFER.length,
+    };
+  }
+
+  function p2002() {
+    return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+    });
+  }
+
+  it('returns the existing live batch as queued when importBatch.create throws P2002', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findMany.mockResolvedValue([]);
+    deps.prisma.importBatch.create.mockRejectedValue(p2002());
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-winner',
+      status: 'PENDING',
+      _count: { transactions: 0 },
+    });
+    const service = makeFullService(deps);
+
+    const results = await service.upload(
+      CONDOMINIUM_ID,
+      [makeUploadFile()],
+      { sub: 'user-1' } as never,
+    );
+
+    expect(results).toEqual([
+      expect.objectContaining({ status: 'queued', batchId: 'batch-winner' }),
+    ]);
+    expect(deps.prisma.importBatch.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: 'FAILED' } }),
+      }),
+    );
+    // The loser never reaches the R2 branch with its own batch.
+    expect(deps.storage.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('returns a duplicate result when the P2002 winner is COMPLETED with transactions', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findMany.mockResolvedValue([]);
+    deps.prisma.importBatch.create.mockRejectedValue(p2002());
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-winner',
+      status: 'COMPLETED',
+      _count: { transactions: 12 },
+    });
+    const service = makeFullService(deps);
+
+    // Single-file all-duplicate request escalates to 409 (UF-017).
+    await expect(
+      service.upload(CONDOMINIUM_ID, [makeUploadFile()], {
+        sub: 'user-1',
+      } as never),
+    ).rejects.toMatchObject({ response: { code: 'DUPLICATE_FILE' } });
+  });
+});
+
+describe('ImportsService.upload — R2 pointer-update compensation (ENGINE-048)', () => {
+  const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+  const XLSX_MIME =
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  function makeUploadFile() {
+    return {
+      buffer: XLSX_BUFFER,
+      originalname: 'estado_cuenta.xlsx',
+      mimetype: XLSX_MIME,
+      size: XLSX_BUFFER.length,
+    };
+  }
+
+  function setup(deps: ReturnType<typeof makeFullDeps>) {
+    deps.config.get.mockImplementation((key: string) =>
+      key === 'storage.strictR2Retention' ? true : undefined,
+    );
+    deps.prisma.importBatch.findMany.mockResolvedValue([]);
+    deps.prisma.importBatch.create.mockResolvedValue({
+      id: 'batch-orphan',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileHash: crypto.createHash('sha256').update(XLSX_BUFFER).digest('hex'),
+      _count: { transactions: 0 },
+    });
+    // PUT succeeds; the storageKey pointer update fails.
+    deps.storage.uploadFile.mockResolvedValue(undefined);
+    deps.prisma.importBatch.update.mockRejectedValue(new Error('db down'));
+  }
+
+  it('deletes the uploaded R2 object when the storageKey pointer update fails', async () => {
+    const deps = makeFullDeps();
+    setup(deps);
+    const service = makeFullService(deps);
+
+    const results = await service.upload(
+      CONDOMINIUM_ID,
+      [makeUploadFile()],
+      { sub: 'user-1' } as never,
+    );
+
+    expect(deps.storage.deleteFile).toHaveBeenCalledWith(
+      expect.stringContaining('imports/batch-orphan/'),
+    );
+    expect(results).toEqual([
+      expect.objectContaining({
+        status: 'error',
+        errorCode: 'STORAGE_UNAVAILABLE',
+      }),
+    ]);
+  });
+
+  it('swallows a failed compensating delete and still surfaces STORAGE_UNAVAILABLE', async () => {
+    const deps = makeFullDeps();
+    setup(deps);
+    deps.storage.deleteFile.mockRejectedValue(new Error('R2 also down'));
+    const service = makeFullService(deps);
+
+    const results = await service.upload(
+      CONDOMINIUM_ID,
+      [makeUploadFile()],
+      { sub: 'user-1' } as never,
+    );
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        status: 'error',
+        errorCode: 'STORAGE_UNAVAILABLE',
+      }),
+    ]);
+  });
+});
+
+describe('ImportsService.remove — hard delete (ENGINE-002)', () => {
+  function makeBatchRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'batch-del',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'COMPLETED',
+      fileName: 'movimientos.xlsx',
+      transactionCount: 12,
+      totalIncome: 1000,
+      totalExpenses: 200,
+      finalBalance: 800,
+      updatedAt: new Date(Date.now() - 60_000),
+      transactions: [],
+      importedBy: null,
+      fileDeletedBy: null,
+      ...overrides,
+    };
+  }
+
+  it('deletes the batch transactions, flags the batch FAILED with zeroed counters, and recomputes affected monthly summaries', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findFirst.mockResolvedValue(makeBatchRow());
+    deps.prisma.transaction.groupBy.mockResolvedValue([
+      { transactionDate: new Date('2026-03-05T00:00:00Z') },
+      { transactionDate: new Date('2026-03-18T00:00:00Z') },
+      { transactionDate: new Date('2026-04-10T00:00:00Z') },
+    ]);
+    deps.prisma.transaction.deleteMany.mockResolvedValue({ count: 12 });
+    const service = makeFullService(deps);
+
+    await service.remove(CONDOMINIUM_ID, 'batch-del', { sub: 'user-1' } as never);
+
+    expect(deps.prisma.transaction.deleteMany).toHaveBeenCalledWith({
+      where: { condominiumId: CONDOMINIUM_ID, importBatchId: 'batch-del' },
+    });
+    expect(deps.prisma.importBatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'batch-del', condominiumId: CONDOMINIUM_ID },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          errorMessage: 'Deleted by user',
+          transactionCount: 0,
+          totalIncome: 0,
+          totalExpenses: 0,
+          finalBalance: 0,
+          classifiedCount: 0,
+        }),
+      }),
+    );
+    expect(deps.classification.recomputeSummariesForMonths).toHaveBeenCalledWith(
+      CONDOMINIUM_ID,
+      expect.arrayContaining([
+        { year: 2026, month: 3 },
+        { year: 2026, month: 4 },
+      ]),
+    );
+    expect(
+      deps.classification.recomputeSummariesForMonths.mock.calls[0][1],
+    ).toHaveLength(2);
+    expect(deps.audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'IMPORT_DELETED',
+        afterState: expect.objectContaining({ transactionsDeleted: 12 }),
+      }),
+    );
+  });
+
+  it('reverts terrace-event paid status for linked transactions before deleting', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findFirst.mockResolvedValue(makeBatchRow());
+    const service = makeFullService(deps);
+
+    await service.remove(CONDOMINIUM_ID, 'batch-del', { sub: 'user-1' } as never);
+
+    expect(deps.classification.revertTerraceLinksForBatch).toHaveBeenCalledWith(
+      CONDOMINIUM_ID,
+      'batch-del',
+      'user-1',
+    );
+    // Revert must run before the rows disappear.
+    const revertOrder =
+      deps.classification.revertTerraceLinksForBatch.mock.invocationCallOrder[0];
+    const deleteOrder =
+      deps.prisma.transaction.deleteMany.mock.invocationCallOrder[0];
+    expect(revertOrder).toBeLessThan(deleteOrder);
+  });
+
+  it('refuses a fresh PROCESSING batch with 409 IMPORT_BATCH_PROCESSING', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findFirst.mockResolvedValue(
+      makeBatchRow({ status: 'PROCESSING', updatedAt: new Date() }),
+    );
+    const service = makeFullService(deps);
+
+    await expect(
+      service.remove(CONDOMINIUM_ID, 'batch-del', { sub: 'user-1' } as never),
+    ).rejects.toMatchObject({ response: { code: 'IMPORT_BATCH_PROCESSING' } });
+    expect(deps.prisma.transaction.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('allows removing a PROCESSING batch stale beyond 30 minutes', async () => {
+    const deps = makeFullDeps();
+    deps.prisma.importBatch.findFirst.mockResolvedValue(
+      makeBatchRow({
+        status: 'PROCESSING',
+        updatedAt: new Date(Date.now() - 31 * 60 * 1000),
+      }),
+    );
+    const service = makeFullService(deps);
+
+    await service.remove(CONDOMINIUM_ID, 'batch-del', { sub: 'user-1' } as never);
+
+    expect(deps.prisma.transaction.deleteMany).toHaveBeenCalled();
   });
 });

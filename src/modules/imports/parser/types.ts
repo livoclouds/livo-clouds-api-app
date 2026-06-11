@@ -24,6 +24,25 @@ const MONTH_NAMES_ES: Record<number, string> = {
   9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre',
 };
 
+// ENGINE-026 — the single finalBalance authority shared by preview and
+// confirm. Semantics: the balance of the chronologically latest row; equal
+// dates are broken by the LATEST array index, because banks list intra-day
+// movements in file order, so the last row of the latest day carries the
+// closing balance. Empty input yields 0.
+export function computeFinalBalance(
+  rows: Array<Pick<ParsedRow, 'date' | 'balance'>>,
+): number {
+  let best: { time: number; balance: number } | null = null;
+  for (const row of rows) {
+    const time = new Date(row.date).getTime();
+    if (Number.isNaN(time)) continue;
+    if (!best || time >= best.time) {
+      best = { time, balance: row.balance };
+    }
+  }
+  return best?.balance ?? 0;
+}
+
 export function buildPeriods(transactions: ParsedRow[]): DetectedPeriod[] {
   const map = new Map<string, DetectedPeriod>();
   for (const tx of transactions) {

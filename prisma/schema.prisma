@@ -1082,6 +1082,9 @@ model ImportBatch {
   transactions  Transaction[]
 
   @@index([condominiumId])
+  // ENGINE-017 — a PARTIAL unique index (condominiumId, fileHash) WHERE
+  // status <> 'FAILED' also exists in SQL only (Prisma cannot model partial
+  // indexes). See migration 20260612010000_import_batches_live_filehash_unique.
   @@index([fileHash])
   @@index([status])
   @@index([createdAt])

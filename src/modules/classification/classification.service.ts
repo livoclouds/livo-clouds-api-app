@@ -15,6 +15,7 @@ import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-ma
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 import { SettingsCacheService } from '../settings/settings-cache.service';
 import { isBanBajio } from '../bank-profiles/known-banks';
+import { STALE_PROCESSING_MS } from '../imports/imports.constants';
 
 /**
  * Phase 6 (A4): page size for cursor-batched loading of classification
@@ -1282,6 +1283,28 @@ export class ClassificationService {
     batchId: string,
     userId: string | null,
   ): Promise<ClassificationSummary> {
+    // ENGINE-004 — status-restoring re-run. A fresh PROCESSING batch belongs
+    // to a live classification run and must not be re-entered; a stale one
+    // (crashed mid-classify) or a FAILED one with persisted transactions is
+    // exactly what this path recovers. The batch is held in PROCESSING while
+    // the re-run executes and lands COMPLETED (or FAILED with errorMessage).
+    const batch = await this.prisma.importBatch.findFirst({
+      where: { id: batchId, condominiumId },
+      select: { status: true, updatedAt: true, completedAt: true },
+    });
+    if (!batch) throw new NotFoundException('Import batch not found');
+    if (
+      batch.status === 'PROCESSING' &&
+      Date.now() - batch.updatedAt.getTime() < STALE_PROCESSING_MS
+    ) {
+      throw new ConflictException({
+        code: 'IMPORT_BATCH_PROCESSING',
+        reason:
+          'Classification for this batch is still running. Retry once it finishes (or stalls).',
+        existingBatchId: batchId,
+      });
+    }
+
     const beforeCounts = await this.prisma.transaction.groupBy({
       by: ['classificationStatus'],
       where: { condominiumId, importBatchId: batchId },
@@ -1295,27 +1318,49 @@ export class ClassificationService {
       {},
     );
 
-    await this.prisma.transaction.updateMany({
-      where: { condominiumId, importBatchId: batchId },
-      data: {
-        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-        residentId: null,
-        matchSource: null,
-        confidenceScore: null,
-        matchedAt: null,
-        requiresReviewReason: null,
-        matchedRuleId: null,
-        matchedCalendarEventId: null,
-        classificationVersion: { increment: 1 },
-      },
+    await this.prisma.importBatch.updateMany({
+      where: { id: batchId, condominiumId },
+      data: { status: 'PROCESSING' },
     });
-    const summary = await this.classifyBatch(condominiumId, batchId);
+
+    let summary: ClassificationSummary;
+    try {
+      await this.prisma.transaction.updateMany({
+        where: { condominiumId, importBatchId: batchId },
+        data: {
+          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+          residentId: null,
+          matchSource: null,
+          confidenceScore: null,
+          matchedAt: null,
+          requiresReviewReason: null,
+          matchedRuleId: null,
+          matchedCalendarEventId: null,
+          classificationVersion: { increment: 1 },
+        },
+      });
+      summary = await this.classifyBatch(condominiumId, batchId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await this.prisma.importBatch.updateMany({
+        where: { id: batchId, condominiumId },
+        data: {
+          status: 'FAILED',
+          errorMessage: `Reclassification failed: ${message}`,
+        },
+      });
+      throw err;
+    }
 
     // ENGINE-058 — keep the persisted batch summary in sync with the re-run.
     // (reapplyToPending is tenant-wide, not batch-scoped — out of its scope.)
+    // ENGINE-004 — restore the terminal status so a recovered FAILED/stuck
+    // batch becomes COMPLETED again.
     await this.prisma.importBatch.updateMany({
       where: { id: batchId, condominiumId },
       data: {
+        status: 'COMPLETED',
+        completedAt: batch.completedAt ?? new Date(),
         classifiedCount: summary.classified,
         needsReviewCount: summary.needsReview,
         unmatchedCount: summary.unmatched,
@@ -2078,6 +2123,48 @@ export class ClassificationService {
         return this.upsertSummaryForMonth(condominiumId, year, month);
       }),
     );
+  }
+
+  // ENGINE-002 — public recompute for callers that delete transactions and
+  // must rebuild the official monthly numbers afterwards (imports remove()).
+  // The month list is captured by the caller BEFORE deleting, because the
+  // batch-scoped variant derives its months from rows that no longer exist.
+  async recomputeSummariesForMonths(
+    condominiumId: string,
+    months: Array<{ year: number; month: number }>,
+  ): Promise<void> {
+    await Promise.all(
+      months.map(({ year, month }) =>
+        this.upsertSummaryForMonth(condominiumId, year, month),
+      ),
+    );
+  }
+
+  // ENGINE-002 — revert terrace bookings marked PAID by transactions of the
+  // given batch. Called by imports remove() before hard-deleting the rows so
+  // a booking never stays PAID with its proof transaction gone.
+  async revertTerraceLinksForBatch(
+    condominiumId: string,
+    batchId: string,
+    userId: string,
+  ): Promise<void> {
+    const linked = await this.prisma.transaction.findMany({
+      where: {
+        condominiumId,
+        importBatchId: batchId,
+        matchedCalendarEventId: { not: null },
+      },
+      select: { id: true, matchedCalendarEventId: true },
+    });
+    for (const tx of linked) {
+      if (!tx.matchedCalendarEventId) continue;
+      await this.unmarkTerraceEventPaid(
+        tx.matchedCalendarEventId,
+        tx.id,
+        condominiumId,
+        userId,
+      );
+    }
   }
 
   private async upsertSummaryForMonth(
