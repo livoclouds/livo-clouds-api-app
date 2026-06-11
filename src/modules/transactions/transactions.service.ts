@@ -60,10 +60,23 @@ const RECONCILED_EXPORT_HEADER_LABEL: Record<ReconciledExportColumnId, string> =
   importFile:           'Import File',
 };
 
-function escapeCsvValue(input: unknown): string {
+// ENGINE-036 — spreadsheet formula leads (CWE-1236). A leading =, +, -, @, tab
+// or CR makes Excel/Sheets evaluate the cell as a formula when the export is
+// opened, so attacker-controlled statement text could execute. Plain numerics
+// (e.g. "-123.45") are exempt: they evaluate to themselves and prefixing would
+// break the numeric columns of the export.
+const FORMULA_LEAD_REGEX = /^[=+\-@\t\r]/;
+const PLAIN_NUMERIC_REGEX = /^[+-]?\d+(\.\d+)?$/;
+
+export function escapeCsvValue(input: unknown): string {
   if (input === null || input === undefined) return '';
-  const str = String(input);
+  let str = String(input);
   if (str.length === 0) return '';
+  // Neutralize formula leads independent of the RFC quoting below — quoting
+  // alone does not stop spreadsheet formula evaluation.
+  if (FORMULA_LEAD_REGEX.test(str) && !PLAIN_NUMERIC_REGEX.test(str)) {
+    str = `'${str}`;
+  }
   if (/[",\r\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }

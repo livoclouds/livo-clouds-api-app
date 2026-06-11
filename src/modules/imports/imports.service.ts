@@ -469,6 +469,9 @@ export class ImportsService {
       result: 'SUCCESS',
       afterState: {
         fileCount: files.length,
+        // ENGINE-062 (explicit policy): the immutable audit trail keeps the
+        // ORIGINAL filename — evidence-chain value, access already gated by
+        // audit.read. Application/info logs use the sanitized name instead.
         fileNames: files.map((f) => f.originalname),
         fileSizes: files.map((f) => f.size),
       },
@@ -562,7 +565,9 @@ export class ImportsService {
       }
 
       const { file, fileHash } = plan;
-      this.logger.log(`upload: file=${file.originalname}, size=${file.size}B, mime=${file.mimetype}`);
+      // ENGINE-062: info logs carry the sanitized name only — bank filenames can
+      // incidentally embed account identifiers (the audit trail keeps the original).
+      this.logger.log(`upload: file=${this.sanitizeFileName(file.originalname)}, size=${file.size}B, mime=${file.mimetype}`);
 
       const duplicate = dedupByHash.get(fileHash);
 
@@ -1363,7 +1368,8 @@ export class ImportsService {
           (exceptionPayload?.code as string | undefined) ??
           (err instanceof Error ? err.constructor.name : 'UNEXPECTED_ERROR');
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`confirm: failed for file=${file.fileName} (${errorCode}): ${message}`);
+        // ENGINE-062: sanitized name in app logs (original preserved in audit trail).
+        this.logger.error(`confirm: failed for file=${this.sanitizeFileName(file.fileName)} (${errorCode}): ${message}`);
         await this.audit.log({
           condominiumId,
           userId: user.sub,
@@ -1455,6 +1461,12 @@ export class ImportsService {
         data: {
           status: 'COMPLETED',
           completedAt: new Date(),
+          // ENGINE-058 — persist the classification summary so precision is
+          // queryable per batch (total = transactionCount, already persisted).
+          classifiedCount: classificationSummary.classified,
+          needsReviewCount: classificationSummary.needsReview,
+          unmatchedCount: classificationSummary.unmatched,
+          classifiedAt: new Date(),
         },
       });
 

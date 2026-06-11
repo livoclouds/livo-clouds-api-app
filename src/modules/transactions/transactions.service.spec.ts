@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { TransactionsService } from './transactions.service';
+import { escapeCsvValue, TransactionsService } from './transactions.service';
 
 const CONDOMINIUM_ID = 'cond-1';
 const OTHER_CONDOMINIUM_ID = 'cond-2';
@@ -274,5 +274,39 @@ describe('TransactionsService.getAuditChain', () => {
       select: { id: true },
     });
     expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('escapeCsvValue — formula-injection neutralization (ENGINE-036)', () => {
+  it.each([
+    // [input, exact expected output — quote-doubling/wrapping applies when RFC quoting fires]
+    ['=HYPERLINK("http://evil","x")', `"'=HYPERLINK(""http://evil"",""x"")"`],
+    ['@SUM(A1:A9)', `'@SUM(A1:A9)`],
+    ['+cmd|/c calc', `'+cmd|/c calc`],
+    ['-2+3+cmd|/c calc', `'-2+3+cmd|/c calc`],
+    ['\tleading tab', `'\tleading tab`],
+  ])('neutralizes formula lead in %j', (input, expected) => {
+    expect(escapeCsvValue(input)).toBe(expected);
+  });
+
+  it('keeps RFC quoting intact for neutralized values containing commas', () => {
+    expect(escapeCsvValue('=1+1,evil')).toBe(`"'=1+1,evil"`);
+  });
+
+  it('does not neutralize plain numeric strings (data, not formulas)', () => {
+    expect(escapeCsvValue('-123.45')).toBe('-123.45');
+    expect(escapeCsvValue('+500')).toBe('+500');
+    expect(escapeCsvValue(-123.45)).toBe('-123.45');
+  });
+
+  it('leaves ordinary text, empty and nullish values unchanged', () => {
+    expect(escapeCsvValue('PAGO CASA 12')).toBe('PAGO CASA 12');
+    expect(escapeCsvValue('')).toBe('');
+    expect(escapeCsvValue(null)).toBe('');
+    expect(escapeCsvValue(undefined)).toBe('');
+  });
+
+  it('still escapes quotes per RFC 4180', () => {
+    expect(escapeCsvValue('say "hi"')).toBe('"say ""hi"""');
   });
 });

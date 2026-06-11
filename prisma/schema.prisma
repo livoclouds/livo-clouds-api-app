@@ -1055,6 +1055,12 @@ model ImportBatch {
   finalBalance     Decimal      @default(0) @db.Decimal(15, 2)
   transactionCount Int          @default(0)
   processedCount   Int          @default(0)
+  // ENGINE-058 — persisted classification summary (precision baseline).
+  // `classifiedAt IS NULL` distinguishes pre-harness batches from "0 classified".
+  classifiedCount  Int          @default(0)
+  needsReviewCount Int          @default(0)
+  unmatchedCount   Int          @default(0)
+  classifiedAt     DateTime?
   warnings         Json         @default("[]")
   errorMessage     String?
   storageKey       String?
