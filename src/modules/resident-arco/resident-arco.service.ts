@@ -5,10 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { Readable } from 'node:stream';
 import {
   ArcoRequest,
   ArcoRequestEventType,
   ArcoRequestStatus,
+  ArcoRequestType,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -24,6 +26,9 @@ import {
   buildReceiptEmail,
   buildResolutionEmail,
 } from './arco-notification-content';
+import { buildProofDocument } from './arco-proof-content';
+import { BulkArcoActionDto, BulkArcoActionType } from './dto/bulk-arco-action.dto';
+import { ExportArcoRequestsDto } from './dto/export-arco-requests.dto';
 
 const ARCO_MODULE = 'resident-arco';
 
@@ -38,6 +43,10 @@ const AUDIT_ACTION = {
   ARCO_ATTACHMENT_REMOVED: 'ARCO_ATTACHMENT_REMOVED',
   ARCO_ACCESS_PACKET_GENERATED: 'ARCO_ACCESS_PACKET_GENERATED',
   ARCO_NOTIFIED: 'ARCO_NOTIFIED',
+  ARCO_EXPORT: 'ARCO_EXPORT',
+  ARCO_METRICS_VIEWED: 'ARCO_METRICS_VIEWED',
+  ARCO_PROOF_DOWNLOADED: 'ARCO_PROOF_DOWNLOADED',
+  ARCO_BULK_UPDATED: 'ARCO_BULK_UPDATED',
 } as const;
 
 // Keeps only the last 4 characters of an official ID number; everything else is
@@ -47,6 +56,24 @@ function maskIdNumber(raw: string): string {
   if (trimmed.length <= 4) return '•'.repeat(trimmed.length);
   return '•'.repeat(trimmed.length - 4) + trimmed.slice(-4);
 }
+
+// RFC-4180 CSV field escaping for the regulator export (RP-012).
+function csvEscape(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const ARCO_TYPES: ArcoRequestType[] = [
+  ArcoRequestType.ACCESS,
+  ArcoRequestType.RECTIFICATION,
+  ArcoRequestType.CANCELLATION,
+  ArcoRequestType.OPPOSITION,
+];
+const ACTIVE_SLA_STATUSES: ArcoRequestStatus[] = [
+  ArcoRequestStatus.RECEIVED,
+  ArcoRequestStatus.IN_REVIEW,
+];
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Evidence — PDF + images, 10 MB/file (under the API's 20 MB multipart cap).
 const ALLOWED_MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
@@ -585,6 +612,12 @@ export class ResidentArcoService {
       await this.notifyResident(updated, 'RESOLUTION', userId);
     }
 
+    // Optional internal note recorded with the edit (RP-032) — append-only
+    // timeline event, never sent to the resident. Returns the request with it.
+    if (dto.internalNotes && dto.internalNotes.trim().length > 0) {
+      return this.addNote(condominiumId, residentId, requestId, userId, dto.internalNotes.trim());
+    }
+
     return updated;
   }
 
@@ -797,5 +830,295 @@ export class ResidentArcoService {
     });
 
     return { buffer: packet.buffer, fileName: packet.fileName };
+  }
+
+  // ---- RP-012: regulator-ready CSV export ----
+  // Streams every ARCO request in the condominium (optionally filtered) as a CSV
+  // a regulator (IFAI/state DPA) can ingest. Mirrors the transactions export
+  // streaming pattern. The export itself is audited.
+  exportCsv(
+    condominiumId: string,
+    userId: string,
+    dto: ExportArcoRequestsDto,
+  ): Readable {
+    void this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.ARCO_EXPORT,
+      actionCategory: 'READ',
+      module: ARCO_MODULE,
+      entityType: 'Condominium',
+      entityId: condominiumId,
+      afterState: { from: dto.from, to: dto.to, type: dto.type, status: dto.status },
+      result: 'SUCCESS',
+    });
+    return Readable.from(this.streamCsvRows(condominiumId, dto));
+  }
+
+  private async *streamCsvRows(
+    condominiumId: string,
+    dto: ExportArcoRequestsDto,
+  ): AsyncGenerator<string> {
+    const HEADER = [
+      'request_id', 'resident_name', 'unit', 'type', 'status', 'legal_basis',
+      'identity_verified', 'channel', 'received_at', 'due_date', 'resolved_at',
+      'overdue', 'rejection_reason', 'resolution', 'reference_folio',
+    ];
+    yield HEADER.join(',') + '\n';
+
+    const now = new Date();
+    const where: Prisma.ArcoRequestWhereInput = {
+      condominiumId,
+      deletedAt: null,
+      ...(dto.type ? { type: dto.type } : {}),
+      ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.from || dto.to
+        ? {
+            receivedAt: {
+              ...(dto.from ? { gte: new Date(dto.from) } : {}),
+              ...(dto.to ? { lte: new Date(dto.to) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const rows = await this.prisma.arcoRequest.findMany({
+      where,
+      select: {
+        id: true, type: true, status: true, legalBasis: true,
+        identityVerified: true, channel: true, receivedAt: true, dueDate: true,
+        resolvedAt: true, rejectionReason: true, resolution: true,
+        referenceFolio: true,
+        resident: { select: { firstName: true, lastName: true, unitNumber: true } },
+      },
+      orderBy: [{ receivedAt: 'desc' }],
+    });
+
+    for (const r of rows) {
+      const overdue =
+        r.resolvedAt === null &&
+        r.dueDate < now &&
+        ACTIVE_SLA_STATUSES.includes(r.status)
+          ? 'yes'
+          : 'no';
+      yield [
+        r.id,
+        `${r.resident.firstName} ${r.resident.lastName}`.trim(),
+        r.resident.unitNumber,
+        r.type,
+        r.status,
+        r.legalBasis ?? '',
+        r.identityVerified ? 'yes' : 'no',
+        r.channel ?? '',
+        r.receivedAt.toISOString(),
+        r.dueDate.toISOString(),
+        r.resolvedAt?.toISOString() ?? '',
+        overdue,
+        r.rejectionReason ?? '',
+        r.resolution ?? '',
+        r.referenceFolio ?? '',
+      ].map(csvEscape).join(',') + '\n';
+    }
+  }
+
+  // ---- RP-015: compliance metrics ----
+  async metrics(condominiumId: string, userId: string) {
+    const now = new Date();
+    const [byStatus, total, overdueCount, resolvedRows] = await Promise.all([
+      this.prisma.arcoRequest.groupBy({
+        by: ['status'],
+        where: { condominiumId, deletedAt: null },
+        _count: true,
+      }),
+      this.prisma.arcoRequest.count({ where: { condominiumId, deletedAt: null } }),
+      this.prisma.arcoRequest.count({
+        where: {
+          condominiumId,
+          deletedAt: null,
+          status: { in: ACTIVE_SLA_STATUSES },
+          dueDate: { lt: now },
+        },
+      }),
+      this.prisma.arcoRequest.findMany({
+        where: {
+          condominiumId,
+          deletedAt: null,
+          status: ArcoRequestStatus.COMPLETED,
+          resolvedAt: { not: null },
+        },
+        select: { type: true, receivedAt: true, resolvedAt: true },
+      }),
+    ]);
+
+    const countOf = (s: ArcoRequestStatus) =>
+      byStatus.find((b) => b.status === s)?._count ?? 0;
+    const completed = countOf(ArcoRequestStatus.COMPLETED);
+    const rejected = countOf(ArcoRequestStatus.REJECTED);
+    const pendingVerification = countOf(ArcoRequestStatus.PENDING_VERIFICATION);
+    const openNonTerminal =
+      countOf(ArcoRequestStatus.RECEIVED) +
+      countOf(ArcoRequestStatus.IN_REVIEW) +
+      pendingVerification;
+
+    // Mean days received→resolved, per type (COMPLETED only).
+    const acc = new Map<ArcoRequestType, { days: number; count: number }>();
+    for (const r of resolvedRows) {
+      if (!r.resolvedAt) continue;
+      const days = (r.resolvedAt.getTime() - r.receivedAt.getTime()) / DAY_MS;
+      const a = acc.get(r.type) ?? { days: 0, count: 0 };
+      a.days += days;
+      a.count += 1;
+      acc.set(r.type, a);
+    }
+    const meanResponseTimeByType = ARCO_TYPES.map((type) => {
+      const a = acc.get(type);
+      return {
+        type,
+        meanDays: a && a.count > 0 ? Math.round((a.days / a.count) * 10) / 10 : null,
+        count: a?.count ?? 0,
+      };
+    });
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.ARCO_METRICS_VIEWED,
+      actionCategory: 'READ',
+      module: ARCO_MODULE,
+      entityType: 'Condominium',
+      entityId: condominiumId,
+      result: 'SUCCESS',
+    });
+
+    const pct = (n: number, d: number) =>
+      d > 0 ? Math.round((n / d) * 1000) / 10 : 0;
+
+    return {
+      total,
+      byStatus: {
+        PENDING_VERIFICATION: pendingVerification,
+        RECEIVED: countOf(ArcoRequestStatus.RECEIVED),
+        IN_REVIEW: countOf(ArcoRequestStatus.IN_REVIEW),
+        COMPLETED: completed,
+        REJECTED: rejected,
+      },
+      completionRate: pct(completed, total),
+      rejectionRate: pct(rejected, total),
+      overdueCount,
+      overduePercentage: pct(overdueCount, openNonTerminal),
+      pendingVerificationCount: pendingVerification,
+      openCount: openNonTerminal,
+      meanResponseTimeByType,
+    };
+  }
+
+  // ---- RP-016: proof of delivery / resolution (printable HTML) ----
+  async getProof(
+    condominiumId: string,
+    residentId: string,
+    requestId: string,
+    userId: string,
+    kind: 'DELIVERY' | 'RESOLUTION',
+  ): Promise<{ html: string; fileName: string }> {
+    const request = await this.loadRequestOrFail(condominiumId, residentId, requestId);
+    if (kind === 'RESOLUTION' && !TERMINAL_STATUSES.includes(request.status)) {
+      throw new BadRequestException('errors.arco.notResolved');
+    }
+
+    const [resident, condominium, settings] = await Promise.all([
+      this.prisma.resident.findFirst({
+        where: { id: residentId, condominiumId },
+        select: { firstName: true, lastName: true },
+      }),
+      this.prisma.condominium.findUnique({
+        where: { id: condominiumId },
+        select: { name: true },
+      }),
+      this.prisma.condominiumSettings.findUnique({
+        where: { condominiumId },
+        select: { defaultLocale: true },
+      }),
+    ]);
+
+    const { html, fileName } = buildProofDocument({
+      kind,
+      locale: settings?.defaultLocale ?? 'es',
+      request,
+      residentName: `${resident?.firstName ?? ''} ${resident?.lastName ?? ''}`.trim(),
+      condominiumName: condominium?.name ?? 'LivoClouds',
+    });
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.ARCO_PROOF_DOWNLOADED,
+      actionCategory: 'READ',
+      module: ARCO_MODULE,
+      entityType: 'ArcoRequest',
+      entityId: requestId,
+      afterState: { kind },
+      result: 'SUCCESS',
+    });
+
+    return { html, fileName };
+  }
+
+  // ---- RP-014: bulk status update / soft delete ----
+  // Each request is processed through the per-request update()/remove() path so
+  // every semantic (rejection-reason rule, resolvedAt stamping, resident
+  // notification, per-request audit + timeline event) is preserved. A summary
+  // ARCO_BULK_UPDATED row records the batch.
+  async bulkUpdate(
+    condominiumId: string,
+    userId: string,
+    dto: BulkArcoActionDto,
+  ): Promise<{ affected: number; requestIds: string[] }> {
+    if (
+      dto.action === BulkArcoActionType.STATUS_UPDATE &&
+      dto.status === ArcoRequestStatus.REJECTED &&
+      (!dto.rejectionReason || dto.rejectionReason.trim().length === 0)
+    ) {
+      throw new BadRequestException('errors.arco.rejectionReasonRequired');
+    }
+    if (dto.action === BulkArcoActionType.STATUS_UPDATE && !dto.status) {
+      throw new BadRequestException('errors.arco.bulkStatusRequired');
+    }
+
+    const ids = [...new Set(dto.requestIds)];
+    const targets = await this.prisma.arcoRequest.findMany({
+      where: { id: { in: ids }, condominiumId, deletedAt: null },
+      select: { id: true, residentId: true },
+    });
+
+    const done: string[] = [];
+    for (const t of targets) {
+      try {
+        if (dto.action === BulkArcoActionType.DELETE) {
+          await this.remove(condominiumId, t.residentId, t.id, userId);
+        } else {
+          await this.update(condominiumId, t.residentId, t.id, userId, {
+            status: dto.status,
+            rejectionReason: dto.rejectionReason,
+          } as UpdateArcoRequestDto);
+        }
+        done.push(t.id);
+      } catch (err) {
+        this.logger.error(`arco-bulk: request=${t.id} failed: ${String(err)}`);
+      }
+    }
+
+    await this.audit.log({
+      condominiumId,
+      userId,
+      action: AUDIT_ACTION.ARCO_BULK_UPDATED,
+      actionCategory: dto.action === BulkArcoActionType.DELETE ? 'DELETE' : 'UPDATE',
+      module: ARCO_MODULE,
+      entityType: 'Condominium',
+      entityId: condominiumId,
+      afterState: { action: dto.action, status: dto.status, count: done.length },
+      result: 'SUCCESS',
+    });
+
+    return { affected: done.length, requestIds: done };
   }
 }
