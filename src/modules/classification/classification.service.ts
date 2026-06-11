@@ -16,6 +16,7 @@ import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator'
 import { SettingsCacheService } from '../settings/settings-cache.service';
 import { isBanBajio } from '../bank-profiles/known-banks';
 import { STALE_PROCESSING_MS } from '../imports/imports.constants';
+import { round2, toCents } from '../../common/utils/money.util';
 
 /**
  * Phase 6 (A4): page size for cursor-batched loading of classification
@@ -1910,9 +1911,14 @@ export class ClassificationService {
         });
       }
 
-      // Amounts must sum to the credit (cents tolerance for rounding).
-      const sum = allocations.reduce((acc, a) => acc + Number(a.allocatedAmount), 0);
-      if (Math.abs(sum - credit) > 0.01) {
+      // Amounts must sum to the credit EXACTLY, compared in integer cents
+      // (ENGINE-052: the previous ±$0.01 tolerance persisted one-cent drifts).
+      const sumCents = allocations.reduce(
+        (acc, a) => acc + toCents(Number(a.allocatedAmount)),
+        0,
+      );
+      const sum = sumCents / 100;
+      if (sumCents !== toCents(credit)) {
         throw new BadRequestException({
           code: 'ALLOCATION_SUM_MISMATCH',
           reason: `Allocations must sum to the transaction credit (${credit.toFixed(2)}); got ${sum.toFixed(2)}.`,
@@ -1990,7 +1996,7 @@ export class ClassificationService {
           unitNumber: a.unitNumber,
           paymentPeriodYear: periodYear ?? txDate.getUTCFullYear(),
           paymentPeriodMonth: periodMonth ?? txDate.getUTCMonth() + 1,
-          allocatedAmount: new Prisma.Decimal(Number(a.allocatedAmount).toFixed(2)),
+          allocatedAmount: new Prisma.Decimal(round2(Number(a.allocatedAmount)).toFixed(2)),
         })),
       });
 

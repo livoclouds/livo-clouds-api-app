@@ -26,7 +26,7 @@ export class AllocationItemDto {
   residentId: string;
 
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
+  @Min(0.01)
   @Type(() => Number)
   allocatedAmount: number;
 }

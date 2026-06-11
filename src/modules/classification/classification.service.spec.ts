@@ -1585,6 +1585,52 @@ describe('ClassificationService.manualClassify — multi-unit allocations', () =
     expect(prisma.paymentAllocation.createMany).not.toHaveBeenCalled();
   });
 
+  it('rejects a one-cent drift — the sum must equal the credit exactly (ENGINE-052)', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    prisma.transaction.findFirst.mockResolvedValue(baseTx);
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-307' });
+    const service = makeService(prisma);
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+        allocations: [
+          { unitNumber: '307', residentId: 'res-307', allocatedAmount: 500 },
+          { unitNumber: '43', residentId: 'res-43', allocatedAmount: 499.99 }, // 999.99 ≠ 1000.00
+        ],
+      }, USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { getStatus(): number }).getStatus()).toBe(400);
+    expect((caught as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'ALLOCATION_SUM_MISMATCH',
+    });
+    expect(prisma.paymentAllocation.createMany).not.toHaveBeenCalled();
+  });
+
+  it('accepts an exact split whose float sum carries binary noise', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    // 0.1 + 0.2 !== 0.3 in floats; cent-space comparison must still accept.
+    prisma.transaction.findFirst.mockResolvedValue({ ...baseTx, credits: 0.3 });
+    prisma.resident.findFirst.mockImplementation(({ where }: { where: { id: string } }) =>
+      Promise.resolve({ id: where.id }),
+    );
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+      allocations: [
+        { unitNumber: '307', residentId: 'res-307', allocatedAmount: 0.1 },
+        { unitNumber: '43', residentId: 'res-43', allocatedAmount: 0.2 },
+      ],
+    }, USER_ID);
+
+    expect(prisma.paymentAllocation.createMany).toHaveBeenCalled();
+  });
+
   it('rejects when a resident does not live in the allocated unit', async () => {
     const prisma = makePrismaMock();
     primeSettings(prisma);
