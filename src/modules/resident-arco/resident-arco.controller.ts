@@ -118,6 +118,39 @@ export class ResidentArcoController {
     return reply.send(buffer);
   }
 
+  // RP-016 — printable proof documents (HTML → browser "Save as PDF").
+  @Get(':id/proof-of-delivery')
+  @RequirePermission(VIEW)
+  @ApiOperation({ summary: 'Proof of receipt for an ARCO request (printable HTML)' })
+  async proofOfDelivery(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const { html } = await this.service.getProof(
+      req.condominiumId, residentId, id, req.user.sub, 'DELIVERY',
+    );
+    reply.header('Content-Type', 'text/html; charset=utf-8').header('Cache-Control', 'no-store');
+    return reply.send(html);
+  }
+
+  @Get(':id/proof-of-resolution')
+  @RequirePermission(VIEW)
+  @ApiOperation({ summary: 'Proof of resolution for a closed ARCO request (printable HTML)' })
+  async proofOfResolution(
+    @Request() req: AuthedRequest,
+    @Param('residentId') residentId: string,
+    @Param('id') id: string,
+    @Res({ passthrough: false }) reply: FastifyReply,
+  ) {
+    const { html } = await this.service.getProof(
+      req.condominiumId, residentId, id, req.user.sub, 'RESOLUTION',
+    );
+    reply.header('Content-Type', 'text/html; charset=utf-8').header('Cache-Control', 'no-store');
+    return reply.send(html);
+  }
+
   @Get(':id')
   @RequirePermission(VIEW)
   @ApiOperation({ summary: 'Get one ARCO request' })

@@ -75,6 +75,14 @@ export class UpdateArcoRequestDto {
   @IsISO8601()
   resolvedAt?: string;
 
+  // Optional internal note recorded alongside the edit (RP-032). Routed to the
+  // append-only timeline as a NOTE_ADDED event; never sent to the data subject.
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  internalNotes?: string;
+
   // --- Compliance: legal basis & identity verification (LFPDPPP Art. 12) ---
 
   @ApiPropertyOptional({ enum: ArcoLegalBasisDto })

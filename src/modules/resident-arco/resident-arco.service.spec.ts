@@ -24,6 +24,8 @@ function makePrismaMock() {
     arcoRequest: {
       findFirst: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+      groupBy: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => ({
         id: REQ,
         status: 'RECEIVED',
@@ -37,9 +39,16 @@ function makePrismaMock() {
       findFirst: jest.fn(),
       delete: jest.fn().mockResolvedValue({}),
     },
+    $executeRawUnsafe: jest.fn().mockResolvedValue(0),
   };
   const $transaction = jest.fn((cb: (tx: unknown) => unknown) => cb(mock));
   return Object.assign(mock, { $transaction });
+}
+
+async function collectStream(stream: import('node:stream').Readable): Promise<string> {
+  const chunks: string[] = [];
+  for await (const c of stream) chunks.push(String(c));
+  return chunks.join('');
 }
 
 function makeService() {
@@ -320,6 +329,117 @@ describe('ResidentArcoService', () => {
       await expect(service.addNote(CONDO, RESIDENT, REQ, USER, 'x')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('export (RP-012)', () => {
+    it('streams a CSV header + one row per request, masking nothing sensitive', async () => {
+      const { service, prisma, audit } = makeService();
+      prisma.arcoRequest.findMany.mockResolvedValue([
+        {
+          id: 'a1', type: 'RECTIFICATION', status: 'COMPLETED', legalBasis: 'CONSENT',
+          identityVerified: true, channel: 'Email', receivedAt: new Date('2026-06-01'),
+          dueDate: new Date('2026-07-01'), resolvedAt: new Date('2026-06-10'),
+          rejectionReason: null, resolution: 'Done, ok', referenceFolio: 'F-1',
+          resident: { firstName: 'María', lastName: 'Pérez', unitNumber: 'A1' },
+        },
+      ]);
+      const csv = await collectStream(service.exportCsv(CONDO, USER, {} as never));
+      const lines = csv.trim().split('\n');
+      expect(lines[0]).toContain('request_id,resident_name,unit,type,status');
+      expect(lines[1]).toContain('a1');
+      expect(lines[1]).toContain('María Pérez');
+      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ARCO_EXPORT' }));
+    });
+  });
+
+  describe('metrics (RP-015)', () => {
+    it('computes rates, overdue and mean response time by type', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.groupBy.mockResolvedValue([
+        { status: 'COMPLETED', _count: 6 },
+        { status: 'REJECTED', _count: 2 },
+        { status: 'RECEIVED', _count: 2 },
+      ]);
+      prisma.arcoRequest.count
+        .mockResolvedValueOnce(10) // total
+        .mockResolvedValueOnce(1); // overdue
+      prisma.arcoRequest.findMany.mockResolvedValue([
+        { type: 'ACCESS', receivedAt: new Date('2026-06-01'), resolvedAt: new Date('2026-06-05') },
+      ]);
+      const m = await service.metrics(CONDO, USER);
+      expect(m.total).toBe(10);
+      expect(m.completionRate).toBe(60);
+      expect(m.rejectionRate).toBe(20);
+      expect(m.overdueCount).toBe(1);
+      const access = m.meanResponseTimeByType.find((x) => x.type === 'ACCESS');
+      expect(access?.meanDays).toBe(4);
+    });
+  });
+
+  describe('proof documents (RP-016)', () => {
+    it('refuses a resolution proof for a non-terminal request', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({ id: REQ, status: 'RECEIVED', type: 'ACCESS' });
+      await expect(
+        service.getProof(CONDO, RESIDENT, REQ, USER, 'RESOLUTION'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('returns printable HTML for a delivery proof, audited', async () => {
+      const { service, prisma, audit } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ, status: 'RECEIVED', type: 'ACCESS', channel: null, description: 'x',
+        resolution: null, rejectionReason: null, referenceFolio: null,
+        receivedAt: new Date('2026-06-01'), dueDate: new Date('2026-07-01'), resolvedAt: null,
+      });
+      const { html, fileName } = await service.getProof(CONDO, RESIDENT, REQ, USER, 'DELIVERY');
+      expect(html).toContain('<!doctype html>');
+      expect(html).toContain('María Pérez');
+      expect(fileName).toContain('proof-of-delivery');
+      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ARCO_PROOF_DOWNLOADED' }));
+    });
+  });
+
+  describe('bulk (RP-014)', () => {
+    it('rejects a bulk REJECT with no reason', async () => {
+      const { service } = makeService();
+      await expect(
+        service.bulkUpdate(CONDO, USER, {
+          action: 'STATUS_UPDATE', requestIds: ['a1'], status: 'REJECTED',
+        } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('processes each request individually and records a summary audit', async () => {
+      const { service, prisma, audit } = makeService();
+      // targets lookup
+      prisma.arcoRequest.findMany.mockResolvedValue([
+        { id: 'a1', residentId: 'r1' },
+        { id: 'a2', residentId: 'r2' },
+      ]);
+      // each per-request update() loads its before-row
+      prisma.arcoRequest.findFirst.mockResolvedValue({ id: 'a1', status: 'RECEIVED', type: 'ACCESS' });
+      const out = await service.bulkUpdate(CONDO, USER, {
+        action: 'STATUS_UPDATE', requestIds: ['a1', 'a2'], status: 'IN_REVIEW',
+      } as never);
+      expect(out.affected).toBe(2);
+      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'ARCO_BULK_UPDATED' }));
+    });
+  });
+
+  describe('internal notes (RP-032)', () => {
+    it('routes update internalNotes to the append-only timeline', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({ id: REQ, status: 'IN_REVIEW', type: 'ACCESS' });
+      await service.update(CONDO, RESIDENT, REQ, USER, {
+        internalNotes: 'Llamar al titular',
+      } as never);
+      const noteEvent = prisma.arcoRequestEvent.create.mock.calls
+        .map((c: unknown[]) => (c[0] as { data: { type: string; note?: string } }).data)
+        .find((d: { type: string }) => d.type === 'NOTE_ADDED');
+      expect(noteEvent).toBeDefined();
+      expect(noteEvent?.note).toContain('Llamar');
     });
   });
 });

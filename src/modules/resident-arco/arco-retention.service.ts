@@ -101,9 +101,15 @@ export class ArcoRetentionService {
             condoAttachments += 1;
           }
         }
-        // Hard delete — cascade removes attachment + event rows.
-        const deleted = await this.prisma.arcoRequest.deleteMany({
-          where: { id: { in: batch.map((r) => r.id) } },
+        // Hard delete — cascade removes attachment + event rows. The
+        // arco_request_events table is append-only (RP-011 trigger); the
+        // transaction-local `arco.purge` flag authorizes the cascade delete of
+        // its events and resets automatically when the transaction commits.
+        const deleted = await this.prisma.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe("SET LOCAL arco.purge = 'on'");
+          return tx.arcoRequest.deleteMany({
+            where: { id: { in: batch.map((r) => r.id) } },
+          });
         });
         condoRequests += deleted.count;
       }
