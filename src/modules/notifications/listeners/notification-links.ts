@@ -38,6 +38,10 @@ export function usersLink(): string {
   return '/settings/users';
 }
 
+export function arcoComplianceLink(): string {
+  return '/residents/arco';
+}
+
 /**
  * The i18n keys stored in a notification's `title` / `message` columns. The
  * web layer (Phase 7) resolves them against the `notifications` namespace;

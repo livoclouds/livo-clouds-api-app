@@ -7,11 +7,11 @@ import {
 import { NOTIFICATION_R1_TYPES } from './notifications.constants';
 
 describe('NOTIFICATION_ROLE_ACCESS', () => {
-  it('covers exactly the 14 matrix notification types', () => {
+  it('covers exactly the 15 matrix notification types', () => {
     const matrixKeys = Object.keys(NOTIFICATION_ROLE_ACCESS).sort();
     const r1Keys = [...NOTIFICATION_R1_TYPES].sort();
     expect(matrixKeys).toEqual(r1Keys);
-    expect(matrixKeys).toHaveLength(14);
+    expect(matrixKeys).toHaveLength(15);
   });
 
   it('maps each notification type to its documented role list', () => {
@@ -33,6 +33,7 @@ describe('NOTIFICATION_ROLE_ACCESS', () => {
         UserRole.RESIDENT,
       ],
       NEGATIVE_BALANCE: [UserRole.TENANT_ADMIN],
+      ARCO_OVERDUE: [UserRole.TENANT_ADMIN],
       NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       USER_ADDED: [UserRole.ROOT, UserRole.TENANT_ADMIN],
       PERMISSIONS_CHANGED: [

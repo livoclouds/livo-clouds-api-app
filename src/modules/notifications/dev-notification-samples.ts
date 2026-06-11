@@ -1,5 +1,6 @@
 import { NotificationType, Prisma } from '@prisma/client';
 import {
+  arcoComplianceLink,
   calendarEventLink,
   calendarLink,
   copyKeys,
@@ -134,6 +135,14 @@ function buildDataAndLink(
       };
     case NotificationType.SESSION_EXPIRING:
       return { data: { minutesRemaining: 5 }, linkUrl: null };
+    case NotificationType.ARCO_OVERDUE:
+      return {
+        data: {
+          requestId: 'dev-arco-0001',
+          residentId: 'dev-resident-0001',
+        },
+        linkUrl: slug ? arcoComplianceLink() : null,
+      };
     default: {
       // Exhaustiveness guard — a new R1 type widens the union and breaks the
       // build here until a sample is added above.
