@@ -1,18 +1,29 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { ArcoRequestEventType, ArcoRequestStatus, Prisma } from '@prisma/client';
+import {
+  ArcoRequest,
+  ArcoRequestEventType,
+  ArcoRequestStatus,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { AuditService } from '../audit/audit.service';
+import { EmailService } from '../email/email.service';
 import { ResidentDossierService } from '../resident-dossier/resident-dossier.service';
 import { CreateArcoRequestDto } from './dto/create-arco-request.dto';
 import { ListArcoRequestsDto } from './dto/list-arco-requests.dto';
 import { UpdateArcoRequestDto } from './dto/update-arco-request.dto';
 import { computeArcoDueDate } from './arco-due-date.util';
+import {
+  buildReceiptEmail,
+  buildResolutionEmail,
+} from './arco-notification-content';
 
 const ARCO_MODULE = 'resident-arco';
 
@@ -26,7 +37,16 @@ const AUDIT_ACTION = {
   ARCO_ATTACHMENT_ADDED: 'ARCO_ATTACHMENT_ADDED',
   ARCO_ATTACHMENT_REMOVED: 'ARCO_ATTACHMENT_REMOVED',
   ARCO_ACCESS_PACKET_GENERATED: 'ARCO_ACCESS_PACKET_GENERATED',
+  ARCO_NOTIFIED: 'ARCO_NOTIFIED',
 } as const;
+
+// Keeps only the last 4 characters of an official ID number; everything else is
+// masked. ARCO records must evidence identity without storing the raw ID.
+function maskIdNumber(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length <= 4) return '•'.repeat(trimmed.length);
+  return '•'.repeat(trimmed.length - 4) + trimmed.slice(-4);
+}
 
 // Evidence — PDF + images, 10 MB/file (under the API's 20 MB multipart cap).
 const ALLOWED_MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
@@ -61,12 +81,110 @@ export interface UploadedArcoFile {
 
 @Injectable()
 export class ResidentArcoService {
+  private readonly logger = new Logger(ResidentArcoService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly storage: StorageService,
     private readonly dossier: ResidentDossierService,
+    private readonly email: EmailService,
   ) {}
+
+  // Best-effort resident-facing transparency notice (LFPDPPP). The data subject
+  // is a resident (email), not necessarily an app user, so this goes by email —
+  // separate from the in-app staff fan-out. Never throws: a delivery failure is
+  // logged and the request flow continues. Records a NOTIFIED timeline event +
+  // ARCO_NOTIFIED audit when a notice was actually sent.
+  private async notifyResident(
+    request: Pick<
+      ArcoRequest,
+      | 'id'
+      | 'condominiumId'
+      | 'residentId'
+      | 'type'
+      | 'status'
+      | 'referenceFolio'
+      | 'dueDate'
+      | 'resolution'
+      | 'rejectionReason'
+    >,
+    kind: 'RECEIPT' | 'RESOLUTION',
+    actorUserId: string,
+  ): Promise<void> {
+    try {
+      const [resident, condominium, settings] = await Promise.all([
+        this.prisma.resident.findFirst({
+          where: { id: request.residentId, condominiumId: request.condominiumId },
+          select: { email: true, firstName: true, lastName: true },
+        }),
+        this.prisma.condominium.findUnique({
+          where: { id: request.condominiumId },
+          select: { name: true },
+        }),
+        this.prisma.condominiumSettings.findUnique({
+          where: { condominiumId: request.condominiumId },
+          select: { defaultLocale: true },
+        }),
+      ]);
+
+      if (!resident?.email) {
+        this.logger.warn(
+          `arco-notify: skipped ${kind} for request=${request.id} — resident has no email`,
+        );
+        return;
+      }
+
+      const ctx = {
+        locale: settings?.defaultLocale ?? 'es',
+        residentName: `${resident.firstName} ${resident.lastName}`.trim(),
+        condominiumName: condominium?.name ?? 'LivoClouds',
+        type: request.type,
+        status: request.status,
+        referenceFolio: request.referenceFolio,
+        dueDate:
+          kind === 'RECEIPT' &&
+          request.status !== ArcoRequestStatus.PENDING_VERIFICATION
+            ? request.dueDate
+            : null,
+        resolution: request.resolution,
+        rejectionReason: request.rejectionReason,
+      };
+      const email =
+        kind === 'RECEIPT' ? buildReceiptEmail(ctx) : buildResolutionEmail(ctx);
+
+      await this.email.sendTransactionalEmail(
+        resident.email,
+        email.subject,
+        email.html,
+      );
+
+      await this.prisma.arcoRequestEvent.create({
+        data: {
+          condominiumId: request.condominiumId,
+          arcoRequestId: request.id,
+          type: ArcoRequestEventType.NOTIFIED,
+          note: kind === 'RECEIPT' ? 'receipt' : 'resolution',
+          createdBy: actorUserId,
+        },
+      });
+      await this.audit.log({
+        condominiumId: request.condominiumId,
+        userId: actorUserId,
+        action: AUDIT_ACTION.ARCO_NOTIFIED,
+        actionCategory: 'UPDATE',
+        module: ARCO_MODULE,
+        entityType: 'ArcoRequest',
+        entityId: request.id,
+        afterState: { kind, to: resident.email },
+        result: 'SUCCESS',
+      });
+    } catch (err) {
+      this.logger.error(
+        `arco-notify: ${kind} notification failed for request=${request.id}: ${String(err)}`,
+      );
+    }
+  }
 
   private validateFile(file: UploadedArcoFile) {
     if (!ALLOWED_MIME.includes(file.mimeType)) {
@@ -266,18 +384,38 @@ export class ResidentArcoService {
     const receivedAt = dto.receivedAt ? new Date(dto.receivedAt) : new Date();
     const dueDate = computeArcoDueDate(receivedAt);
 
+    const identityVerified = dto.identityVerified === true;
+    // Default status: an unverified requester sits in PENDING_VERIFICATION until
+    // identity is confirmed; an explicit status in the DTO always wins.
+    const status =
+      dto.status ??
+      (identityVerified
+        ? ArcoRequestStatus.RECEIVED
+        : ArcoRequestStatus.PENDING_VERIFICATION);
+
     const created = await this.prisma.$transaction(async (tx) => {
       const request = await tx.arcoRequest.create({
         data: {
           condominiumId,
           residentId,
           type: dto.type,
-          status: dto.status ?? ArcoRequestStatus.RECEIVED,
+          status,
           channel: dto.channel,
           description: dto.description,
           referenceFolio: dto.referenceFolio,
           receivedAt,
           dueDate,
+          legalBasis: dto.legalBasis,
+          requesterName: dto.requesterName,
+          requesterRelationship: dto.requesterRelationship,
+          requesterIdType: dto.requesterIdType,
+          requesterIdNumberMasked: dto.requesterIdNumber
+            ? maskIdNumber(dto.requesterIdNumber)
+            : undefined,
+          identityVerified,
+          identityVerificationMethod: dto.identityVerificationMethod,
+          identityVerifiedAt: identityVerified ? new Date() : undefined,
+          identityVerifiedBy: identityVerified ? userId : undefined,
           createdBy: userId,
           updatedBy: userId,
         },
@@ -315,6 +453,9 @@ export class ResidentArcoService {
       await this.storeAttachment(condominiumId, created.id, userId, file);
     }
 
+    // Transparency notice — receipt acknowledgement to the data subject.
+    await this.notifyResident(created, 'RECEIPT', userId);
+
     return this.prisma.arcoRequest.findFirst({
       where: { id: created.id },
       include: REQUEST_INCLUDE,
@@ -328,74 +469,123 @@ export class ResidentArcoService {
     userId: string,
     dto: UpdateArcoRequestDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const before = await tx.arcoRequest.findFirst({
-        where: { id: requestId, condominiumId, residentId, deletedAt: null },
-      });
-      if (!before) throw new NotFoundException('ARCO request not found');
+    const { updated, becameTerminal } = await this.prisma.$transaction(
+      async (tx) => {
+        const before = await tx.arcoRequest.findFirst({
+          where: { id: requestId, condominiumId, residentId, deletedAt: null },
+        });
+        if (!before) throw new NotFoundException('ARCO request not found');
 
-      const nextStatus = (dto.status ?? before.status) as ArcoRequestStatus;
-      const statusChanged = nextStatus !== before.status;
-      // Stamp resolvedAt when entering a terminal state (unless explicitly given).
-      const resolvedAt =
-        dto.resolvedAt !== undefined
-          ? dto.resolvedAt
-            ? new Date(dto.resolvedAt)
-            : null
-          : statusChanged && TERMINAL_STATUSES.includes(nextStatus)
-            ? new Date()
-            : undefined;
+        // Identity verification transition: stamp who/when on the first time it
+        // flips to verified, and auto-advance a PENDING_VERIFICATION request to
+        // RECEIVED unless the caller set an explicit status.
+        const verifyingNow =
+          dto.identityVerified === true && !before.identityVerified;
 
-      const result = await tx.arcoRequest.updateMany({
-        where: { id: requestId, condominiumId, residentId, deletedAt: null },
-        data: {
-          type: dto.type,
-          status: dto.status,
-          channel: dto.channel,
-          resolution: dto.resolution,
-          referenceFolio: dto.referenceFolio,
-          resolvedAt,
-          updatedBy: userId,
-        },
-      });
-      if (result.count === 0) throw new NotFoundException('ARCO request not found');
+        let nextStatus = (dto.status ?? before.status) as ArcoRequestStatus;
+        if (
+          dto.status === undefined &&
+          verifyingNow &&
+          before.status === ArcoRequestStatus.PENDING_VERIFICATION
+        ) {
+          nextStatus = ArcoRequestStatus.RECEIVED;
+        }
+        const statusChanged = nextStatus !== before.status;
 
-      await tx.arcoRequestEvent.create({
-        data: {
-          condominiumId,
-          arcoRequestId: requestId,
-          type: statusChanged
-            ? ArcoRequestEventType.STATUS_CHANGED
-            : ArcoRequestEventType.UPDATED,
-          fromStatus: statusChanged ? before.status : null,
-          toStatus: statusChanged ? nextStatus : null,
-          createdBy: userId,
-        },
-      });
+        // A rejection must carry a written justification (LFPDPPP Art. 12).
+        if (nextStatus === ArcoRequestStatus.REJECTED) {
+          const reason = dto.rejectionReason ?? before.rejectionReason;
+          if (!reason || reason.trim().length === 0) {
+            throw new BadRequestException('errors.arco.rejectionReasonRequired');
+          }
+        }
 
-      const updated = await tx.arcoRequest.findFirst({
-        where: { id: requestId },
-        include: REQUEST_INCLUDE,
-      });
+        // Stamp resolvedAt when entering a terminal state (unless explicitly given).
+        const resolvedAt =
+          dto.resolvedAt !== undefined
+            ? dto.resolvedAt
+              ? new Date(dto.resolvedAt)
+              : null
+            : statusChanged && TERMINAL_STATUSES.includes(nextStatus)
+              ? new Date()
+              : undefined;
 
-      await this.audit.log(
-        {
-          condominiumId,
-          userId,
-          action: AUDIT_ACTION.ARCO_UPDATED,
-          actionCategory: 'UPDATE',
-          module: ARCO_MODULE,
-          entityType: 'ArcoRequest',
-          entityId: requestId,
-          beforeState: before,
-          afterState: updated,
-          result: 'SUCCESS',
-        },
-        tx,
-      );
+        const result = await tx.arcoRequest.updateMany({
+          where: { id: requestId, condominiumId, residentId, deletedAt: null },
+          data: {
+            type: dto.type,
+            status: statusChanged ? nextStatus : undefined,
+            channel: dto.channel,
+            resolution: dto.resolution,
+            rejectionReason: dto.rejectionReason,
+            referenceFolio: dto.referenceFolio,
+            legalBasis: dto.legalBasis,
+            requesterName: dto.requesterName,
+            requesterRelationship: dto.requesterRelationship,
+            requesterIdType: dto.requesterIdType,
+            requesterIdNumberMasked: dto.requesterIdNumber
+              ? maskIdNumber(dto.requesterIdNumber)
+              : undefined,
+            identityVerified: dto.identityVerified,
+            identityVerificationMethod: dto.identityVerificationMethod,
+            identityVerifiedAt: verifyingNow ? new Date() : undefined,
+            identityVerifiedBy: verifyingNow ? userId : undefined,
+            resolvedAt,
+            updatedBy: userId,
+          },
+        });
+        if (result.count === 0)
+          throw new NotFoundException('ARCO request not found');
 
-      return updated;
-    });
+        await tx.arcoRequestEvent.create({
+          data: {
+            condominiumId,
+            arcoRequestId: requestId,
+            type: statusChanged
+              ? ArcoRequestEventType.STATUS_CHANGED
+              : ArcoRequestEventType.UPDATED,
+            fromStatus: statusChanged ? before.status : null,
+            toStatus: statusChanged ? nextStatus : null,
+            createdBy: userId,
+          },
+        });
+
+        const updated = await tx.arcoRequest.findFirst({
+          where: { id: requestId },
+          include: REQUEST_INCLUDE,
+        });
+
+        await this.audit.log(
+          {
+            condominiumId,
+            userId,
+            action: AUDIT_ACTION.ARCO_UPDATED,
+            actionCategory: 'UPDATE',
+            module: ARCO_MODULE,
+            entityType: 'ArcoRequest',
+            entityId: requestId,
+            beforeState: before,
+            afterState: updated,
+            result: 'SUCCESS',
+          },
+          tx,
+        );
+
+        return {
+          updated,
+          becameTerminal:
+            statusChanged && TERMINAL_STATUSES.includes(nextStatus),
+        };
+      },
+    );
+
+    // Resolution notice to the data subject — after the transaction commits so a
+    // notification failure can never roll back the resolution.
+    if (becameTerminal && updated) {
+      await this.notifyResident(updated, 'RESOLUTION', userId);
+    }
+
+    return updated;
   }
 
   async addNote(

@@ -40,4 +40,5 @@ export const NOTIFICATION_R1_TYPES: NotificationType[] = [
   NotificationType.USER_ADDED,
   NotificationType.PERMISSIONS_CHANGED,
   NotificationType.SESSION_EXPIRING,
+  NotificationType.ARCO_OVERDUE,
 ];

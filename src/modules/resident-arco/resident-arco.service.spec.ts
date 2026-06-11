@@ -9,7 +9,18 @@ const REQ = 'arco-1';
 
 function makePrismaMock() {
   const mock = {
-    resident: { findFirst: jest.fn().mockResolvedValue({ id: RESIDENT }) },
+    // Carries an email so the resident-facing notification path can fire.
+    resident: {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue({ id: RESIDENT, email: 'maria@example.com', firstName: 'María', lastName: 'Pérez' }),
+    },
+    condominium: {
+      findUnique: jest.fn().mockResolvedValue({ name: 'Coto Alameda' }),
+    },
+    condominiumSettings: {
+      findUnique: jest.fn().mockResolvedValue({ defaultLocale: 'es' }),
+    },
     arcoRequest: {
       findFirst: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
@@ -44,13 +55,15 @@ function makeService() {
       .fn()
       .mockResolvedValue({ buffer: Buffer.from('PK'), fileName: 'arco_res-1.zip', entries: 2 }),
   };
+  const email = { sendTransactionalEmail: jest.fn().mockResolvedValue(undefined) };
   const service = new ResidentArcoService(
     prisma as never,
     audit as never,
     storage as never,
     dossier as never,
+    email as never,
   );
-  return { service, prisma, audit, storage, dossier };
+  return { service, prisma, audit, storage, dossier, email };
 }
 
 const baseCreate = {
@@ -81,6 +94,46 @@ describe('ResidentArcoService', () => {
       );
     });
 
+    it('defaults to PENDING_VERIFICATION when identity is not verified', async () => {
+      const { service, prisma } = makeService();
+      await service.create(CONDO, RESIDENT, USER, baseCreate);
+      const data = prisma.arcoRequest.create.mock.calls[0][0].data;
+      expect(data.status).toBe('PENDING_VERIFICATION');
+      expect(data.identityVerified).toBe(false);
+      expect(data.identityVerifiedAt).toBeUndefined();
+    });
+
+    it('starts RECEIVED, stamps the verifier and masks the ID when identity is verified', async () => {
+      const { service, prisma } = makeService();
+      await service.create(CONDO, RESIDENT, USER, {
+        ...baseCreate,
+        identityVerified: true,
+        requesterName: 'María Pérez',
+        requesterIdNumber: 'PEMA800101HDFRRL09',
+      } as never);
+      const data = prisma.arcoRequest.create.mock.calls[0][0].data;
+      expect(data.status).toBe('RECEIVED');
+      expect(data.identityVerified).toBe(true);
+      expect(data.identityVerifiedAt).toBeInstanceOf(Date);
+      expect(data.identityVerifiedBy).toBe(USER);
+      // Only the last four characters survive; the raw ID is never stored.
+      expect(data.requesterIdNumberMasked).toBe('••••••••••••••RL09');
+      expect(data.requesterIdNumberMasked).not.toContain('PEMA');
+    });
+
+    it('sends a receipt notification to the resident', async () => {
+      const { service, email, audit } = makeService();
+      await service.create(CONDO, RESIDENT, USER, baseCreate);
+      expect(email.sendTransactionalEmail).toHaveBeenCalledWith(
+        'maria@example.com',
+        expect.any(String),
+        expect.stringContaining('María'),
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'ARCO_NOTIFIED' }),
+      );
+    });
+
     it('stores evidence files when provided', async () => {
       const { service, storage, prisma } = makeService();
       await service.create(CONDO, RESIDENT, USER, baseCreate, [fakeFile()]);
@@ -101,7 +154,11 @@ describe('ResidentArcoService', () => {
   describe('update', () => {
     it('records STATUS_CHANGED and stamps resolvedAt on a terminal status', async () => {
       const { service, prisma } = makeService();
-      prisma.arcoRequest.findFirst.mockResolvedValue({ id: REQ, status: 'IN_REVIEW' });
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ,
+        status: 'IN_REVIEW',
+        type: 'RECTIFICATION',
+      });
       await service.update(CONDO, RESIDENT, REQ, USER, { status: 'COMPLETED' } as never);
       const evt = prisma.arcoRequestEvent.create.mock.calls[0][0].data;
       expect(evt.type).toBe('STATUS_CHANGED');
@@ -109,6 +166,68 @@ describe('ResidentArcoService', () => {
       expect(evt.toStatus).toBe('COMPLETED');
       const data = prisma.arcoRequest.updateMany.mock.calls[0][0].data;
       expect(data.resolvedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects a REJECTED transition with no rejection reason', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ,
+        status: 'IN_REVIEW',
+        rejectionReason: null,
+      });
+      await expect(
+        service.update(CONDO, RESIDENT, REQ, USER, { status: 'REJECTED' } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('allows a REJECTED transition when a reason is supplied and persists it', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ,
+        status: 'IN_REVIEW',
+        type: 'RECTIFICATION',
+      });
+      await service.update(CONDO, RESIDENT, REQ, USER, {
+        status: 'REJECTED',
+        rejectionReason: 'Solicitud improcedente: identidad no acreditada.',
+      } as never);
+      const data = prisma.arcoRequest.updateMany.mock.calls[0][0].data;
+      expect(data.status).toBe('REJECTED');
+      expect(data.rejectionReason).toContain('improcedente');
+    });
+
+    it('auto-advances PENDING_VERIFICATION to RECEIVED when identity is verified', async () => {
+      const { service, prisma } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ,
+        status: 'PENDING_VERIFICATION',
+        identityVerified: false,
+      });
+      await service.update(CONDO, RESIDENT, REQ, USER, {
+        identityVerified: true,
+      } as never);
+      const data = prisma.arcoRequest.updateMany.mock.calls[0][0].data;
+      expect(data.status).toBe('RECEIVED');
+      expect(data.identityVerifiedAt).toBeInstanceOf(Date);
+      expect(data.identityVerifiedBy).toBe(USER);
+      const evt = prisma.arcoRequestEvent.create.mock.calls[0][0].data;
+      expect(evt.type).toBe('STATUS_CHANGED');
+      expect(evt.toStatus).toBe('RECEIVED');
+    });
+
+    it('sends a resolution notification to the resident on a terminal transition', async () => {
+      const { service, prisma, email } = makeService();
+      prisma.arcoRequest.findFirst.mockResolvedValue({
+        id: REQ,
+        status: 'IN_REVIEW',
+        type: 'RECTIFICATION',
+      });
+      await service.update(CONDO, RESIDENT, REQ, USER, { status: 'COMPLETED' } as never);
+      expect(email.sendTransactionalEmail).toHaveBeenCalledWith(
+        'maria@example.com',
+        expect.any(String),
+        expect.any(String),
+      );
     });
   });
 

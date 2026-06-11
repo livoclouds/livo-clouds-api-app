@@ -238,6 +238,10 @@ enum NotificationType {
   USER_ADDED
   PERMISSIONS_CHANGED
   SESSION_EXPIRING
+
+  // ARCO data-subject rights — Phase 7a. Admin alert when a request passes its
+  // LFPDPPP legal deadline.
+  ARCO_OVERDUE
 }
 
 enum RootScope {
@@ -445,8 +449,15 @@ model CondominiumSettings {
   dossierRetentionDays Int @default(0)
   // Whether the scheduled auto-purge actually runs. The sweep only purges when
   // this is true AND dossierRetentionDays > 0, so an admin can pause the purge
-  // without losing the configured window.
+  // without losing the configured window. Shared gate for the ARCO retention
+  // sweep below.
   autopurgeEnabled Boolean @default(false)
+
+  // ARCO (data-subject rights) retention — months after a request is resolved
+  // (COMPLETED/REJECTED) before it and its evidence are auto-purged. 0 = no
+  // window (opt-in per condominium). Gated by autopurgeEnabled. Mexican law
+  // commonly keeps these ~6 years (72 months) for liability evidence.
+  arcoRetentionMonths Int @default(0)
 
   // Financial-health score weights — Fase 4. Per-condominium override of the 7
   // factor weights (onTime, collectionRate, monthsCurrent, delinquencyAge,
@@ -2023,6 +2034,9 @@ enum ArcoRequestType {
 }
 
 enum ArcoRequestStatus {
+  // Identity not yet verified — the request is logged but substantive handling
+  // (and the 20-business-day clock) starts once the data subject is verified.
+  PENDING_VERIFICATION
   RECEIVED
   IN_REVIEW
   COMPLETED
@@ -2037,6 +2051,45 @@ enum ArcoRequestEventType {
   ATTACHMENT_ADDED
   ATTACHMENT_REMOVED
   ACCESS_PACKET_GENERATED
+  // Phase 7a — SLA automation, notifications & retention.
+  OVERDUE
+  ESCALATED_BY_SYSTEM
+  NOTIFIED
+  RETENTION_PURGE
+}
+
+// Legal basis for processing the ARCO request (LFPDPPP / GDPR Art. 6 analog).
+enum ArcoLegalBasis {
+  CONSENT
+  CONTRACT
+  LEGAL_OBLIGATION
+  VITAL_INTEREST
+  PUBLIC_TASK
+  LEGITIMATE_INTEREST
+}
+
+// How the requester's identity was confirmed before substantive handling.
+enum ArcoIdentityVerificationMethod {
+  GOVERNMENT_ID
+  PASSPORT
+  CURP
+  AGENT_NOTARIZED
+  OTHER
+}
+
+// Type of official ID the requester presented (the number is stored masked).
+enum ArcoRequesterIdType {
+  INE
+  PASSPORT
+  CURP
+  OTHER
+}
+
+// Relationship of the requester to the data subject.
+enum ArcoRequesterRelationship {
+  SELF
+  LEGAL_AGENT
+  AUTHORIZED_REPRESENTATIVE
 }
 
 model ArcoRequest {
@@ -2051,8 +2104,26 @@ model ArcoRequest {
   description    String
   // Admin's resolution notes once handled.
   resolution     String?
+  // Mandatory written justification when status = REJECTED (LFPDPPP Art. 12).
+  rejectionReason String?
   // Official reference (oficio/acta) backing the request or its resolution.
   referenceFolio String?
+
+  // --- Compliance: legal basis & identity verification (LFPDPPP Art. 12) ---
+  legalBasis                 ArcoLegalBasis?
+  // Identity of the person who filed the request and their standing.
+  requesterName              String?
+  requesterRelationship      ArcoRequesterRelationship?
+  requesterIdType            ArcoRequesterIdType?
+  // Only the last digits are kept; the service masks before persisting.
+  requesterIdNumberMasked    String?
+  // Whether the requester's identity has been confirmed. While false the
+  // request sits in PENDING_VERIFICATION.
+  identityVerified           Boolean                         @default(false)
+  identityVerificationMethod ArcoIdentityVerificationMethod?
+  identityVerifiedAt         DateTime?
+  // API-owned actor field — JWT sub of the verifying user.
+  identityVerifiedBy         String?
   // When the resident submitted it (admin-set; defaults to now).
   receivedAt     DateTime          @default(now())
   // LFPDPPP legal response deadline — denormalized at creation
