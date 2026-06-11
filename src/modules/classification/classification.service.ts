@@ -121,7 +121,8 @@ export interface SystemRulesCatalog {
 // read-only by getSystemRulesCatalog() so admins can see how the engine detects a
 // unit. A guard test (classification.service.spec) asserts every `example` matches
 // its own `regex`, so the docs can never drift away from the live pattern.
-const UNIT_PATTERNS: {
+// Exported for the ENGINE-060 ReDoS-safety guard spec (classification.patterns.spec).
+export const UNIT_PATTERNS: {
   regex: RegExp;
   confidence: number;
   label: string;
@@ -139,7 +140,7 @@ const UNIT_PATTERNS: {
 // surfaced read-only by getSystemRulesCatalog() so admins can see exactly what the
 // hardcoded concept detection recognizes. A guard test (classification.service.spec)
 // asserts every `term` matches its own `regex` — the docs cannot drift from the code.
-const CONCEPT_PATTERNS: { regex: RegExp; concept: string; terms: string[] }[] = [
+export const CONCEPT_PATTERNS: { regex: RegExp; concept: string; terms: string[] }[] = [
   // Maintenance abbreviations residents actually write: "mtto", "mmto", "manto",
   // "mantto", "mant", "mto" — the old `mant\b` missed "Mtto"/"MTTO"/"Mmto" (no word
   // boundary after "mant"), and the inner group missed the bare "mto" (single t,
@@ -178,7 +179,7 @@ const MONTH_MAP: Record<string, number> = {
   jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
 };
 
-const PAYER_PATTERNS: RegExp[] = [
+export const PAYER_PATTERNS: RegExp[] = [
   /nombre:\s*([A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+?)(?:\s+ref|\s+\d|$)/i,
   /de:\s*([A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+?)(?:\s+ref|\s+\d|$)/i,
   /pago\s+de\s+([A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+?)(?:\s+casa|\s+unidad|\s+c\d|\s+\d|$)/i,
@@ -1309,6 +1310,18 @@ export class ClassificationService {
       },
     });
     const summary = await this.classifyBatch(condominiumId, batchId);
+
+    // ENGINE-058 — keep the persisted batch summary in sync with the re-run.
+    // (reapplyToPending is tenant-wide, not batch-scoped — out of its scope.)
+    await this.prisma.importBatch.updateMany({
+      where: { id: batchId, condominiumId },
+      data: {
+        classifiedCount: summary.classified,
+        needsReviewCount: summary.needsReview,
+        unmatchedCount: summary.unmatched,
+        classifiedAt: new Date(),
+      },
+    });
 
     if (userId) {
       await this.prisma.auditLog.create({

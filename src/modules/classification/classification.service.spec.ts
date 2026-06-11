@@ -42,7 +42,7 @@ interface PrismaMock {
   auditLog: { create: jest.Mock };
   reconciliationCorrectionPattern: { upsert: jest.Mock };
   paymentAllocation: { deleteMany: jest.Mock; createMany: jest.Mock; aggregate: jest.Mock };
-  importBatch: { update: jest.Mock; findUnique: jest.Mock };
+  importBatch: { update: jest.Mock; updateMany: jest.Mock; findUnique: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -77,6 +77,8 @@ function makePrismaMock(): PrismaMock {
     },
     importBatch: {
       update: jest.fn().mockResolvedValue(null),
+      // ENGINE-058: reclassifyBatch syncs the persisted batch summary columns.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       // classifyBatch reads the batch's bank profile to drive bank-specific
       // extraction. Default to no profile so existing tests stay bank-agnostic.
       findUnique: jest.fn().mockResolvedValue({ bankProfile: null }),

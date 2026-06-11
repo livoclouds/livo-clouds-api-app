@@ -24,6 +24,10 @@ import { ImportsService } from './imports.service';
 import { CheckHashesDto } from './dto/check-hashes.dto';
 import { ConfirmImportDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
+import {
+  parseJsonStringArray,
+  validatePreviewFields,
+} from './dto/preview-fields.dto';
 
 interface MultipartFile {
   buffer: Buffer;
@@ -81,6 +85,7 @@ export class ImportsController {
   constructor(private readonly importsService: ImportsService) {}
 
   @Get()
+  @RequirePermission('imports.read')
   @ApiOperation({ summary: 'List import batches' })
   findAll(
     @Request() req: { condominiumId: string },
@@ -90,6 +95,7 @@ export class ImportsController {
   }
 
   @Get(':id')
+  @RequirePermission('imports.read')
   @ApiOperation({ summary: 'Get import batch with transactions' })
   findOne(
     @Request() req: { condominiumId: string },
@@ -99,6 +105,7 @@ export class ImportsController {
   }
 
   @Get(':id/download')
+  @RequirePermission('imports.read')
   @ApiOperation({
     summary: 'Get a presigned URL to download the original imported file',
   })
@@ -169,8 +176,8 @@ export class ImportsController {
     @Request() req: FastifyRequest & { condominiumId: string },
   ) {
     const files: MultipartFile[] = [];
-    let storedHashes: string[] = [];
-    let clientIds: string[] = [];
+    let storedHashesRaw: string | undefined;
+    let clientIdsRaw: string | undefined;
     let bankProfileId: string | undefined;
 
     if (req.isMultipart()) {
@@ -189,17 +196,9 @@ export class ImportsController {
             size: buffer.length,
           });
         } else if (part.fieldname === 'storedHashes') {
-          try {
-            storedHashes = JSON.parse(part.value as string);
-          } catch {
-            // ignore malformed field — treat as empty
-          }
+          storedHashesRaw = part.value as string;
         } else if (part.fieldname === 'clientIds') {
-          try {
-            clientIds = JSON.parse(part.value as string);
-          } catch {
-            // ignore malformed field — treat as empty
-          }
+          clientIdsRaw = part.value as string;
         } else if (part.fieldname === 'bankProfileId') {
           const raw = String(part.value ?? '').trim();
           if (raw.length > 0) bankProfileId = raw;
@@ -207,11 +206,19 @@ export class ImportsController {
       }
     }
 
+    // ENGINE-061 — multipart text fields bypass the global ValidationPipe, so
+    // validate them explicitly with the CheckHashesDto constraints before the
+    // arrays reach the dedup checks.
+    const fields = validatePreviewFields({
+      storedHashes: parseJsonStringArray(storedHashesRaw, 'storedHashes'),
+      clientIds: parseJsonStringArray(clientIdsRaw, 'clientIds'),
+    });
+
     return this.importsService.preview(
       req.condominiumId,
       files,
-      storedHashes,
-      clientIds,
+      fields.storedHashes,
+      fields.clientIds,
       bankProfileId,
     );
   }

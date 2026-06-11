@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Get,
   NotFoundException,
   Param,
   Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -15,9 +17,11 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from './classification.service';
+import { ClassificationMetricsService } from './classification-metrics.service';
 import { ManualMatchDto } from './dto/manual-match.dto';
 import { ManualClassifyDto } from './dto/manual-classify.dto';
 import { BulkReconcileDto } from './dto/bulk-reconcile.dto';
+import { PrecisionQueryDto } from './dto/precision-query.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('Classification')
@@ -26,8 +30,29 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 export class ClassificationController {
   constructor(
     private readonly classificationService: ClassificationService,
+    private readonly metricsService: ClassificationMetricsService,
     private readonly prisma: PrismaService,
   ) {}
+
+  @Get('classification/precision')
+  @RequirePermission('transactions.read')
+  @ApiOperation({
+    summary:
+      'Classification precision metrics — override rates per matchSource and per rule (ENGINE-058)',
+  })
+  async getPrecision(
+    @Request() req: { condominiumId: string },
+    @Query() query: PrecisionQueryDto,
+  ) {
+    const metrics = await this.metricsService.getPrecisionMetrics(
+      req.condominiumId,
+      {
+        from: query.from ? new Date(query.from) : undefined,
+        to: query.to ? new Date(query.to) : undefined,
+      },
+    );
+    return { data: metrics };
+  }
 
   @Post('imports/:batchId/classify')
   @RequirePermission('transactions.override')
