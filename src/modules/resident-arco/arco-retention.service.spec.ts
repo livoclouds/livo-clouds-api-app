@@ -9,7 +9,12 @@ function makeService() {
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    // The purge now wraps deleteMany in a transaction that sets the append-only
+    // bypass flag (RP-011); the tx exposes the same arcoRequest client.
+    $executeRawUnsafe: jest.fn().mockResolvedValue(0),
+    $transaction: jest.fn(),
   };
+  prisma.$transaction.mockImplementation((cb: (tx: typeof prisma) => unknown) => cb(prisma));
   const storage = { deleteFile: jest.fn().mockResolvedValue(undefined) };
   const audit = { log: jest.fn().mockResolvedValue(undefined) };
   const service = new ArcoRetentionService(
