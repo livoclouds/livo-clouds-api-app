@@ -5,7 +5,11 @@ import { AuditService } from '../audit/audit.service';
 import { StorageService } from '../storage/storage.service';
 import { ABANDONED_PENDING_MS, STALE_PROCESSING_MS } from './imports.constants';
 
-const SYSTEM_ACTOR = 'system';
+// audit_logs.userId is a REQUIRED FK to users — a literal 'system' actor would
+// FK-fail. Cron-driven audit rows are attributed to the batch's importer
+// (importedById) with `triggeredBy: 'system-reaper'` in afterState marking the
+// real actor.
+const SYSTEM_TRIGGER = 'system-reaper';
 
 export interface ImportsMaintenanceSweepResult {
   stuckRecovered: number;
@@ -64,43 +68,57 @@ export class ImportsMaintenanceCron {
     const stuckCutoff = new Date(now.getTime() - STALE_PROCESSING_MS);
     const stuck = await this.prisma.importBatch.findMany({
       where: { status: 'PROCESSING', updatedAt: { lt: stuckCutoff } },
-      select: { id: true, condominiumId: true, fileName: true, updatedAt: true },
+      select: {
+        id: true,
+        condominiumId: true,
+        importedById: true,
+        fileName: true,
+        updatedAt: true,
+      },
     });
 
     for (const batch of stuck) {
-      // Conditional update — a concurrent recovery/classify run may have
-      // already moved the batch on; never clobber a fresh transition.
-      const result = await this.prisma.importBatch.updateMany({
-        where: {
-          id: batch.id,
-          status: 'PROCESSING',
-          updatedAt: { lt: stuckCutoff },
-        },
-        data: {
-          status: 'FAILED',
-          errorMessage:
-            'Classification stalled and was recovered by the maintenance reaper. Re-run classification to complete the import.',
-        },
-      });
-      if (result.count === 0) continue;
+      try {
+        // Conditional update — a concurrent recovery/classify run may have
+        // already moved the batch on; never clobber a fresh transition.
+        const result = await this.prisma.importBatch.updateMany({
+          where: {
+            id: batch.id,
+            status: 'PROCESSING',
+            updatedAt: { lt: stuckCutoff },
+          },
+          data: {
+            status: 'FAILED',
+            errorMessage:
+              'Classification stalled and was recovered by the maintenance reaper. Re-run classification to complete the import.',
+          },
+        });
+        if (result.count === 0) continue;
 
-      await this.audit.log({
-        condominiumId: batch.condominiumId,
-        userId: SYSTEM_ACTOR,
-        action: 'IMPORT_FAILED',
-        actionCategory: 'UPDATE',
-        module: 'imports',
-        entityType: 'ImportBatch',
-        entityId: batch.id,
-        result: 'WARNING',
-        description:
-          'Stuck PROCESSING batch flagged FAILED by the maintenance reaper (transactions persisted; reclassify to recover)',
-        afterState: {
-          errorCode: 'CLASSIFICATION_STALLED',
-          stalledSince: batch.updatedAt,
-        },
-      });
-      stuckRecovered += 1;
+        await this.audit.log({
+          condominiumId: batch.condominiumId,
+          userId: batch.importedById,
+          action: 'IMPORT_FAILED',
+          actionCategory: 'UPDATE',
+          module: 'imports',
+          entityType: 'ImportBatch',
+          entityId: batch.id,
+          result: 'WARNING',
+          description:
+            'Stuck PROCESSING batch flagged FAILED by the maintenance reaper (transactions persisted; reclassify to recover)',
+          afterState: {
+            errorCode: 'CLASSIFICATION_STALLED',
+            stalledSince: batch.updatedAt,
+            triggeredBy: SYSTEM_TRIGGER,
+          },
+        });
+        stuckRecovered += 1;
+      } catch (err) {
+        // One bad batch must not abort the rest of the sweep.
+        this.logger.error(
+          `imports-maintenance: stuck-pass failed for batch=${batch.id}: ${String(err)}`,
+        );
+      }
     }
 
     // --- Pass 2: purge abandoned PENDING uploads (R2 object + batch row) ---
@@ -112,7 +130,12 @@ export class ImportsMaintenanceCron {
         createdAt: { lt: abandonedCutoff },
         transactions: { none: {} },
       },
-      select: { id: true, condominiumId: true, storageKey: true },
+      select: {
+        id: true,
+        condominiumId: true,
+        importedById: true,
+        storageKey: true,
+      },
     });
 
     for (const batch of abandoned) {
@@ -130,7 +153,7 @@ export class ImportsMaintenanceCron {
       await this.prisma.importBatch.delete({ where: { id: batch.id } });
       await this.audit.log({
         condominiumId: batch.condominiumId,
-        userId: SYSTEM_ACTOR,
+        userId: batch.importedById,
         action: 'IMPORT_DELETED',
         actionCategory: 'DELETE',
         module: 'imports',
@@ -139,7 +162,10 @@ export class ImportsMaintenanceCron {
         result: 'SUCCESS',
         description:
           'Abandoned PENDING upload purged by the maintenance reaper (no transactions; retained file deleted)',
-        afterState: { errorCode: 'IMPORT_BATCH_PURGED' },
+        afterState: {
+          errorCode: 'IMPORT_BATCH_PURGED',
+          triggeredBy: SYSTEM_TRIGGER,
+        },
       });
       orphansPurged += 1;
     }

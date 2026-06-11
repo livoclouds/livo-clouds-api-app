@@ -34,6 +34,7 @@ describe('ImportsMaintenanceCron.sweep — stuck-PROCESSING reaper (ENGINE-004)'
         {
           id: 'batch-stuck',
           condominiumId: 'cond-1',
+          importedById: 'user-importer',
           fileName: 'movs.xlsx',
           updatedAt: stalledSince,
         },
@@ -58,8 +59,12 @@ describe('ImportsMaintenanceCron.sweep — stuck-PROCESSING reaper (ENGINE-004)'
         action: 'IMPORT_FAILED',
         result: 'WARNING',
         entityId: 'batch-stuck',
+        // audit_logs.userId is an FK to users — attributed to the importer,
+        // with the system trigger recorded in afterState.
+        userId: 'user-importer',
         afterState: expect.objectContaining({
           errorCode: 'CLASSIFICATION_STALLED',
+          triggeredBy: 'system-reaper',
         }),
       }),
     );
@@ -87,6 +92,7 @@ describe('ImportsMaintenanceCron.sweep — stuck-PROCESSING reaper (ENGINE-004)'
         {
           id: 'batch-stuck',
           condominiumId: 'cond-1',
+          importedById: 'user-importer',
           fileName: 'movs.xlsx',
           updatedAt: new Date(0),
         },
@@ -111,6 +117,7 @@ describe('ImportsMaintenanceCron.sweep — abandoned-upload purge (ENGINE-048)',
         {
           id: 'batch-abandoned',
           condominiumId: 'cond-1',
+          importedById: 'user-importer',
           storageKey: 'condominiums/cond-1/imports/batch-abandoned/movs.xlsx',
         },
       ]);
@@ -153,6 +160,7 @@ describe('ImportsMaintenanceCron.sweep — abandoned-upload purge (ENGINE-048)',
         {
           id: 'batch-abandoned',
           condominiumId: 'cond-1',
+          importedById: 'user-importer',
           storageKey: 'condominiums/cond-1/imports/batch-abandoned/movs.xlsx',
         },
       ]);
