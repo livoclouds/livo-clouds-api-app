@@ -36,13 +36,18 @@ interface PrismaMock {
     count: jest.Mock;
   };
   resident: { findFirst: jest.Mock; findMany: jest.Mock };
-  calendarEvent: { findMany: jest.Mock };
+  calendarEvent: { findMany: jest.Mock; findFirst: jest.Mock };
   condominiumSettings: { findUnique: jest.Mock };
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
   reconciliationCorrectionPattern: { upsert: jest.Mock };
   paymentAllocation: { deleteMany: jest.Mock; createMany: jest.Mock; aggregate: jest.Mock };
-  importBatch: { update: jest.Mock; updateMany: jest.Mock; findUnique: jest.Mock };
+  importBatch: {
+    update: jest.Mock;
+    updateMany: jest.Mock;
+    findUnique: jest.Mock;
+    findFirst: jest.Mock;
+  };
   $transaction: jest.Mock;
 }
 
@@ -62,7 +67,12 @@ function makePrismaMock(): PrismaMock {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
     },
-    calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
+    calendarEvent: {
+      findMany: jest.fn().mockResolvedValue([]),
+      // ENGINE-002: revertTerraceLinksForBatch → unmarkTerraceEventPaid reads
+      // the event before reverting; null exercises the skip branch safely.
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     // Phase 5F (KI-004): default to no tenant-level keywords so existing tests stay green.
     condominiumSettings: {
       findUnique: jest.fn().mockResolvedValue({ terraceGlobalKeywords: [] }),
@@ -82,6 +92,13 @@ function makePrismaMock(): PrismaMock {
       // classifyBatch reads the batch's bank profile to drive bank-specific
       // extraction. Default to no profile so existing tests stay bank-agnostic.
       findUnique: jest.fn().mockResolvedValue({ bankProfile: null }),
+      // ENGINE-004: reclassifyBatch guards on the batch's current status and
+      // restores a terminal status afterwards. Default to a recoverable batch.
+      findFirst: jest.fn().mockResolvedValue({
+        status: 'COMPLETED',
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+        completedAt: new Date('2026-01-01T00:00:00Z'),
+      }),
     },
     // REV-003 / REV-017: support both forms — array (chunk classifyBatch) and
     // callback (single-row overrides). The callback receives the same mock as `tx`.
@@ -1920,5 +1937,124 @@ describe('ClassificationService.classifyBatch — UNIT-kind reconciliation rules
     expect(data!.residentId).toBeNull();
     expect(data!.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
     expect(data!.requiresReviewReason).toBe(RequiresReviewReason.UNIT_NOT_FOUND);
+  });
+});
+
+describe('ClassificationService.reclassifyBatch — status restore (ENGINE-004)', () => {
+  it('holds the batch in PROCESSING and restores COMPLETED with refreshed counts on success', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
+
+    const batchUpdates = prisma.importBatch.updateMany.mock.calls.map(
+      (args) => args[0],
+    );
+    // First batch write parks the row in PROCESSING (the in-flight marker the
+    // reaper and remove() respect)…
+    expect(batchUpdates[0]).toMatchObject({
+      where: { id: BATCH_ID, condominiumId: CONDOMINIUM_ID },
+      data: { status: 'PROCESSING' },
+    });
+    // …and the final write restores the terminal status with the re-run counts.
+    const final = batchUpdates[batchUpdates.length - 1];
+    expect(final.data).toMatchObject({
+      status: 'COMPLETED',
+      classifiedCount: expect.any(Number),
+      needsReviewCount: expect.any(Number),
+      unmatchedCount: expect.any(Number),
+    });
+    expect(final.data.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('marks the batch FAILED with errorMessage and rethrows when the re-run rejects', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+    prisma.transaction.updateMany.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(
+      service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null),
+    ).rejects.toThrow('db down');
+
+    const final = prisma.importBatch.updateMany.mock.calls.at(-1)![0];
+    expect(final.data).toMatchObject({
+      status: 'FAILED',
+      errorMessage: expect.stringContaining('Reclassification failed'),
+    });
+  });
+
+  it('rejects a fresh PROCESSING batch with IMPORT_BATCH_PROCESSING', async () => {
+    const prisma = makePrismaMock();
+    prisma.importBatch.findFirst.mockResolvedValue({
+      status: 'PROCESSING',
+      updatedAt: new Date(),
+      completedAt: null,
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null),
+    ).rejects.toMatchObject({ response: { code: 'IMPORT_BATCH_PROCESSING' } });
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('recovers a STALE PROCESSING batch instead of rejecting it', async () => {
+    const prisma = makePrismaMock();
+    prisma.importBatch.findFirst.mockResolvedValue({
+      status: 'PROCESSING',
+      updatedAt: new Date(Date.now() - 31 * 60 * 1000),
+      completedAt: null,
+    });
+    const service = makeService(prisma);
+
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
+
+    const final = prisma.importBatch.updateMany.mock.calls.at(-1)![0];
+    expect(final.data).toMatchObject({ status: 'COMPLETED' });
+  });
+});
+
+describe('ClassificationService — ENGINE-002 delete collaborators', () => {
+  it('recomputeSummariesForMonths upserts one summary per provided month', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.recomputeSummariesForMonths(CONDOMINIUM_ID, [
+      { year: 2026, month: 3 },
+      { year: 2026, month: 4 },
+    ]);
+
+    expect(prisma.financialMonthlySummary.upsert).toHaveBeenCalledTimes(2);
+    const keys = prisma.financialMonthlySummary.upsert.mock.calls.map(
+      (args) => args[0].where.condominiumId_year_month,
+    );
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        { condominiumId: CONDOMINIUM_ID, year: 2026, month: 3 },
+        { condominiumId: CONDOMINIUM_ID, year: 2026, month: 4 },
+      ]),
+    );
+  });
+
+  it('revertTerraceLinksForBatch visits every linked transaction of the batch', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', matchedCalendarEventId: 'event-1' },
+      { id: 'tx-2', matchedCalendarEventId: 'event-2' },
+    ]);
+    const service = makeService(prisma);
+
+    await service.revertTerraceLinksForBatch(CONDOMINIUM_ID, BATCH_ID, 'user-1');
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          importBatchId: BATCH_ID,
+          matchedCalendarEventId: { not: null },
+        }),
+      }),
+    );
+    // unmarkTerraceEventPaid reads each event before reverting.
+    expect(prisma.calendarEvent.findFirst).toHaveBeenCalledTimes(2);
   });
 });

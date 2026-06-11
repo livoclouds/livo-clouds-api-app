@@ -24,8 +24,11 @@ import * as crypto from 'crypto';
 import { ReconciliationRuleKind } from '@prisma/client';
 
 import { JwtPayload, UserRole } from '../../src/common/types';
+import { AuditService } from '../../src/modules/audit/audit.service';
 import { ClassificationService } from '../../src/modules/classification/classification.service';
 import { ConfirmImportDto } from '../../src/modules/imports/dto/confirm-import.dto';
+import { ImportsMaintenanceCron } from '../../src/modules/imports/imports-maintenance.cron';
+import { STALE_PROCESSING_MS } from '../../src/modules/imports/imports.constants';
 import {
   closeImportsContext,
   createImportsContext,
@@ -467,5 +470,275 @@ describeIntegration('imports upload → confirm → classify (integration)', () 
       where: { id: batchId },
     });
     expect(batch.status).toBe('PENDING');
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Phase 2 — Import pipeline integrity & recovery acceptance criteria.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('a custom-alias bank profile previews and confirms identically — no false PAYLOAD_MISMATCH (ENGINE-005)', async () => {
+    // Headers that match NONE of the DEFAULT_FIELD_DEFINITIONS aliases — the
+    // parse only succeeds when the profile's aliases are actually used.
+    const customWorkbookBuilder = async () => {
+      const wb = new ExcelJS.Workbook();
+      const sheet = wb.addWorksheet('Movimientos');
+      sheet.addRow(['Fch. Op.', 'Detalle del movimiento', 'Salidas', 'Entradas', 'Posición']);
+      for (const row of FIXTURE_ROWS) {
+        sheet.addRow([row.date, row.description, row.charges, row.credits, row.balance]);
+      }
+      const out = await wb.xlsx.writeBuffer();
+      return Buffer.from(out as ArrayBuffer);
+    };
+    const customWorkbook = await customWorkbookBuilder();
+    const customHash = sha256(customWorkbook);
+
+    const customFields = [
+      { key: 'date', label: 'Fecha', system: true, required: true, aliases: ['fch. op.'] },
+      { key: 'description', label: 'Descripción', system: true, required: true, aliases: ['detalle del movimiento'] },
+      { key: 'charges', label: 'Cargos', system: true, required: true, aliases: ['salidas'] },
+      { key: 'credits', label: 'Abonos', system: true, required: true, aliases: ['entradas'] },
+      { key: 'balance', label: 'Saldo', system: true, required: true, aliases: ['posición'] },
+    ];
+    const profile = await ctx.prisma.bankProfile.create({
+      data: {
+        condominiumId: fx.condominiumId,
+        name: 'Banco Custom',
+        bankName: 'Banco Custom',
+        excelAliases: customFields,
+      },
+    });
+
+    // Preview resolves the profile fields and parses the custom layout.
+    const { results } = await ctx.imports.preview(
+      fx.condominiumId,
+      [{ buffer: customWorkbook, originalname: 'custom.xlsx', mimetype: XLSX_MIME, size: customWorkbook.length }],
+      [],
+      ['client-custom'],
+      profile.id,
+    );
+    expect(results[0]).toMatchObject({ status: 'success', transactionCount: 3 });
+
+    // Upload + confirm with the SAME profile: the confirm-time canonical
+    // re-parse must resolve the same fields or it false-positives as tampering.
+    const uploadResults = await ctx.imports.upload(
+      fx.condominiumId,
+      [{ buffer: customWorkbook, originalname: 'custom.xlsx', mimetype: XLSX_MIME, size: customWorkbook.length }],
+      fx.actor,
+    );
+    const batchId = uploadResults[0].batchId as string;
+
+    const clientRows = results[0].transactions.map((t) => ({
+      date: t.date,
+      description: t.description,
+      charges: t.charges,
+      credits: t.credits,
+      balance: t.balance,
+      flowType: t.flowType,
+    }));
+    const confirmation = await ctx.imports.confirm(
+      fx.condominiumId,
+      {
+        bankProfileId: profile.id,
+        files: [
+          {
+            fileName: 'custom.xlsx',
+            fileType: 'xlsx',
+            fileHash: customHash,
+            batchId,
+            fileSizeBytes: customWorkbook.length,
+            warnings: [],
+            transactions: clientRows,
+          },
+        ],
+      } as ConfirmImportDto,
+      fx.actor,
+    );
+
+    expect(confirmation.files[0]).toMatchObject({
+      status: 'processing',
+      imported: 3,
+    });
+    expect(confirmation.files[0].reconciliation).toMatchObject({ mismatchCount: 0 });
+    const terminal = await waitForBatchTerminal(ctx.prisma, batchId);
+    expect(terminal.status).toBe('COMPLETED');
+    expect(terminal.transactionCount).toBe(3);
+  });
+
+  it('preview totals, count and finalBalance equal the confirmed batch for a file containing invalid rows (ENGINE-026/028)', async () => {
+    // 1 future-dated row of 4 (25% — under the 30% abort threshold).
+    const rows: WorkbookRow[] = [
+      ...FIXTURE_ROWS,
+      { date: '2030-01-01', description: 'FUTURO INVALIDO', charges: 0, credits: 999, balance: 4499 },
+    ];
+    const dirtyWorkbook = await buildBankWorkbook(rows);
+    const dirtyHash = sha256(dirtyWorkbook);
+
+    const { results } = await ctx.imports.preview(
+      fx.condominiumId,
+      [{ buffer: dirtyWorkbook, originalname: 'dirty.xlsx', mimetype: XLSX_MIME, size: dirtyWorkbook.length }],
+      [],
+      ['client-dirty'],
+    );
+    expect(results[0].validation).toMatchObject({
+      totalRows: 4,
+      validRows: 3,
+      invalidRows: 1,
+    });
+    expect(results[0].transactionCount).toBe(3);
+
+    const uploadResults = await ctx.imports.upload(
+      fx.condominiumId,
+      [{ buffer: dirtyWorkbook, originalname: 'dirty.xlsx', mimetype: XLSX_MIME, size: dirtyWorkbook.length }],
+      fx.actor,
+    );
+    const batchId = uploadResults[0].batchId as string;
+
+    const clientRows = results[0].transactions.map((t) => ({
+      date: t.date,
+      description: t.description,
+      charges: t.charges,
+      credits: t.credits,
+      balance: t.balance,
+      flowType: t.flowType,
+    }));
+    await ctx.imports.confirm(
+      fx.condominiumId,
+      {
+        files: [
+          {
+            fileName: 'dirty.xlsx',
+            fileType: 'xlsx',
+            fileHash: dirtyHash,
+            batchId,
+            fileSizeBytes: dirtyWorkbook.length,
+            warnings: [],
+            transactions: clientRows,
+          },
+        ],
+      } as ConfirmImportDto,
+      fx.actor,
+    );
+    const terminal = await waitForBatchTerminal(ctx.prisma, batchId);
+
+    // ENGINE-028 acceptance: what the user confirmed is what persisted.
+    expect(terminal.status).toBe('COMPLETED');
+    expect(terminal.transactionCount).toBe(results[0].transactionCount);
+    expect(Number(terminal.totalIncome)).toBe(results[0].totalIncome);
+    expect(Number(terminal.totalExpenses)).toBe(results[0].totalExpenses);
+    expect(Number(terminal.finalBalance)).toBe(results[0].finalBalance);
+  });
+
+  it('remove deletes the transactions, recomputes the monthly summary, and re-upload+confirm yields exactly one live batch (ENGINE-002/017)', async () => {
+    const { batchId } = await runFullImport();
+
+    await ctx.imports.remove(fx.condominiumId, batchId, fx.actor);
+
+    // Transactions are gone everywhere, the batch row survives as FAILED with
+    // zeroed counters, and the monthly summary no longer counts the rows.
+    expect(
+      await ctx.prisma.transaction.count({ where: { importBatchId: batchId } }),
+    ).toBe(0);
+    const deleted = await ctx.prisma.importBatch.findUniqueOrThrow({
+      where: { id: batchId },
+    });
+    expect(deleted.status).toBe('FAILED');
+    expect(deleted.transactionCount).toBe(0);
+    expect(Number(deleted.totalIncome)).toBe(0);
+    const summary = await ctx.prisma.financialMonthlySummary.findUnique({
+      where: {
+        condominiumId_year_month: {
+          condominiumId: fx.condominiumId,
+          year: 2026,
+          month: 3,
+        },
+      },
+    });
+    expect(summary?.transactionCount ?? 0).toBe(0);
+
+    // Delete-then-reupload (the sanctioned recovery flow) yields exactly ONE
+    // live copy — the FAILED tombstone is excluded by the partial unique index.
+    const { batchId: secondBatchId, terminal } = await runFullImport();
+    expect(terminal.status).toBe('COMPLETED');
+    expect(secondBatchId).not.toBe(batchId);
+    expect(
+      await ctx.prisma.importBatch.count({
+        where: {
+          condominiumId: fx.condominiumId,
+          fileHash,
+          status: { not: 'FAILED' },
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await ctx.prisma.transaction.count({
+        where: { condominiumId: fx.condominiumId },
+      }),
+    ).toBe(3);
+  });
+
+  it('two concurrent uploads of identical content race to a single live batch — the loser receives the winner batchId (ENGINE-017)', async () => {
+    const [a, b] = await Promise.all([
+      ctx.imports.upload(fx.condominiumId, uploadFileFor(workbook), fx.actor),
+      ctx.imports.upload(fx.condominiumId, uploadFileFor(workbook), fx.actor),
+    ]);
+
+    expect(a[0]).toMatchObject({ status: 'queued' });
+    expect(b[0]).toMatchObject({ status: 'queued' });
+    // Both callers hold the SAME live batch id (the P2002 loser was re-routed
+    // to the winner).
+    expect(a[0].batchId).toBe(b[0].batchId);
+    expect(
+      await ctx.prisma.importBatch.count({
+        where: {
+          condominiumId: fx.condominiumId,
+          fileHash,
+          status: { not: 'FAILED' },
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('a batch artificially stuck in PROCESSING is recovered by the reaper and becomes COMPLETED again via reclassifyBatch (ENGINE-004)', async () => {
+    const { batchId } = await runFullImport();
+
+    // Simulate the crashed-mid-classify state: PROCESSING with a stale
+    // updatedAt. Raw SQL because Prisma's @updatedAt would bump the timestamp.
+    const staleSince = new Date(Date.now() - STALE_PROCESSING_MS - 60_000);
+    await ctx.prisma.$executeRaw`
+      UPDATE "import_batches"
+      SET status = 'PROCESSING', "updatedAt" = ${staleSince}
+      WHERE id = ${batchId}
+    `;
+
+    const cron = new ImportsMaintenanceCron(
+      ctx.prisma,
+      ctx.moduleRef.get(AuditService),
+      ctx.storage as never,
+    );
+    const sweepResult = await cron.sweep();
+    expect(sweepResult.stuckRecovered).toBe(1);
+
+    const reaped = await ctx.prisma.importBatch.findUniqueOrThrow({
+      where: { id: batchId },
+    });
+    expect(reaped.status).toBe('FAILED');
+    expect(reaped.errorMessage).toContain('stalled');
+    // The batch was recovered WITHOUT deleting it — transactions intact.
+    expect(
+      await ctx.prisma.transaction.count({ where: { importBatchId: batchId } }),
+    ).toBe(3);
+
+    // The status-restoring reclassify completes the recovery.
+    const summary = await ctx.classification.reclassifyBatch(
+      fx.condominiumId,
+      batchId,
+      fx.importerId,
+    );
+    expect(summary.total).toBe(3);
+    const recovered = await ctx.prisma.importBatch.findUniqueOrThrow({
+      where: { id: batchId },
+    });
+    expect(recovered.status).toBe('COMPLETED');
+    expect(recovered.classifiedCount).toBe(2);
   });
 });
