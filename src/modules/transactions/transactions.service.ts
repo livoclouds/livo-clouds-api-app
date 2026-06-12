@@ -275,13 +275,21 @@ export class TransactionsService {
     };
   }
 
-  async findClassified(condominiumId: string, dto: ListTransactionsDto) {
+  /**
+   * ENGINE-038: single where-builder shared by the classified LIST and EXPORT
+   * paths. Every new filter lands once — the on-screen table and the CSV can
+   * no longer disagree. Includes the status-allowlist guard (identical on both
+   * paths before the unification).
+   */
+  private buildClassifiedWhere(
+    condominiumId: string,
+    dto: ListTransactionsDto,
+  ): Prisma.TransactionWhereInput {
     const {
-      page = 1, limit = 50, flowType, classificationStatus, dateFrom, dateTo,
-      residentId, importBatchId, concept, description, unitNumber, residentName,
+      flowType, classificationStatus, dateFrom, dateTo, residentId,
+      importBatchId, concept, description, unitNumber, residentName,
       period, confidenceLevel,
     } = dto;
-    const skip = (page - 1) * limit;
 
     if (
       classificationStatus !== undefined &&
@@ -349,6 +357,53 @@ export class TransactionsService {
     if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
     else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
     else if (confidenceLevel === 'LOW') where.confidenceScore = { lt: 0.5 };
+
+    return where;
+  }
+
+  /**
+   * ENGINE-038: single where-builder shared by the reconciled LIST and EXPORT
+   * paths (same rationale as buildClassifiedWhere).
+   */
+  private buildReconciledWhere(
+    condominiumId: string,
+    dto: ListTransactionsDto,
+  ): Prisma.TransactionWhereInput {
+    const { flowType, dateFrom, dateTo, importBatchId } = dto;
+    const reconciliationStatus = (dto as ListTransactionsDto & { reconciliationStatus?: string }).reconciliationStatus;
+
+    const where: Prisma.TransactionWhereInput = {
+      condominiumId,
+      reconciliationStatus: reconciliationStatus
+        ? (reconciliationStatus as 'APPROVED' | 'IGNORED')
+        : { in: ['APPROVED', 'IGNORED'] },
+    };
+    if (flowType) where.flowType = flowType;
+    if (importBatchId) where.importBatchId = importBatchId;
+    if (dateFrom || dateTo) {
+      where.transactionDate = {};
+      if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setUTCHours(23, 59, 59, 999);
+        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
+      }
+    }
+    // ILIKE scan on unindexed columns — acceptable at current dataset size
+    if (dto.q && dto.q.trim().length > 0) {
+      where.OR = [
+        { payerName: { contains: dto.q, mode: 'insensitive' } },
+        { description: { contains: dto.q, mode: 'insensitive' } },
+      ];
+    }
+
+    return where;
+  }
+
+  async findClassified(condominiumId: string, dto: ListTransactionsDto) {
+    const { page = 1, limit = 50 } = dto;
+    const skip = (page - 1) * limit;
+    const where = this.buildClassifiedWhere(condominiumId, dto);
 
     const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
     const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput | Prisma.TransactionOrderByWithRelationInput[]> = {
@@ -416,34 +471,9 @@ export class TransactionsService {
   }
 
   async findReconciled(condominiumId: string, dto: ListTransactionsDto) {
-    const { page = 1, limit = 50, flowType, dateFrom, dateTo, importBatchId } = dto;
+    const { page = 1, limit = 50 } = dto;
     const skip = (page - 1) * limit;
-    const reconciliationStatus = (dto as ListTransactionsDto & { reconciliationStatus?: string }).reconciliationStatus;
-
-    const where: Prisma.TransactionWhereInput = {
-      condominiumId,
-      reconciliationStatus: reconciliationStatus
-        ? (reconciliationStatus as 'APPROVED' | 'IGNORED')
-        : { in: ['APPROVED', 'IGNORED'] },
-    };
-    if (flowType) where.flowType = flowType;
-    if (importBatchId) where.importBatchId = importBatchId;
-    if (dateFrom || dateTo) {
-      where.transactionDate = {};
-      if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) {
-        const end = new Date(dateTo);
-        end.setUTCHours(23, 59, 59, 999);
-        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
-      }
-    }
-    // ILIKE scan on unindexed columns — acceptable at current dataset size
-    if (dto.q && dto.q.trim().length > 0) {
-      where.OR = [
-        { payerName: { contains: dto.q, mode: 'insensitive' } },
-        { description: { contains: dto.q, mode: 'insensitive' } },
-      ];
-    }
+    const where = this.buildReconciledWhere(condominiumId, dto);
 
     const safeSortDir = (dto.sortDir === 'asc' || dto.sortDir === 'desc') ? dto.sortDir : 'desc';
     const sortAllowlist: Record<string, Prisma.TransactionOrderByWithRelationInput> = {
@@ -485,79 +515,8 @@ export class TransactionsService {
   }
 
   exportClassifiedCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
-    const {
-      flowType, classificationStatus, dateFrom, dateTo, residentId, importBatchId, columns,
-      concept, description, unitNumber, residentName, period, confidenceLevel,
-    } = dto;
-
-    if (
-      classificationStatus !== undefined &&
-      classificationStatus !== ClassificationStatus.AUTO &&
-      classificationStatus !== ClassificationStatus.MANUAL_OVERRIDE
-    ) {
-      throw new BadRequestException({
-        code: 'INVALID_CLASSIFICATION_STATUS',
-        reason: 'Only AUTO and MANUAL_OVERRIDE are accepted on the classified endpoint.',
-      });
-    }
-
-    const where: Prisma.TransactionWhereInput = {
-      condominiumId,
-      classificationStatus: classificationStatus ?? { in: ['AUTO', 'MANUAL_OVERRIDE'] },
-      reconciliationStatus: 'PENDING',
-    };
-    if (flowType) where.flowType = flowType;
-    if (residentId) where.residentId = residentId;
-    if (importBatchId) where.importBatchId = importBatchId;
-    if (dateFrom || dateTo) {
-      where.transactionDate = {};
-      if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) {
-        const end = new Date(dateTo);
-        end.setUTCHours(23, 59, 59, 999);
-        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
-      }
-    }
-    if (concept) where.paymentConcept = { contains: concept, mode: 'insensitive' };
-    if (description) where.description = { contains: description, mode: 'insensitive' };
-    if (unitNumber || residentName) {
-      const residentFilter: Prisma.ResidentWhereInput = {};
-      if (unitNumber) {
-        residentFilter.unitNumber = { contains: unitNumber, mode: 'insensitive' };
-      }
-      if (residentName) {
-        const parts = residentName.trim().split(/\s+/).filter(Boolean);
-        if (parts.length <= 1) {
-          residentFilter.OR = [
-            { firstName: { contains: residentName.trim(), mode: 'insensitive' } },
-            { lastName: { contains: residentName.trim(), mode: 'insensitive' } },
-          ];
-        } else {
-          // Multi-word query: each word must appear in either firstName or lastName.
-          // e.g. "Veronica Citlalli Ramirez Ortiz" → firstName="Veronica Citlalli", lastName="Ramirez Ortiz"
-          residentFilter.AND = parts.map((part) => ({
-            OR: [
-              { firstName: { contains: part, mode: 'insensitive' as const } },
-              { lastName: { contains: part, mode: 'insensitive' as const } },
-            ],
-          }));
-        }
-      }
-      where.resident = residentFilter;
-    }
-    if (period && !dateFrom && !dateTo) {
-      const [year, month] = period.split('-').map(Number);
-      if (year && month) {
-        const periodStart = new Date(Date.UTC(year, month - 1, 1));
-        const periodEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
-        where.transactionDate = { gte: periodStart, lte: periodEnd };
-      }
-    }
-    if (confidenceLevel === 'HIGH') where.confidenceScore = { gte: 0.8 };
-    else if (confidenceLevel === 'MEDIUM') where.confidenceScore = { gte: 0.5, lt: 0.8 };
-    else if (confidenceLevel === 'LOW') where.confidenceScore = { lt: 0.5 };
-
-    const resolvedColumns = this.resolveExportColumns(columns);
+    const where = this.buildClassifiedWhere(condominiumId, dto);
+    const resolvedColumns = this.resolveExportColumns(dto.columns);
 
     return Readable.from(this.streamClassifiedRows(where, resolvedColumns));
   }
@@ -696,33 +655,7 @@ export class TransactionsService {
   }
 
   exportReconciledCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
-    const { flowType, dateFrom, dateTo, importBatchId } = dto;
-    const reconciliationStatus = (dto as ListTransactionsDto & { reconciliationStatus?: string }).reconciliationStatus;
-
-    const where: Prisma.TransactionWhereInput = {
-      condominiumId,
-      reconciliationStatus: reconciliationStatus
-        ? (reconciliationStatus as 'APPROVED' | 'IGNORED')
-        : { in: ['APPROVED', 'IGNORED'] },
-    };
-    if (flowType) where.flowType = flowType;
-    if (importBatchId) where.importBatchId = importBatchId;
-    if (dateFrom || dateTo) {
-      where.transactionDate = {};
-      if (dateFrom) (where.transactionDate as Prisma.DateTimeFilter).gte = new Date(dateFrom);
-      if (dateTo) {
-        const end = new Date(dateTo);
-        end.setUTCHours(23, 59, 59, 999);
-        (where.transactionDate as Prisma.DateTimeFilter).lte = end;
-      }
-    }
-    // ILIKE scan on unindexed columns — acceptable at current dataset size
-    if (dto.q && dto.q.trim().length > 0) {
-      where.OR = [
-        { payerName: { contains: dto.q, mode: 'insensitive' } },
-        { description: { contains: dto.q, mode: 'insensitive' } },
-      ];
-    }
+    const where = this.buildReconciledWhere(condominiumId, dto);
 
     return Readable.from(this.streamReconciledRows(where));
   }

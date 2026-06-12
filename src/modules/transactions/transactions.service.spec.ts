@@ -315,3 +315,72 @@ describe('escapeCsvValue — formula-injection neutralization (ENGINE-036)', () 
     expect(escapeCsvValue('say "hi"')).toBe('"say ""hi"""');
   });
 });
+
+describe('ENGINE-038 — list and export share one where-builder', () => {
+  const CLASSIFIED_DTO = {
+    flowType: 'INCOME',
+    dateFrom: '2026-05-01',
+    dateTo: '2026-05-31',
+    concept: 'mantenimiento',
+    unitNumber: '34',
+    residentName: 'Ana García',
+    confidenceLevel: 'HIGH',
+  } as never;
+
+  const RECONCILED_DTO = {
+    flowType: 'INCOME',
+    dateFrom: '2026-05-01',
+    dateTo: '2026-05-31',
+    q: 'terraza',
+    reconciliationStatus: 'APPROVED',
+  } as never;
+
+  async function drain(stream: NodeJS.ReadableStream): Promise<void> {
+    for await (const _chunk of stream) {
+      void _chunk;
+    }
+  }
+
+  it('classified: findClassified and exportClassifiedCsv emit an identical where', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.findClassified(CONDOMINIUM_ID, CLASSIFIED_DTO);
+    const listWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    prisma.transaction.findMany.mockClear();
+    await drain(service.exportClassifiedCsv(CONDOMINIUM_ID, CLASSIFIED_DTO));
+    const exportWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    expect(exportWhere).toEqual(listWhere);
+  });
+
+  it('reconciled: findReconciled and exportReconciledCsv emit an identical where', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.findReconciled(CONDOMINIUM_ID, RECONCILED_DTO);
+    const listWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    prisma.transaction.findMany.mockClear();
+    await drain(service.exportReconciledCsv(CONDOMINIUM_ID, RECONCILED_DTO));
+    const exportWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    expect(exportWhere).toEqual(listWhere);
+  });
+
+  it('classified: the status allowlist guard also protects the export path', () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    expect(() =>
+      service.exportClassifiedCsv(CONDOMINIUM_ID, {
+        classificationStatus: 'NEEDS_REVIEW',
+      } as never),
+    ).toThrow(
+      expect.objectContaining({
+        response: expect.objectContaining({ code: 'INVALID_CLASSIFICATION_STATUS' }),
+      }),
+    );
+  });
+});
