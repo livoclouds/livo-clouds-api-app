@@ -15,12 +15,16 @@ import { PrismaService } from '../../prisma/prisma.service';
  *    table + the overridden count (an override rewrites matchSource to MANUAL
  *    and nulls matchedRuleId, so the live table alone undercounts).
  *
- * Known caveat (documented, accepted for the Phase 4 baseline): reclassifyBatch
- * wipes and re-stamps rows while historical override audits persist, so rates
- * are a slight over-estimate across reclassified batches. Per-UNIT_PATTERNS
- * label attribution is not recoverable from existing data — metrics are scoped
- * to matchSource + matchedRuleId (persisting the pattern label is the Phase 4
- * prerequisite).
+ * Known caveat (documented, accepted): reclassifyBatch wipes and re-stamps rows
+ * while historical override audits persist, so rates are a slight over-estimate
+ * across reclassified batches (the same applies to matchedPatternLabel).
+ *
+ * Phase 4 (ENGINE-042): the pattern-label prerequisite is met — the engine now
+ * persists `matchedPatternLabel` on every classified row and the manual-
+ * correction audits carry it in beforeState, so `byPattern` slices override
+ * rates per extraction pattern ("casa", "#", "banbajio:segment", …). Rows
+ * classified before the Phase 4 deploy have a null label and are excluded from
+ * byPattern (attribution starts at deploy).
  */
 
 /** Bucket for corrections whose audit beforeState carried no matchSource
@@ -45,11 +49,14 @@ export interface PrecisionMetrics {
   range: { from: string | null; to: string | null };
   byMatchSource: ({ matchSource: string } & PrecisionBucket)[];
   byRule: ({ ruleId: string; ruleName: string | null } & PrecisionBucket)[];
+  /** ENGINE-042: override rates per extraction pattern (matchedPatternLabel). */
+  byPattern: ({ patternLabel: string } & PrecisionBucket)[];
 }
 
 interface OverrideRow {
   match_source: string | null;
   rule_id: string | null;
+  pattern_label: string | null;
   overridden: number;
 }
 
@@ -80,9 +87,10 @@ export class ClassificationMetricsService {
     // extraction only runs over the pre-filtered rows. Insert-only table — reads
     // are unaffected by the immutability trigger.
     const overrideRows = await this.prisma.$queryRaw<OverrideRow[]>`
-      SELECT "beforeState"->>'matchSource'   AS match_source,
-             "beforeState"->>'matchedRuleId' AS rule_id,
-             count(*)::int                   AS overridden
+      SELECT "beforeState"->>'matchSource'         AS match_source,
+             "beforeState"->>'matchedRuleId'       AS rule_id,
+             "beforeState"->>'matchedPatternLabel' AS pattern_label,
+             count(*)::int                         AS overridden
       FROM audit_logs
       WHERE "condominiumId" = ${condominiumId}
         AND module = 'classification'
@@ -90,7 +98,7 @@ export class ClassificationMetricsService {
         AND "beforeState"->>'classificationStatus' = 'AUTO'
         AND "createdAt" >= ${from}
         AND "createdAt" < ${to}
-      GROUP BY 1, 2`;
+      GROUP BY 1, 2, 3`;
 
     // Surviving AUTO rows (the engine's classifications nobody corrected).
     const survivingBySource = await this.prisma.transaction.groupBy({
@@ -104,6 +112,15 @@ export class ClassificationMetricsService {
         condominiumId,
         classificationStatus: 'AUTO',
         matchedRuleId: { not: null },
+      },
+      _count: { _all: true },
+    });
+    const survivingByPattern = await this.prisma.transaction.groupBy({
+      by: ['matchedPatternLabel'],
+      where: {
+        condominiumId,
+        classificationStatus: 'AUTO',
+        matchedPatternLabel: { not: null },
       },
       _count: { _all: true },
     });
@@ -167,6 +184,33 @@ export class ClassificationMetricsService {
       ),
     }));
 
+    // ---- byPattern (ENGINE-042) ----
+    const patternStillAuto = new Map<string, number>();
+    for (const row of survivingByPattern) {
+      if (row.matchedPatternLabel) {
+        patternStillAuto.set(row.matchedPatternLabel, row._count._all);
+      }
+    }
+    const patternOverridden = new Map<string, number>();
+    for (const row of overrideRows) {
+      if (!row.pattern_label) continue;
+      patternOverridden.set(
+        row.pattern_label,
+        (patternOverridden.get(row.pattern_label) ?? 0) + Number(row.overridden),
+      );
+    }
+    const patternKeys = new Set([
+      ...patternStillAuto.keys(),
+      ...patternOverridden.keys(),
+    ]);
+    const byPattern = [...patternKeys].sort().map((patternLabel) => ({
+      patternLabel,
+      ...makeBucket(
+        patternStillAuto.get(patternLabel) ?? 0,
+        patternOverridden.get(patternLabel) ?? 0,
+      ),
+    }));
+
     return {
       range: {
         from: range?.from?.toISOString() ?? null,
@@ -174,6 +218,7 @@ export class ClassificationMetricsService {
       },
       byMatchSource,
       byRule,
+      byPattern,
     };
   }
 }

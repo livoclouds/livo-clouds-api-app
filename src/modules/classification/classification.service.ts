@@ -4,7 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 // import-equals is the form that resolves to the constructor at runtime.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import RE2 = require('re2');
-import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, FlowType, Prisma } from '@prisma/client';
+import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, ReconciliationRuleKind, FlowType, BankDialect, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ReconciliationRulesService } from '../reconciliation-rules/reconciliation-rules.service';
 import {
@@ -14,7 +14,6 @@ import {
 import { matchTerraceBooking, type TerraceCandidate } from './terrace-booking-matcher';
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 import { SettingsCacheService } from '../settings/settings-cache.service';
-import { isBanBajio } from '../bank-profiles/known-banks';
 import { STALE_PROCESSING_MS } from '../imports/imports.constants';
 import { round2, toCents } from '../../common/utils/money.util';
 import { summaryLockKey, upsertSummaryForMonthCore } from './monthly-summary.util';
@@ -61,10 +60,26 @@ interface TextExtraction {
   // the scalar `unitNumberDetected` stays as the 1:1 primary (null for multi).
   unitNumbersDetected: string[];
   unitConfidence: number;
+  // ENGINE-042: which hardcoded pattern produced the detected unit — a
+  // UNIT_PATTERNS label ("casa", "#", …) or a BanBajío stage label
+  // ("banbajio:segment", "banbajio:amount-gate"). Null when no pattern fired or
+  // when a rule/correction supplied the unit (matchedRuleId / matchSource
+  // attribute those). Persisted on the transaction so the metrics service can
+  // compute override rates per pattern.
+  matchedPatternLabel: string | null;
   payerNameDetected: string | null;
   paymentConcept: string | null;
   paymentPeriodYear: number | null;
   paymentPeriodMonth: number | null;
+}
+
+// ENGINE-043: the stored outcome of a recurring manual correction
+// (ReconciliationCorrectionPattern row), re-applied by the learned-correction
+// pass when the same description recurs.
+export interface CorrectionPatternData {
+  selectedUnitNumber: string | null;
+  selectedResidentId: string | null;
+  selectedConcept: string | null;
 }
 
 interface MatchResult {
@@ -125,6 +140,20 @@ export interface SystemRulesCatalog {
 // unit. A guard test (classification.service.spec) asserts every `example` matches
 // its own `regex`, so the docs can never drift away from the live pattern.
 // Exported for the ENGINE-060 ReDoS-safety guard spec (classification.patterns.spec).
+//
+// Confidence calibration (ENGINE-042 / ENGINE-001). The tiers below are the
+// engine's precision model; the fixed 0.8 AUTO gate (matchToResident) decides
+// auto-link vs LOW_CONFIDENCE review:
+//   casa / unidad 0.95, lote 0.90, depto 0.85 — EXPECTED basis (explicit
+//     residential prefixes; heuristic estimates pending measured override rates).
+//   c. 0.70, # 0.60 — DEMOTED below the AUTO gate (ENGINE-001): both prefixes
+//     match bank reference numbers ("FOLIO # 123", "C. 0045 REF") and were
+//     silently mis-attributing payments; they now always land in review. This
+//     also guarantees at least two tiers sit below the gate by design, making
+//     LOW_CONFIDENCE reachable from system patterns.
+// Measured override rates per pattern (the empirical basis to recalibrate these
+// constants) come from GET …/classification/precision → `byPattern`, fed by the
+// persisted `matchedPatternLabel` (attribution starts at Phase 4 deploy).
 export const UNIT_PATTERNS: {
   regex: RegExp;
   confidence: number;
@@ -134,9 +163,9 @@ export const UNIT_PATTERNS: {
   { regex: /\bcasa\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95, label: 'casa', example: 'casa 34' },
   { regex: /\bunidad\s*0*(\d{1,4})(?!\d)/i, confidence: 0.95, label: 'unidad', example: 'unidad 12' },
   { regex: /\blote\s*0*(\d{1,4})(?!\d)/i, confidence: 0.9, label: 'lote', example: 'lote 8' },
-  { regex: /\bc\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85, label: 'c.', example: 'c. 45' },
+  { regex: /\bc\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.7, label: 'c.', example: 'c. 45' },
   { regex: /\bdepto?\.?\s*0*(\d{1,4})(?!\d)/i, confidence: 0.85, label: 'depto', example: 'depto 21' },
-  { regex: /#\s*0*(\d{1,4})(?!\d)/i, confidence: 0.8, label: '#', example: '#233' },
+  { regex: /#\s*0*(\d{1,4})(?!\d)/i, confidence: 0.6, label: '#', example: '#233' },
 ];
 
 // `terms` is the human-readable list of keywords/abbreviations each regex matches,
@@ -164,13 +193,20 @@ export const CONCEPT_PATTERNS: { regex: RegExp; concept: string; terms: string[]
 // Stable keys for the hardcoded (non-keyword) passes. Their human-facing title and
 // description are localized in the web app by `key`; here we only expose the catalog
 // of keys + execution order so the UI can render the engine's full pipeline read-only.
-const SYSTEM_BEHAVIORAL_PASSES: { key: string; order: number }[] = [
-  { key: 'terraceBooking', order: 1 },
-  { key: 'amountGate', order: 2 },
-  { key: 'banbajioSegment', order: 3 },
-  { key: 'multiHouseSplit', order: 4 },
-  { key: 'monthToMaintenance', order: 5 },
-  { key: 'fuzzyName', order: 6 },
+//
+// ENGINE-046: this order MUST mirror the real execution order in
+// classifyTransaction (extraction → multi-house short-circuit → terrace →
+// editable rules → learned corrections → amount gate → fuzzy name). A guard
+// spec pins the catalog against the pipeline, so reordering one without the
+// other fails the build.
+export const SYSTEM_BEHAVIORAL_PASSES: { key: string; order: number }[] = [
+  { key: 'banbajioSegment', order: 1 },
+  { key: 'monthToMaintenance', order: 2 },
+  { key: 'multiHouseSplit', order: 3 },
+  { key: 'terraceBooking', order: 4 },
+  { key: 'correctionPattern', order: 5 },
+  { key: 'amountGate', order: 6 },
+  { key: 'fuzzyName', order: 7 },
 ];
 
 const MONTH_MAP: Record<string, number> = {
@@ -219,20 +255,83 @@ function levenshteinSimilarity(a: string, b: string): number {
   return 1 - dp[m][n] / Math.max(m, n);
 }
 
-export function extractFromText(description: string): TextExtraction {
+/**
+ * ENGINE-044: token-order-insensitive name similarity. Bank payer strings are
+ * routinely "LASTNAME FIRSTNAME" while the padrón stores "First Last", so raw
+ * Levenshtein over the joined strings scores token-order variants below the
+ * candidate cutoff ("PEREZ JUAN" vs "juan perez" ≈ 0.2). Comparing the
+ * whitespace tokens SORTED and rejoined makes the metric order-invariant while
+ * keeping Levenshtein's tolerance for typos inside each token.
+ */
+function tokenSetSimilarity(a: string, b: string): number {
+  const sortTokens = (s: string) => s.split(' ').filter(Boolean).sort().join(' ');
+  return levenshteinSimilarity(sortTokens(a), sortTokens(b));
+}
+
+/**
+ * Generic (bank-agnostic) extractor. `totalUnits` (ENGINE-001) bounds every
+ * detected unit to the condominium's configured range 1..totalUnits — an
+ * out-of-range capture is discarded and the NEXT pattern gets a chance, so
+ * "casa 9999" never links and "FOLIO # 123" can only link when 123 is a real
+ * unit (and even then the demoted "#" confidence keeps it in review).
+ * `totalUnits <= 0` (unconfigured tenant) skips the range check — the legacy
+ * behavior every existing caller without settings relies on.
+ */
+export function extractFromText(description: string, totalUnits = 0): TextExtraction {
   const normalized = normalizeText(description);
+
+  // ENGINE-014: multi-house detection is bank-agnostic. A description naming
+  // >= 2 in-range units ("casa 307 y casa 43") surfaces ALL of them and leaves
+  // the scalar null, so the caller's multi-unit short-circuit applies under any
+  // bank profile. findMultipleUnits requires totalUnits > 0 (range-validated by
+  // design), so unconfigured tenants keep single-unit behavior.
+  const multi = findMultipleUnits(normalized, totalUnits);
+  if (multi.length >= 2) {
+    return {
+      unitNumberDetected: null,
+      unitNumbersDetected: multi,
+      unitConfidence: 0.95,
+      matchedPatternLabel: 'casa',
+      payerNameDetected: extractPayerName(description),
+      ...extractConceptAndPeriod(normalized),
+    };
+  }
 
   let unitNumberDetected: string | null = null;
   let unitConfidence = 0;
-  for (const { regex, confidence } of UNIT_PATTERNS) {
+  let matchedPatternLabel: string | null = null;
+  for (const { regex, confidence, label } of UNIT_PATTERNS) {
     const match = normalized.match(regex);
-    if (match) {
-      unitNumberDetected = match[1].toUpperCase();
-      unitConfidence = confidence;
-      break;
+    if (!match) continue;
+    // ENGINE-001: range-validate the captured number when the tenant has
+    // totalUnits configured; an out-of-range capture falls through to the
+    // next pattern instead of poisoning the row with a wrong unit.
+    if (totalUnits > 0) {
+      const n = parseInt(match[1], 10);
+      if (!Number.isFinite(n) || n < 1 || n > totalUnits) continue;
     }
+    unitNumberDetected = match[1].toUpperCase();
+    unitConfidence = confidence;
+    matchedPatternLabel = label;
+    break;
   }
 
+  return {
+    unitNumberDetected,
+    unitNumbersDetected: unitNumberDetected ? [unitNumberDetected] : [],
+    unitConfidence,
+    matchedPatternLabel,
+    payerNameDetected: extractPayerName(description),
+    ...extractConceptAndPeriod(normalized),
+  };
+}
+
+/** Concept keyword + payment period detection over the normalized description. */
+function extractConceptAndPeriod(normalized: string): {
+  paymentConcept: string | null;
+  paymentPeriodYear: number | null;
+  paymentPeriodMonth: number | null;
+} {
   let paymentConcept: string | null = null;
   for (const { regex, concept } of CONCEPT_PATTERNS) {
     if (regex.test(normalized)) {
@@ -261,26 +360,16 @@ export function extractFromText(description: string): TextExtraction {
     }
   }
 
-  let payerNameDetected: string | null = null;
+  return { paymentConcept, paymentPeriodYear, paymentPeriodMonth };
+}
+
+/** First PAYER_PATTERNS capture over the RAW description (casing preserved). */
+function extractPayerName(description: string): string | null {
   for (const pattern of PAYER_PATTERNS) {
     const match = description.match(pattern);
-    if (match) {
-      payerNameDetected = match[1].trim();
-      break;
-    }
+    if (match) return match[1].trim();
   }
-
-  return {
-    unitNumberDetected,
-    // The generic extractor never resolves multi-unit; only the BanBajío path
-    // (findMultipleUnits) does. Single detected unit is mirrored by the caller.
-    unitNumbersDetected: unitNumberDetected ? [unitNumberDetected] : [],
-    unitConfidence,
-    payerNameDetected,
-    paymentConcept,
-    paymentPeriodYear,
-    paymentPeriodMonth,
-  };
+  return null;
 }
 
 /** Leading number of the segment ("176 dic", "06" -> 6), validated against totalUnits. */
@@ -389,7 +478,7 @@ export function extractFromBanBajio(
   description: string,
   totalUnits: number,
 ): TextExtraction {
-  const base = extractFromText(description);
+  const base = extractFromText(description, totalUnits);
 
   // For BanBajío the unit ONLY comes from the "Concepto del Pago: <unit> ... |"
   // segment. We deliberately ignore the generic extractor's unit guess here —
@@ -404,6 +493,10 @@ export function extractFromBanBajio(
   let unitNumberDetected: string | null = null;
   let unitNumbersDetected: string[] = [];
   let unitConfidence = 0;
+  // The unit (if any) comes from the segment logic below, never from the base
+  // extractor — so the pattern attribution is the BanBajío stage, not a
+  // UNIT_PATTERNS label (ENGINE-042).
+  let matchedPatternLabel: string | null = null;
   let paymentConcept = base.paymentConcept;
 
   const segment = description.match(/concepto del pago:\s*([^|]*)/i);
@@ -425,6 +518,7 @@ export function extractFromBanBajio(
       unitNumbersDetected = multi;
       unitNumberDetected = null;
       unitConfidence = 0.95;
+      matchedPatternLabel = 'banbajio:segment';
     } else {
       // A single house — whether written "casa 176", glued "casa34", as a leading
       // number "176 dic", or as a multi-form that left only one in-range unit
@@ -442,11 +536,19 @@ export function extractFromBanBajio(
         unitNumberDetected = single;
         unitNumbersDetected = [single];
         unitConfidence = 0.95;
+        matchedPatternLabel = 'banbajio:segment';
       }
     }
   }
 
-  return { ...base, paymentConcept, unitNumberDetected, unitNumbersDetected, unitConfidence };
+  return {
+    ...base,
+    paymentConcept,
+    unitNumberDetected,
+    unitNumbersDetected,
+    unitConfidence,
+    matchedPatternLabel,
+  };
 }
 
 /**
@@ -581,6 +683,10 @@ function applyDbRules(
       (rule.unitPatterns.length > 0 && patternMatch) ||
       extractionMatch
     ) {
+      // ENGINE-015: confidenceThreshold is the confidence ASSIGNED to this
+      // rule's matches (it becomes the emitted score); the engine's fixed 0.8
+      // AUTO gate then decides auto vs review. The field name is historical —
+      // it is NOT a per-rule gate the score is compared against.
       return { matchedRule: rule, score: Number(rule.confidenceThreshold) };
     }
   }
@@ -657,9 +763,14 @@ function matchToResident(
     let bestResident: ResidentData | null = null;
     let matchCount = 0;
 
+    // Cutoff calibration (ENGINE-042/044): 0.75 admits a candidate (typo-level
+    // distance on the sorted tokens), 0.8 (below) auto-links a SINGLE candidate;
+    // both are heuristic estimates pending measured override rates from
+    // GET …/classification/precision. Multi-candidate always blocks
+    // (NAME_AMBIGUOUS), regardless of score.
     for (const r of residents) {
       const fullName = normalizeText(`${r.firstName} ${r.lastName}`);
-      const score = levenshteinSimilarity(normalizedPayer, fullName);
+      const score = tokenSetSimilarity(normalizedPayer, fullName);
       if (score >= 0.75) {
         matchCount++;
         if (score > bestScore) {
@@ -869,11 +980,13 @@ export class ClassificationService {
       // CondominiumSettings.terraceGlobalKeywords and threaded through.
       globalKeywords?: string[];
     },
-    // Bank identity + unit bound for bank-specific extraction. `bankName` comes
-    // from the batch's bank profile; `totalUnits` from CondominiumSettings.
-    bankContext?: { bankName: string | null; totalUnits: number },
+    // Bank extraction strategy + unit bound. `dialect` comes from the batch's
+    // bank profile (ENGINE-009 — a validated field, never a bankName substring);
+    // `totalUnits` from CondominiumSettings.
+    bankContext?: { dialect: BankDialect; totalUnits: number },
     // Maintenance-fee pass inputs. Provided only for INCOME transactions on a
-    // BanBajío batch; `amount` is the credit, the fees come from CondominiumSettings.
+    // BANBAJIO-dialect batch; `amount` is the credit, the fees come from
+    // CondominiumSettings.
     maintenanceContext?: {
       amount: number | null;
       ordinaryFeeAmount: number;
@@ -882,11 +995,15 @@ export class ClassificationService {
     // Drives which rule kinds apply (EXPENSE rules on outflows, CONCEPT/UNIT on
     // inflows). Defaults to INCOME so existing callers/tests stay unchanged.
     flowType: FlowType = FlowType.INCOME,
+    // ENGINE-043: recurring manual corrections (occurrenceCount >= 2) keyed by
+    // normalized description, loaded once per batch/reapply run. Optional so
+    // existing callers/tests stay unchanged.
+    correctionPatterns?: Map<string, CorrectionPatternData>,
   ): ClassificationResult {
     const extraction =
-      bankContext && isBanBajio(bankContext.bankName)
+      bankContext?.dialect === BankDialect.BANBAJIO
         ? extractFromBanBajio(description, bankContext.totalUnits)
-        : extractFromText(description);
+        : extractFromText(description, bankContext?.totalUnits ?? 0);
 
     // Default the payment period to the transaction date's month/year when the
     // description does not carry an explicit period. The bank rarely writes
@@ -897,39 +1014,20 @@ export class ClassificationService {
       extraction.paymentPeriodYear = transactionDate.getUTCFullYear();
     }
 
-    // Multi-unit BanBajío payment ("casas 307 y 43"): one credit covering several
-    // houses. We surface ALL detected units (the array) but NEVER auto-classify —
-    // a single residentId cannot represent N units, and how the amount splits
-    // across them is the operator's call (manual PaymentAllocation rows). Short-
-    // circuit BEFORE every matching pass so neither a DB rule nor the amount pass
-    // (which would otherwise grab the first "casa NNN") can link a resident.
-    if (extraction.unitNumbersDetected.length >= 2) {
-      return {
-        ...extraction,
-        unitNumberDetected: null,
-        residentId: null,
-        matchSource: null,
-        confidenceScore: 0,
-        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-        requiresReviewReason: RequiresReviewReason.NO_MATCH,
-        matchedRuleId: null,
-        matchedCalendarEventId: null,
-        matchedAt: null,
-      };
-    }
-
-    // Pass 0: DB-driven rules (priority order, first match wins)
-    const ruleMatch = applyDbRules(description, rules, flowType);
-    if (ruleMatch) {
-      const { matchedRule, score } = ruleMatch;
-
-      // EXPENSE-kind rule: its outcome is a category and/or supplier — never a
-      // resident or income concept. Stamp them and short-circuit; an expense is
-      // classified by what it bought and who was paid, not by who paid it.
-      if (matchedRule.ruleKind === ReconciliationRuleKind.EXPENSE) {
+    // EXPENSE branch (ENGINE-013): an outflow is classified by what it bought
+    // and who was paid — only EXPENSE rules apply. Whether or not a rule fires,
+    // the row NEVER reaches the income passes below (terrace, learned
+    // corrections, amount gate, resident matching), so an expense can never
+    // receive a residentId or an income concept. The extraction's unit/payer
+    // stay as display-only hints; the income-oriented paymentConcept is nulled.
+    if (flowType === FlowType.EXPENSE) {
+      const expenseRuleMatch = applyDbRules(description, rules, flowType);
+      if (expenseRuleMatch) {
+        const { matchedRule, score } = expenseRuleMatch;
         const isAuto = score >= 0.8;
         return {
           ...extraction,
+          paymentConcept: null,
           expenseCategoryId: matchedRule.expenseCategoryId,
           supplierId: matchedRule.supplierId,
           residentId: null,
@@ -944,53 +1042,51 @@ export class ClassificationService {
           matchedAt: isAuto ? new Date() : null,
         };
       }
-
-      // UNIT-kind rule: its outcome is a house number. Override the system-detected
-      // unit BEFORE resident linkage so the user rule wins over the engine's fixed
-      // extractor. The assigned/extracted unit still flows through matchToResident,
-      // so a unit absent from the padrón becomes UNIT_NOT_FOUND → NEEDS_REVIEW (never
-      // a silent mis-link). The user owns the confidence (web default 0.9 → auto).
-      const ruleUnit = resolveRuleUnit(matchedRule, description);
-      if (ruleUnit) {
-        extraction.unitNumberDetected = ruleUnit;
-        extraction.unitNumbersDetected = [ruleUnit];
-        extraction.unitConfidence = Number(matchedRule.confidenceThreshold);
-      }
-
-      const paymentConcept = matchedRule.conceptType ?? extraction.paymentConcept;
-
-      // When the rule fires AND we extracted a unit number, still try to link
-      // the resident — a concept rule should not leave a clearly-identified
-      // payment unmatched. The resident match drives the review status; the rule
-      // keeps ownership of the concept and provenance. A concept-only rule (no
-      // unit in the description, e.g. bank-commission rules) keeps the prior
-      // auto-classify-without-resident behavior.
-      if (extraction.unitNumberDetected) {
-        const residentMatch = matchToResident(extraction, residents);
-        return {
-          ...extraction,
-          ...residentMatch,
-          paymentConcept,
-          matchedRuleId: matchedRule.id,
-        };
-      }
-
-      const isAuto = score >= 0.8;
       return {
         ...extraction,
-        paymentConcept,
+        paymentConcept: null,
         residentId: null,
-        matchSource: MatchSource.RULE,
-        confidenceScore: score,
-        classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
-        requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
-        matchedRuleId: matchedRule.id,
+        matchSource: null,
+        confidenceScore: 0,
+        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: RequiresReviewReason.NO_MATCH,
+        matchedRuleId: null,
         matchedCalendarEventId: null,
-        matchedAt: isAuto ? new Date() : null,
+        matchedAt: null,
       };
     }
 
-    // Pass 0.5: terrace booking matching — only for INCOME transactions with amount data.
+    // Multi-unit payment ("casas 307 y 43"): one credit covering several houses,
+    // detected under ANY bank profile (ENGINE-014). We surface ALL detected
+    // units (the array) but NEVER auto-classify — a single residentId cannot
+    // represent N units, and how the amount splits across them is the operator's
+    // call (manual PaymentAllocation rows). Short-circuit BEFORE every matching
+    // pass so neither a DB rule nor the amount pass can link a resident. The
+    // dedicated reason + the detection confidence make these rows triageable
+    // (ENGINE-045); the high score is a DETECTION confidence — this state must
+    // never be auto-approved by any future high-confidence automation.
+    if (extraction.unitNumbersDetected.length >= 2) {
+      return {
+        ...extraction,
+        unitNumberDetected: null,
+        residentId: null,
+        matchSource: null,
+        confidenceScore: extraction.unitConfidence,
+        classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: RequiresReviewReason.MULTI_UNIT_SPLIT_REQUIRED,
+        matchedRuleId: null,
+        matchedCalendarEventId: null,
+        matchedAt: null,
+      };
+    }
+
+    // Terrace booking pass — BEFORE the editable rules (ENGINE-016): a terrace
+    // match is corroborated by amount + date against a specific PENDING booking,
+    // a strictly higher-information signal than a keyword rule, and the admin
+    // catalog has always documented terrace ahead of the rules. A tenant rule
+    // containing "terraza" therefore no longer shadows the matcher (which used
+    // to leave bookings unpaid forever). Note the matcher sees the RAW extraction
+    // unit — a UNIT rule's override no longer feeds it.
     if (
       terraceContext &&
       terraceContext.events.length > 0 &&
@@ -1028,6 +1124,76 @@ export class ClassificationService {
       }
     }
 
+    // Pass 0: DB-driven rules (priority order, first match wins). Only
+    // CONCEPT/UNIT rules can reach this point — EXPENSE flow returned above.
+    const ruleMatch = applyDbRules(description, rules, flowType);
+    if (ruleMatch) {
+      const { matchedRule, score } = ruleMatch;
+
+      // UNIT-kind rule: its outcome is a house number. Override the system-detected
+      // unit BEFORE resident linkage so the user rule wins over the engine's fixed
+      // extractor. The assigned/extracted unit still flows through matchToResident,
+      // so a unit absent from the padrón becomes UNIT_NOT_FOUND → NEEDS_REVIEW (never
+      // a silent mis-link). The user owns the confidence: the rule's
+      // confidenceThreshold is the confidence ASSIGNED to the match (ENGINE-015);
+      // the fixed 0.8 AUTO gate in matchToResident decides auto vs review.
+      const ruleUnit = resolveRuleUnit(matchedRule, description);
+      if (ruleUnit) {
+        extraction.unitNumberDetected = ruleUnit;
+        extraction.unitNumbersDetected = [ruleUnit];
+        extraction.unitConfidence = Number(matchedRule.confidenceThreshold);
+        // The rule supplied the unit — matchedRuleId attributes it (ENGINE-042).
+        extraction.matchedPatternLabel = null;
+      }
+
+      const paymentConcept = matchedRule.conceptType ?? extraction.paymentConcept;
+
+      // When the rule fires AND we extracted a unit number, still try to link
+      // the resident — a concept rule should not leave a clearly-identified
+      // payment unmatched. The resident match drives the review status; the rule
+      // keeps ownership of the concept and provenance. A concept-only rule (no
+      // unit in the description, e.g. bank-commission rules) keeps the prior
+      // auto-classify-without-resident behavior.
+      if (extraction.unitNumberDetected) {
+        const residentMatch = matchToResident(extraction, residents);
+        return {
+          ...extraction,
+          ...residentMatch,
+          paymentConcept,
+          matchedRuleId: matchedRule.id,
+        };
+      }
+
+      // ENGINE-015: `score` IS the rule's confidenceThreshold — the confidence
+      // the admin assigned to this rule's matches; 0.8 is the engine-wide gate.
+      const isAuto = score >= 0.8;
+      return {
+        ...extraction,
+        paymentConcept,
+        residentId: null,
+        matchSource: MatchSource.RULE,
+        confidenceScore: score,
+        classificationStatus: isAuto ? ClassificationStatus.AUTO : ClassificationStatus.NEEDS_REVIEW,
+        requiresReviewReason: isAuto ? null : RequiresReviewReason.LOW_CONFIDENCE,
+        matchedRuleId: matchedRule.id,
+        matchedCalendarEventId: null,
+        matchedAt: isAuto ? new Date() : null,
+      };
+    }
+
+    // Learned-correction pass (ENGINE-043): when an admin has manually corrected
+    // a byte-identical description at least twice, re-apply that correction
+    // instead of re-asking every import. Runs AFTER the editable rules (an
+    // explicit rule outranks a learned one) and only on INCOME — the correction
+    // table stores income-shaped outcomes (unit/resident/concept).
+    if (correctionPatterns && correctionPatterns.size > 0) {
+      const correction = correctionPatterns.get(normalizeText(description));
+      if (correction) {
+        const learned = this.applyCorrectionPattern(correction, extraction, residents);
+        if (learned) return learned;
+      }
+    }
+
     // Pass 0.6: amount-range maintenance fee. Gated on the credit landing in the
     // configured fee range [ordinaryFee, ordinaryFee + lateFee] — a strong signal
     // that the income is a maintenance payment, which is what makes a flexible
@@ -1055,6 +1221,7 @@ export class ClassificationService {
           extraction.unitNumberDetected = unit;
           extraction.unitNumbersDetected = [unit];
           extraction.unitConfidence = 0.9;
+          extraction.matchedPatternLabel = 'banbajio:amount-gate';
         }
         // Pre-fill the concept as a hint even when we cannot link a resident.
         const paymentConcept = extraction.paymentConcept ?? 'MAINTENANCE';
@@ -1115,6 +1282,118 @@ export class ClassificationService {
   }
 
   /**
+   * ENGINE-043: applies a stored manual correction to the current row. Returns
+   * null when the correction cannot produce an outcome (e.g. it only named a
+   * resident who has since left), letting classifyTransaction fall through to
+   * the remaining passes.
+   *
+   * Trust model: `selectedUnitNumber` is a human-curated value, so it
+   * deliberately bypasses the totalUnits range check — but it still funnels
+   * through matchToResident, so a unit gone from the padrón degrades to
+   * UNIT_NOT_FOUND review, never a silent mis-link. A concept-only correction
+   * auto-classifies without a resident, mirroring concept-only rules; if that
+   * proves too aggressive, emit NEEDS_REVIEW with the concept as a hint here.
+   */
+  private applyCorrectionPattern(
+    correction: CorrectionPatternData,
+    extraction: TextExtraction,
+    residents: ResidentData[],
+  ): ClassificationResult | null {
+    const { selectedUnitNumber, selectedResidentId, selectedConcept } = correction;
+
+    // Strongest form: the admin picked a specific resident. Re-link only while
+    // that resident is still active in the padrón.
+    if (selectedResidentId) {
+      const resident = residents.find((r) => r.id === selectedResidentId);
+      if (resident) {
+        const unit = selectedUnitNumber ?? resident.unitNumber;
+        return {
+          ...extraction,
+          unitNumberDetected: unit,
+          unitNumbersDetected: [unit],
+          matchedPatternLabel: null,
+          paymentConcept: selectedConcept ?? extraction.paymentConcept,
+          residentId: resident.id,
+          matchSource: MatchSource.CORRECTION_PATTERN,
+          confidenceScore: 0.95,
+          classificationStatus: ClassificationStatus.AUTO,
+          requiresReviewReason: null,
+          matchedRuleId: null,
+          matchedCalendarEventId: null,
+          matchedAt: new Date(),
+        };
+      }
+      // The corrected resident left — fall through to the unit form (current
+      // occupant semantics) or, failing that, the remaining passes.
+    }
+
+    if (selectedUnitNumber) {
+      extraction.unitNumberDetected = selectedUnitNumber;
+      extraction.unitNumbersDetected = [selectedUnitNumber];
+      extraction.unitConfidence = 0.95;
+      extraction.matchedPatternLabel = null;
+      const residentMatch = matchToResident(extraction, residents);
+      return {
+        ...extraction,
+        ...residentMatch,
+        paymentConcept: selectedConcept ?? extraction.paymentConcept,
+        // Only a successful link is attributed to the correction; a degraded
+        // outcome keeps matchToResident's review reason + provenance.
+        matchSource: residentMatch.residentId
+          ? MatchSource.CORRECTION_PATTERN
+          : residentMatch.matchSource,
+        confidenceScore: residentMatch.residentId ? 0.95 : residentMatch.confidenceScore,
+      };
+    }
+
+    if (selectedConcept) {
+      return {
+        ...extraction,
+        paymentConcept: selectedConcept,
+        residentId: null,
+        matchSource: MatchSource.CORRECTION_PATTERN,
+        confidenceScore: 0.95,
+        classificationStatus: ClassificationStatus.AUTO,
+        requiresReviewReason: null,
+        matchedRuleId: null,
+        matchedCalendarEventId: null,
+        matchedAt: new Date(),
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * ENGINE-043: loads the tenant's recurring manual corrections (seen at least
+   * twice) as a Map keyed by normalized description, for the learned-correction
+   * pass. Rows whose outcome is entirely empty are skipped.
+   */
+  private async loadCorrectionPatterns(
+    condominiumId: string,
+  ): Promise<Map<string, CorrectionPatternData>> {
+    const rows = await this.prisma.reconciliationCorrectionPattern.findMany({
+      where: { condominiumId, occurrenceCount: { gte: 2 } },
+      select: {
+        originalDescription: true,
+        selectedUnitNumber: true,
+        selectedResidentId: true,
+        selectedConcept: true,
+      },
+    });
+    const map = new Map<string, CorrectionPatternData>();
+    for (const row of rows) {
+      if (!row.selectedUnitNumber && !row.selectedResidentId && !row.selectedConcept) continue;
+      map.set(normalizeText(row.originalDescription), {
+        selectedUnitNumber: row.selectedUnitNumber,
+        selectedResidentId: row.selectedResidentId,
+        selectedConcept: row.selectedConcept,
+      });
+    }
+    return map;
+  }
+
+  /**
    * Best-effort write of the per-batch classification progress counter. A
    * failure here (e.g. the batch row was deleted mid-run) must never abort
    * classification, so it only logs a warning.
@@ -1144,6 +1423,7 @@ export class ClassificationService {
       { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits, ordinaryFeeAmount, lateFeeAmount },
       transactions,
       batchInfo,
+      correctionPatterns,
     ] = await Promise.all([
       this.loadCandidates(condominiumId),
       this.prisma.transaction.findMany({
@@ -1152,12 +1432,15 @@ export class ClassificationService {
       }),
       this.prisma.importBatch.findUnique({
         where: { id: batchId },
-        select: { bankProfile: { select: { bankName: true } } },
+        // ENGINE-009: the engine reads the validated dialect field, never the
+        // free-text bankName.
+        select: { bankProfile: { select: { dialect: true } } },
       }),
+      this.loadCorrectionPatterns(condominiumId),
     ]);
 
-    // The whole batch shares one bank profile, so the bank identity is read once.
-    const bankName = batchInfo?.bankProfile?.bankName ?? null;
+    // The whole batch shares one bank profile, so the dialect is read once.
+    const dialect = batchInfo?.bankProfile?.dialect ?? BankDialect.GENERIC;
 
     let classified = 0;
     let needsReview = 0;
@@ -1189,10 +1472,10 @@ export class ClassificationService {
             }
           : undefined;
 
-        // Maintenance-fee pass runs only for BanBajío INCOME (the concept format
-        // is bank-specific). Fees come from the condominium settings.
+        // Maintenance-fee pass runs only for BANBAJIO-dialect INCOME (the
+        // concept format is bank-specific). Fees come from the condominium settings.
         const maintenanceContext =
-          tx.flowType === 'INCOME' && isBanBajio(bankName)
+          tx.flowType === 'INCOME' && dialect === BankDialect.BANBAJIO
             ? { amount: tx.credits ? Number(tx.credits) : null, ordinaryFeeAmount, lateFeeAmount }
             : undefined;
 
@@ -1202,9 +1485,10 @@ export class ClassificationService {
           residents,
           activeRules,
           terraceContext,
-          { bankName, totalUnits },
+          { dialect, totalUnits },
           maintenanceContext,
           tx.flowType,
+          correctionPatterns,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -1217,6 +1501,7 @@ export class ClassificationService {
           paymentPeriodYear: result.paymentPeriodYear,
           paymentPeriodMonth: result.paymentPeriodMonth,
           matchSource: result.matchSource,
+          matchedPatternLabel: result.matchedPatternLabel ?? null,
           confidenceScore: result.confidenceScore
             ? new Prisma.Decimal(result.confidenceScore.toFixed(4))
             : null,
@@ -1338,6 +1623,7 @@ export class ClassificationService {
             classificationStatus: ClassificationStatus.NEEDS_REVIEW,
             residentId: null,
             matchSource: null,
+            matchedPatternLabel: null,
             confidenceScore: null,
             matchedAt: null,
             requiresReviewReason: null,
@@ -1427,6 +1713,7 @@ export class ClassificationService {
     const [
       { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits, ordinaryFeeAmount, lateFeeAmount },
       transactions,
+      correctionPatterns,
     ] = await Promise.all([
         this.loadCandidates(condominiumId),
         this.prisma.transaction.findMany({
@@ -1442,11 +1729,13 @@ export class ClassificationService {
             credits: true,
             charges: true,
             flowType: true,
-            // Pending rows span multiple batches/banks, so the bank identity is
-            // read per transaction (not once like classifyBatch).
-            importBatch: { select: { bankProfile: { select: { bankName: true } } } },
+            // Pending rows span multiple batches/banks, so the dialect is read
+            // per transaction (not once like classifyBatch). ENGINE-009: the
+            // validated field, never the free-text bankName.
+            importBatch: { select: { bankProfile: { select: { dialect: true } } } },
           },
         }),
+        this.loadCorrectionPatterns(condominiumId),
       ]);
 
     let classified = 0;
@@ -1476,9 +1765,9 @@ export class ClassificationService {
               }
             : undefined;
 
-        const txBankName = tx.importBatch?.bankProfile?.bankName ?? null;
+        const txDialect = tx.importBatch?.bankProfile?.dialect ?? BankDialect.GENERIC;
         const maintenanceContext =
-          tx.flowType === 'INCOME' && isBanBajio(txBankName)
+          tx.flowType === 'INCOME' && txDialect === BankDialect.BANBAJIO
             ? { amount: tx.credits ? Number(tx.credits) : null, ordinaryFeeAmount, lateFeeAmount }
             : undefined;
 
@@ -1488,9 +1777,10 @@ export class ClassificationService {
           residents,
           activeRules,
           terraceContext,
-          { bankName: txBankName, totalUnits },
+          { dialect: txDialect, totalUnits },
           maintenanceContext,
           tx.flowType,
+          correctionPatterns,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -1503,6 +1793,7 @@ export class ClassificationService {
           paymentPeriodYear: result.paymentPeriodYear,
           paymentPeriodMonth: result.paymentPeriodMonth,
           matchSource: result.matchSource,
+          matchedPatternLabel: result.matchedPatternLabel ?? null,
           confidenceScore: result.confidenceScore
             ? new Prisma.Decimal(result.confidenceScore.toFixed(4))
             : null,
@@ -1595,6 +1886,7 @@ export class ClassificationService {
           updatedAt: true,
           residentId: true,
           matchSource: true,
+          matchedPatternLabel: true,
           classificationStatus: true,
           requiresReviewReason: true,
           matchedRuleId: true,
@@ -1611,6 +1903,7 @@ export class ClassificationService {
         data: {
           residentId,
           matchSource: MatchSource.MANUAL,
+          matchedPatternLabel: null,
           confidenceScore: new Prisma.Decimal('1.0000'),
           matchedAt: new Date(),
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
@@ -1643,6 +1936,9 @@ export class ClassificationService {
           beforeState: {
             residentId: existing.residentId,
             matchSource: existing.matchSource,
+            // ENGINE-042: keep the pattern attribution in the audit trail so the
+            // metrics service can slice override rates per pattern.
+            matchedPatternLabel: existing.matchedPatternLabel,
             classificationStatus: existing.classificationStatus,
             requiresReviewReason: existing.requiresReviewReason,
             matchedRuleId: existing.matchedRuleId,
@@ -1754,6 +2050,7 @@ export class ClassificationService {
           paymentPeriodYear: true,
           transactionDate: true,
           matchSource: true,
+          matchedPatternLabel: true,
           classificationStatus: true,
           requiresReviewReason: true,
           matchedRuleId: true,
@@ -1781,6 +2078,7 @@ export class ClassificationService {
           ...(dto.description !== undefined && { description: dto.description }),
           ...(residentId !== undefined && { residentId }),
           matchSource: MatchSource.MANUAL,
+          matchedPatternLabel: null,
           confidenceScore: new Prisma.Decimal('1.0000'),
           matchedAt: new Date(),
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
@@ -1805,7 +2103,14 @@ export class ClassificationService {
       }
 
       const descriptionForPattern = dto.description ?? existingTx.description;
-      if (descriptionForPattern) {
+      // ENGINE-043 hygiene: only record corrections that carry an outcome the
+      // learned-correction pass can re-apply. A concept/period-only edit with
+      // no unit/resident/concept would mint an empty pattern that can never fire.
+      const hasLearnableOutcome =
+        (dto.unitNumber !== undefined && dto.unitNumber !== '') ||
+        (residentId !== undefined && residentId !== null) ||
+        (dto.paymentConcept !== undefined && dto.paymentConcept !== '');
+      if (descriptionForPattern && hasLearnableOutcome) {
         await tx.reconciliationCorrectionPattern.upsert({
           where: {
             condominiumId_originalDescription: {
@@ -1851,6 +2156,8 @@ export class ClassificationService {
             paymentPeriodYear: existingTx.paymentPeriodYear,
             transactionDate: existingTx.transactionDate,
             matchSource: existingTx.matchSource,
+            // ENGINE-042: pattern attribution survives in the audit trail.
+            matchedPatternLabel: existingTx.matchedPatternLabel,
             classificationStatus: existingTx.classificationStatus,
             requiresReviewReason: existingTx.requiresReviewReason,
             matchedRuleId: existingTx.matchedRuleId,
@@ -2084,6 +2391,7 @@ export class ClassificationService {
           updatedAt: true,
           residentId: true,
           matchSource: true,
+          matchedPatternLabel: true,
           classificationStatus: true,
           requiresReviewReason: true,
           matchedRuleId: true,
@@ -2100,6 +2408,7 @@ export class ClassificationService {
         data: {
           residentId: null,
           matchSource: null,
+          matchedPatternLabel: null,
           confidenceScore: null,
           matchedAt: null,
           classificationStatus: ClassificationStatus.NEEDS_REVIEW,
@@ -2132,6 +2441,8 @@ export class ClassificationService {
           beforeState: {
             residentId: existing.residentId,
             matchSource: existing.matchSource,
+            // ENGINE-042: pattern attribution survives in the audit trail.
+            matchedPatternLabel: existing.matchedPatternLabel,
             classificationStatus: existing.classificationStatus,
             requiresReviewReason: existing.requiresReviewReason,
             matchedRuleId: existing.matchedRuleId,

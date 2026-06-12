@@ -1,4 +1,5 @@
 import {
+  BankDialect,
   ClassificationStatus,
   FlowType,
   MatchSource,
@@ -40,7 +41,7 @@ interface PrismaMock {
   condominiumSettings: { findUnique: jest.Mock };
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
-  reconciliationCorrectionPattern: { upsert: jest.Mock };
+  reconciliationCorrectionPattern: { upsert: jest.Mock; findMany: jest.Mock };
   paymentAllocation: { deleteMany: jest.Mock; createMany: jest.Mock; aggregate: jest.Mock };
   importBatch: {
     update: jest.Mock;
@@ -80,7 +81,10 @@ function makePrismaMock(): PrismaMock {
     },
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue(null) },
-    reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
+    reconciliationCorrectionPattern: {
+      upsert: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     paymentAllocation: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -1141,7 +1145,7 @@ describe('ClassificationService.classifyTransaction — bank-aware extraction', 
   ];
   const BANBAJIO_DESC =
     'SPEI Recibido | Concepto del Pago: 106 noviembre | Recibo # 227120243';
-  const banBajioCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const banBajioCtx = { dialect: BankDialect.BANBAJIO, totalUnits: 370 };
 
   it('links the resident when the bank is BanBajío and the unit exists', () => {
     const service = makeService(makePrismaMock());
@@ -1167,7 +1171,7 @@ describe('ClassificationService.classifyTransaction — bank-aware extraction', 
       residents,
       [],
       undefined,
-      { bankName: 'BBVA', totalUnits: 370 },
+      { dialect: BankDialect.GENERIC, totalUnits: 370 },
     );
     expect(result.unitNumberDetected).toBeNull();
     expect(result.residentId).toBeNull();
@@ -1361,7 +1365,7 @@ describe('ClassificationService.classifyTransaction — amount-range maintenance
   ];
   const DESC = 'SPEI Recibido | Concepto del Pago: DIC 355 | Recibo # 228564576';
   const TX_DATE = new Date('2025-11-29T12:00:00Z');
-  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const bankCtx = { dialect: BankDialect.BANBAJIO, totalUnits: 370 };
   const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
 
   it('auto-links the resident, sets concept + named-month period (advance payment)', () => {
@@ -1450,7 +1454,7 @@ describe('ClassificationService.classifyTransaction — BanBajío unit detection
   ];
   const DESC = 'SPEI Recibido: | Concepto del Pago: casa 176 dic | Recibo # 228615598';
   const TX_DATE = new Date('2025-11-30T12:00:00Z');
-  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const bankCtx = { dialect: BankDialect.BANBAJIO, totalUnits: 370 };
   const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
 
   it('shows the unit but stays in review when the amount is unusual (regla 2)', () => {
@@ -1518,7 +1522,7 @@ describe('ClassificationService.classifyTransaction — multi-unit never auto-cl
   ];
   const DESC = 'SPEI Recibido: | Concepto del Pago: casas 307 y 43 | Recibo # 225317405';
   const TX_DATE = new Date('2025-11-30T12:00:00Z');
-  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const bankCtx = { dialect: BankDialect.BANBAJIO, totalUnits: 370 };
   const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
 
   it('surfaces all units but stays in review even when the amount matches the fee', () => {
@@ -1749,7 +1753,7 @@ describe('ClassificationService.classifyTransaction — maintenance concept pain
     { id: 'res-357', unitNumber: '357', firstName: 'Andrea', lastName: 'Bravo' },
   ];
   const TX_DATE = new Date('2025-11-30T12:00:00Z');
-  const bankCtx = { bankName: 'BanBajío', totalUnits: 370 };
+  const bankCtx = { dialect: BankDialect.BANBAJIO, totalUnits: 370 };
   const feeCtx = (amount: number) => ({ amount, ordinaryFeeAmount: 500, lateFeeAmount: 100 });
 
   it('paints concept + unit but stays NEEDS_REVIEW when the amount is unusual', () => {
@@ -1798,14 +1802,19 @@ describe('ClassificationService.getSystemRulesCatalog — transparency catalog',
 
   it('exposes the unit prefixes and behavioral passes the engine actually runs', () => {
     expect(catalog.unitPatterns.map((u) => u.label)).toEqual(['casa', 'unidad', 'lote', 'c.', 'depto', '#']);
+    // ENGINE-046: the catalog order MUST mirror classifyTransaction's real
+    // pipeline (extraction stages -> multi-house short-circuit -> terrace ->
+    // editable rules -> learned corrections -> amount gate -> fuzzy name).
     expect(catalog.behavioralPasses.map((p) => p.key)).toEqual([
-      'terraceBooking',
-      'amountGate',
       'banbajioSegment',
-      'multiHouseSplit',
       'monthToMaintenance',
+      'multiHouseSplit',
+      'terraceBooking',
+      'correctionPattern',
+      'amountGate',
       'fuzzyName',
     ]);
+    expect(catalog.behavioralPasses.map((p) => p.order)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it('surfaces 12 months and cleans the internal "may_" key to "may"', () => {
@@ -2148,3 +2157,429 @@ describe('ClassificationService — ENGINE-002 delete collaborators', () => {
     expect(prisma.calendarEvent.findFirst).toHaveBeenCalledTimes(2);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4 — classification precision & calibration
+// (ENGINE-001/009/013/014/015/016/041–046 acceptance criteria + order pins)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Phase 4 — generic pattern demotions + totalUnits range (ENGINE-001)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const genericCtx = { dialect: BankDialect.GENERIC, totalUnits: 370 };
+  const residents = [
+    { id: 'res-123', unitNumber: '123', firstName: 'Luis', lastName: 'Mora' },
+    { id: 'res-45', unitNumber: '45', firstName: 'Eva', lastName: 'Lira' },
+    { id: 'res-34', unitNumber: '34', firstName: 'Sol', lastName: 'Paz' },
+  ];
+
+  it('acceptance: "FOLIO # 123" no longer auto-links on a generic bank', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'FOLIO # 123', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.LOW_CONFIDENCE);
+    // The detection is still surfaced as a review hint, just never auto-linked.
+    expect(result.unitNumberDetected).toBe('123');
+    expect(result.confidenceScore).toBe(0.6);
+  });
+
+  it('"c. 45" detects the unit but stays in review (0.70 < the 0.8 AUTO gate)', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'PAGO C. 45 REF 991', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.unitNumberDetected).toBe('45');
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.LOW_CONFIDENCE);
+  });
+
+  it('"casa 34" keeps auto-linking at 0.95 (strong prefixes untouched)', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'pago casa 34 marzo', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.residentId).toBe('res-34');
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(result.confidenceScore).toBe(0.95);
+  });
+
+  it('rejects an out-of-range capture and lets the next pattern try', () => {
+    // "casa 9999" is out of range; no other pattern matches → no unit at all.
+    expect(extractFromText('pago casa 9999 marzo', 370).unitNumberDetected).toBeNull();
+    // Range validation only applies when totalUnits is configured (legacy callers).
+    expect(extractFromText('pago casa 9999 marzo').unitNumberDetected).toBe('9999');
+  });
+});
+
+describe('Phase 4 — bank-agnostic multi-unit short-circuit (ENGINE-014/045)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const residents = [
+    { id: 'res-307', unitNumber: '307', firstName: 'Rey', lastName: 'Cano' },
+    { id: 'res-43', unitNumber: '43', firstName: 'Mia', lastName: 'Vega' },
+  ];
+
+  it('acceptance: "casa 307 y casa 43" short-circuits to review under a GENERIC profile', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'SPEI casa 307 y casa 43 mantenimiento', TX_DATE, residents, [],
+      undefined, { dialect: BankDialect.GENERIC, totalUnits: 370 },
+    );
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.MULTI_UNIT_SPLIT_REQUIRED);
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(result.unitNumbersDetected).toEqual(['307', '43']);
+    expect(result.unitNumberDetected).toBeNull();
+    expect(result.residentId).toBeNull();
+    // ENGINE-045: a non-zero DETECTION confidence — triageable, never auto-approvable.
+    expect(result.confidenceScore).toBe(0.95);
+  });
+
+  it('acceptance: same payment short-circuits under the BANBAJIO dialect (segment path)', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'SPEI Recibido | Concepto del Pago: casas 307 y 43 | Recibo # 22712',
+      TX_DATE, residents, [], undefined, { dialect: BankDialect.BANBAJIO, totalUnits: 370 },
+    );
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.MULTI_UNIT_SPLIT_REQUIRED);
+    expect(result.unitNumbersDetected).toEqual(['307', '43']);
+    expect(result.residentId).toBeNull();
+  });
+
+  it('multi-unit beats the terrace matcher (order pin)', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'pago terraza casa 307 y casa 43', TX_DATE, residents, [],
+      {
+        events: [{
+          id: 'event-1', residentId: 'res-307', unitNumber: '307',
+          startDate: TX_DATE, terraceRentalAmount: 1500, customKeywords: [],
+        }],
+        amount: 1500,
+        transactionDate: TX_DATE,
+      },
+      { dialect: BankDialect.GENERIC, totalUnits: 370 },
+    );
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.MULTI_UNIT_SPLIT_REQUIRED);
+    expect(result.matchedCalendarEventId).toBeNull();
+  });
+});
+
+describe('Phase 4 — EXPENSE flowType gate (ENGINE-013)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const genericCtx = { dialect: BankDialect.GENERIC, totalUnits: 370 };
+  const residents = [
+    { id: 'res-12', unitNumber: '12', firstName: 'Ana', lastName: 'Sol' },
+  ];
+
+  it('acceptance: an EXPENSE row never receives a residentId or an income concept', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'Reparación fuga casa 12 mantenimiento', TX_DATE, residents, [],
+      undefined, genericCtx, undefined, FlowType.EXPENSE,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.paymentConcept).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.NO_MATCH);
+    // The unit stays as display-only extraction info.
+    expect(result.unitNumberDetected).toBe('12');
+  });
+
+  it('an EXPENSE rule still stamps category/supplier (and no income concept)', () => {
+    const rule = unitRule({
+      id: 'rule-exp', ruleKind: ReconciliationRuleKind.EXPENSE,
+      keywords: ['cfe'], expenseCategoryId: 'cat-1', supplierId: 'sup-1',
+    });
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'PAGO CFE mantenimiento casa 12', TX_DATE, residents, [rule],
+      undefined, genericCtx, undefined, FlowType.EXPENSE,
+    );
+    expect(result.expenseCategoryId).toBe('cat-1');
+    expect(result.supplierId).toBe('sup-1');
+    expect(result.residentId).toBeNull();
+    expect(result.paymentConcept).toBeNull();
+    expect(result.matchSource).toBe(MatchSource.RULE);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('an EXPENSE row never consults learned corrections (gate ordering)', () => {
+    const corrections = new Map([[
+      'reparacion fuga casa 12 mantenimiento',
+      { selectedUnitNumber: '12', selectedResidentId: 'res-12', selectedConcept: 'MAINTENANCE' },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'Reparación fuga casa 12 mantenimiento', TX_DATE, residents, [],
+      undefined, genericCtx, undefined, FlowType.EXPENSE, corrections,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.paymentConcept).toBeNull();
+    expect(result.matchSource).toBeNull();
+  });
+});
+
+describe('Phase 4 — terrace runs before the editable rules (ENGINE-016/046)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const genericCtx = { dialect: BankDialect.GENERIC, totalUnits: 370 };
+  const residents = [
+    { id: 'res-5', unitNumber: '5', firstName: 'Iam', lastName: 'Gol' },
+  ];
+  const bookingFor = (amount: number) => ({
+    events: [{
+      id: 'event-terr', residentId: 'res-5', unitNumber: '5',
+      startDate: TX_DATE, terraceRentalAmount: amount, customKeywords: [],
+    }],
+    amount,
+    transactionDate: TX_DATE,
+  });
+  const terrazaRule = unitRule({
+    id: 'rule-terraza', ruleKind: ReconciliationRuleKind.CONCEPT,
+    keywords: ['terraza'], conceptType: 'AMENITY',
+    assignedUnitNumber: null,
+  });
+
+  it('acceptance: a "terraza" CONCEPT rule no longer shadows the booking matcher', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'pago terraza casa 5 marzo', TX_DATE, residents, [terrazaRule],
+      bookingFor(1500), genericCtx,
+    );
+    // The booking is matched (and gets marked PAID on approve via this link);
+    // the rule would have returned matchedCalendarEventId: null forever.
+    expect(result.matchedCalendarEventId).toBe('event-terr');
+    expect(result.matchSource).toBe(MatchSource.AUTO_TERRACE_BOOKING);
+    expect(result.matchedRuleId).toBeNull();
+  });
+
+  it('the rule still wins when no booking matches (terrace returns null)', () => {
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'pago terraza marzo', TX_DATE, residents, [terrazaRule],
+      undefined, genericCtx,
+    );
+    expect(result.matchedRuleId).toBe('rule-terraza');
+    expect(result.paymentConcept).toBe('AMENITY');
+    expect(result.matchedCalendarEventId).toBeNull();
+  });
+});
+
+describe('Phase 4 — learned-correction pass (ENGINE-043)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const genericCtx = { dialect: BankDialect.GENERIC, totalUnits: 370 };
+  const residents = [
+    { id: 'res-9', unitNumber: '9', firstName: 'Lia', lastName: 'Roa' },
+    { id: 'res-7', unitNumber: '7', firstName: 'Juan', lastName: 'Perez' },
+  ];
+  const DESC = 'SPEI TRANSFERENCIA REF 8841 BBVA';
+
+  it('re-applies a resident correction as AUTO with CORRECTION_PATTERN provenance', () => {
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: '9', selectedResidentId: 'res-9', selectedConcept: 'MAINTENANCE' },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.residentId).toBe('res-9');
+    expect(result.matchSource).toBe(MatchSource.CORRECTION_PATTERN);
+    expect(result.confidenceScore).toBe(0.95);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(result.paymentConcept).toBe('MAINTENANCE');
+    expect(result.unitNumberDetected).toBe('9');
+  });
+
+  it('a unit-only correction funnels through matchToResident and links the occupant', () => {
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: '7', selectedResidentId: null, selectedConcept: null },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.residentId).toBe('res-7');
+    expect(result.matchSource).toBe(MatchSource.CORRECTION_PATTERN);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('a stale unit degrades to UNIT_NOT_FOUND review — never a silent mis-link', () => {
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: '300', selectedResidentId: null, selectedConcept: null },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.UNIT_NOT_FOUND);
+    expect(result.matchSource).toBeNull();
+  });
+
+  it('a departed resident falls through to the remaining passes (no auto-link)', () => {
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: null, selectedResidentId: 'res-gone', selectedConcept: null },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.matchSource).not.toBe(MatchSource.CORRECTION_PATTERN);
+    expect(result.classificationStatus).toBe(ClassificationStatus.NEEDS_REVIEW);
+  });
+
+  it('a concept-only correction auto-classifies without a resident (mirrors concept rules)', () => {
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: null, selectedResidentId: null, selectedConcept: 'FINE' },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.paymentConcept).toBe('FINE');
+    expect(result.residentId).toBeNull();
+    expect(result.matchSource).toBe(MatchSource.CORRECTION_PATTERN);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+  });
+
+  it('an editable rule outranks a learned correction (order pin)', () => {
+    const rule = unitRule({
+      id: 'rule-win', ruleKind: ReconciliationRuleKind.CONCEPT,
+      keywords: ['spei'], conceptType: 'DEPOSIT', assignedUnitNumber: null,
+    });
+    const corrections = new Map([[
+      normalizeKey(DESC),
+      { selectedUnitNumber: null, selectedResidentId: 'res-9', selectedConcept: 'FINE' },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      DESC, TX_DATE, residents, [rule], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    expect(result.matchedRuleId).toBe('rule-win');
+    expect(result.paymentConcept).toBe('DEPOSIT');
+    expect(result.matchSource).toBe(MatchSource.RULE);
+  });
+
+  it('a correction outranks the fuzzy-name pass (order pin)', () => {
+    const desc = 'Nombre: Juan Perez ref 100';
+    const corrections = new Map([[
+      normalizeKey(desc),
+      { selectedUnitNumber: null, selectedResidentId: 'res-9', selectedConcept: null },
+    ]]);
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      desc, TX_DATE, residents, [], undefined, genericCtx, undefined,
+      FlowType.INCOME, corrections,
+    );
+    // The fuzzy pass would have linked res-7 (Juan Perez); the correction wins.
+    expect(result.residentId).toBe('res-9');
+    expect(result.matchSource).toBe(MatchSource.CORRECTION_PATTERN);
+  });
+
+  it('classifyBatch loads only recurring (occurrenceCount >= 2), non-empty corrections', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+    expect(prisma.reconciliationCorrectionPattern.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { condominiumId: CONDOMINIUM_ID, occurrenceCount: { gte: 2 } },
+      }),
+    );
+  });
+});
+
+describe('Phase 4 — token-set name matching (ENGINE-044)', () => {
+  const TX_DATE = new Date('2026-03-10T12:00:00Z');
+  const genericCtx = { dialect: BankDialect.GENERIC, totalUnits: 370 };
+
+  it('links token-order variants: "PEREZ JUAN" matches resident "Juan Perez"', () => {
+    const residents = [
+      { id: 'res-7', unitNumber: '7', firstName: 'Juan', lastName: 'Perez' },
+    ];
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'Nombre: PEREZ JUAN ref 100', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.residentId).toBe('res-7');
+    expect(result.matchSource).toBe(MatchSource.AUTO_NAME);
+    expect(result.classificationStatus).toBe(ClassificationStatus.AUTO);
+    expect(result.confidenceScore).toBe(1);
+  });
+
+  it('multiple close candidates still block as NAME_AMBIGUOUS', () => {
+    const residents = [
+      { id: 'res-7', unitNumber: '7', firstName: 'Juan', lastName: 'Perez' },
+      { id: 'res-8', unitNumber: '8', firstName: 'Juan', lastName: 'Peres' },
+    ];
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'Nombre: PEREZ JUAN ref 100', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.NAME_AMBIGUOUS);
+  });
+
+  it('a genuinely different name stays below the candidate cutoff', () => {
+    const residents = [
+      { id: 'res-7', unitNumber: '7', firstName: 'Rosa', lastName: 'Maldonado' },
+    ];
+    const result = makeService(makePrismaMock()).classifyTransaction(
+      'Nombre: PEREZ JUAN ref 100', TX_DATE, residents, [], undefined, genericCtx,
+    );
+    expect(result.residentId).toBeNull();
+    expect(result.requiresReviewReason).toBe(RequiresReviewReason.NAME_NOT_FOUND);
+  });
+});
+
+describe('Phase 4 — matchedPatternLabel attribution (ENGINE-042)', () => {
+  it('extractFromText stamps the matched UNIT_PATTERNS label', () => {
+    expect(extractFromText('pago casa 34', 370).matchedPatternLabel).toBe('casa');
+    expect(extractFromText('FOLIO # 123', 370).matchedPatternLabel).toBe('#');
+    expect(extractFromText('sin unidad', 370).matchedPatternLabel).toBeNull();
+  });
+
+  it('extractFromBanBajio stamps the segment stage label', () => {
+    const result = extractFromBanBajio(
+      'SPEI Recibido | Concepto del Pago: 106 noviembre | Recibo # 227120243', 370,
+    );
+    expect(result.unitNumberDetected).toBe('106');
+    expect(result.matchedPatternLabel).toBe('banbajio:segment');
+  });
+
+  it('classifyBatch persists the label and reclassify clears it', async () => {
+    const prisma = makePrismaMock();
+    prisma.resident.findMany.mockResolvedValue([
+      { id: 'res-34', unitNumber: '34', firstName: 'Sol', lastName: 'Paz' },
+    ]);
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1', description: 'pago casa 34 marzo',
+        transactionDate: new Date('2026-03-10T12:00:00Z'),
+        credits: 100, charges: null, flowType: 'INCOME',
+      },
+    ]);
+    const service = makeService(prisma);
+    await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    const data = findClassifierUpdate(prisma.transaction.updateMany, 'tx-1');
+    expect(data).toBeDefined();
+    expect(data!.matchedPatternLabel).toBe('casa');
+
+    // The reclassify reset wipes the attribution alongside the match fields.
+    prisma.importBatch.findFirst.mockResolvedValue({
+      status: 'COMPLETED', updatedAt: new Date(0), completedAt: new Date(),
+    });
+    await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, null);
+    const reset = prisma.transaction.updateMany.mock.calls.find(
+      (args) => args[0]?.where?.importBatchId === BATCH_ID,
+    );
+    expect(reset?.[0]?.data).toEqual(
+      expect.objectContaining({ matchedPatternLabel: null }),
+    );
+  });
+});
+
+// Lowercase, accent-stripped, whitespace-collapsed — mirrors the service's
+// normalizeText so the correction-map keys match what the pass looks up.
+function normalizeKey(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}

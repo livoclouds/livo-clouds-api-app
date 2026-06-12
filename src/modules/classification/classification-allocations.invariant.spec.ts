@@ -117,7 +117,10 @@ function makeStatefulPrisma(store: Store) {
     },
     financialMonthlySummary: { upsert: jest.fn().mockResolvedValue(null) },
     auditLog: { create: jest.fn().mockResolvedValue(null) },
-    reconciliationCorrectionPattern: { upsert: jest.fn().mockResolvedValue(null) },
+    reconciliationCorrectionPattern: {
+      upsert: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     paymentAllocation: {
       deleteMany: jest.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
         const before = store.allocations.length;

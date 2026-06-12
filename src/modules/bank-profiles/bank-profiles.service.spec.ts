@@ -85,3 +85,89 @@ describe('BankProfilesService.update — field-level audit trail', () => {
     expect(data.detail).toBeNull();
   });
 });
+
+describe('BankProfilesService — dialect strategy field (ENGINE-009)', () => {
+  const CREATE_DTO = {
+    name: 'Cuenta principal',
+    excelAliases: [{ key: 'date', aliases: ['fecha'] }] as never,
+  };
+
+  function captureCreate(prisma: PrismaMock): Record<string, unknown> {
+    const createMock = jest.fn().mockImplementation(({ data }) =>
+      Promise.resolve({ id: 'bp-new', ...data }),
+    );
+    (prisma.bankProfile as unknown as Record<string, jest.Mock>).create = createMock;
+    return createMock as unknown as Record<string, unknown>;
+  }
+
+  it('create derives BANBAJIO from a bajío bankName when dialect is omitted', async () => {
+    const prisma = makePrismaMock();
+    const createMock = captureCreate(prisma) as unknown as jest.Mock;
+    const service = new BankProfilesService(prisma as never);
+    // validateFieldDefinitions requires system fields only for full alias sets;
+    // bypass by spying — this test pins dialect derivation, not alias validation.
+    jest.spyOn(service as never, 'validateFieldDefinitions' as never).mockReturnValue(undefined as never);
+
+    await service.create(CONDOMINIUM_ID, { ...CREATE_DTO, bankName: 'Banco del Bajío' } as never, USER);
+    expect(createMock.mock.calls[0][0].data.dialect).toBe('BANBAJIO');
+  });
+
+  it('create defaults to GENERIC for any other (or missing) bankName', async () => {
+    const prisma = makePrismaMock();
+    const createMock = captureCreate(prisma) as unknown as jest.Mock;
+    const service = new BankProfilesService(prisma as never);
+    jest.spyOn(service as never, 'validateFieldDefinitions' as never).mockReturnValue(undefined as never);
+
+    await service.create(CONDOMINIUM_ID, { ...CREATE_DTO, bankName: 'BBVA' } as never, USER);
+    expect(createMock.mock.calls[0][0].data.dialect).toBe('GENERIC');
+  });
+
+  it('create honors an explicit dialect over the bankName heuristic', async () => {
+    const prisma = makePrismaMock();
+    const createMock = captureCreate(prisma) as unknown as jest.Mock;
+    const service = new BankProfilesService(prisma as never);
+    jest.spyOn(service as never, 'validateFieldDefinitions' as never).mockReturnValue(undefined as never);
+
+    await service.create(
+      CONDOMINIUM_ID,
+      { ...CREATE_DTO, bankName: 'Banco X', dialect: 'BANBAJIO' } as never,
+      USER,
+    );
+    expect(createMock.mock.calls[0][0].data.dialect).toBe('BANBAJIO');
+  });
+
+  it('update re-derives the dialect when bankName changes without an explicit dialect', async () => {
+    const prisma = makePrismaMock();
+    prisma.bankProfile.findFirst.mockResolvedValue(EXISTING);
+    prisma.bankProfile.update.mockResolvedValue({ ...EXISTING, bankName: 'BanBajío' });
+    const service = new BankProfilesService(prisma as never);
+
+    await service.update(CONDOMINIUM_ID, PROFILE_ID, { bankName: 'BanBajío' }, USER);
+    expect(prisma.bankProfile.update.mock.calls[0][0].data.dialect).toBe('BANBAJIO');
+  });
+
+  it('update keeps an explicit dialect even when the bankName disagrees', async () => {
+    const prisma = makePrismaMock();
+    prisma.bankProfile.findFirst.mockResolvedValue(EXISTING);
+    prisma.bankProfile.update.mockResolvedValue({ ...EXISTING });
+    const service = new BankProfilesService(prisma as never);
+
+    await service.update(
+      CONDOMINIUM_ID,
+      PROFILE_ID,
+      { bankName: 'Banco del Bajío', dialect: 'GENERIC' } as never,
+      USER,
+    );
+    expect(prisma.bankProfile.update.mock.calls[0][0].data.dialect).toBe('GENERIC');
+  });
+
+  it('update leaves the dialect untouched when neither field is provided', async () => {
+    const prisma = makePrismaMock();
+    prisma.bankProfile.findFirst.mockResolvedValue(EXISTING);
+    prisma.bankProfile.update.mockResolvedValue({ ...EXISTING, name: 'Renamed' });
+    const service = new BankProfilesService(prisma as never);
+
+    await service.update(CONDOMINIUM_ID, PROFILE_ID, { name: 'Renamed' }, USER);
+    expect(prisma.bankProfile.update.mock.calls[0][0].data.dialect).toBeUndefined();
+  });
+});
