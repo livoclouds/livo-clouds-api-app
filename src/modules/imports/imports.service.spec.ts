@@ -1079,6 +1079,134 @@ describe('ImportsService.confirm — order-resilient reconciliation (ENGINE-051)
   });
 });
 
+describe('ImportsService.confirm — balance continuity (ENGINE-027)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+
+  function setup(
+    deps: ReturnType<typeof makeFullDeps>,
+    serverRows: Array<Record<string, unknown>>,
+  ) {
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/movimientos.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    deps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    deps.parser.parseBuffer.mockResolvedValue({
+      transactions: serverRows,
+      warnings: [],
+    });
+    deps.tx.importBatch.findUniqueOrThrow.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PROCESSING',
+    });
+  }
+
+  function dtoEchoing(rows: Array<Record<string, unknown>>) {
+    return {
+      files: [
+        {
+          fileName: 'movimientos.xlsx',
+          fileType: 'xlsx',
+          fileHash: R2_HASH,
+          fileSizeBytes: 2048,
+          warnings: [],
+          transactions: rows,
+        },
+      ],
+    };
+  }
+
+  function continuousRows(count: number) {
+    let balance = 1000;
+    return Array.from({ length: count }, (_, i) => {
+      balance += 100;
+      return {
+        date: `2025-11-${String(i + 1).padStart(2, '0')}`,
+        description: `PAGO ${i + 1}`,
+        charges: 0,
+        credits: 100,
+        balance,
+        flowType: 'income' as const,
+      };
+    });
+  }
+
+  it('refuses with BALANCE_DISCONTINUITY_EXCEEDED when most rows break continuity', async () => {
+    const deps = makeFullDeps();
+    // Balances unrelated to movements → every consecutive pair breaks.
+    const rows = continuousRows(10).map((r, i) => ({
+      ...r,
+      balance: 7919 * (i + 3),
+    }));
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    await expect(
+      service.confirm(CONDOMINIUM_ID, dtoEchoing(rows) as never, {
+        sub: 'user-1',
+      } as never),
+    ).rejects.toMatchObject({
+      response: { code: 'BALANCE_DISCONTINUITY_EXCEEDED' },
+    });
+    expect(deps.tx.transaction.createMany).not.toHaveBeenCalled();
+    expect(deps.events.emit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ errorCode: 'BALANCE_DISCONTINUITY_EXCEEDED' }),
+    );
+  });
+
+  it('proceeds below the threshold and persists the breaks as a batch warning', async () => {
+    const deps = makeFullDeps();
+    // One tampered balance breaks TWO consecutive pairs: 2 of 29 ≈ 6.9% — under 10%.
+    const rows = continuousRows(30);
+    rows[10] = { ...rows[10], balance: rows[10].balance + 50 };
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      dtoEchoing(rows) as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing' });
+    const update = deps.tx.importBatch.updateMany.mock.calls[0][0];
+    expect(
+      (update.data.warnings as string[]).some((w) =>
+        w.includes('running balance'),
+      ),
+    ).toBe(true);
+  });
+
+  it('confirms cleanly when the statement is fully continuous', async () => {
+    const deps = makeFullDeps();
+    const rows = continuousRows(5);
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      dtoEchoing(rows) as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing', imported: 5 });
+    const update = deps.tx.importBatch.updateMany.mock.calls[0][0];
+    expect(
+      (update.data.warnings as string[]).some((w) => w.includes('running balance')),
+    ).toBe(false);
+  });
+});
+
 describe('ImportsService.preview — row validation parity (ENGINE-026/028)', () => {
   // Valid XLSX magic bytes so preview reaches the parser branch.
   const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
@@ -1308,6 +1436,33 @@ describe('ImportsService.preview — row validation parity (ENGINE-026/028)', ()
     expect(results[0].validation?.sampleErrors).toEqual([
       expect.objectContaining({ rowIndex: 1, field: 'balance' }),
     ]);
+  });
+
+  it('surfaces balance-continuity breaks in the preview payload with status warning (ENGINE-027)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      { ...validRow1, balance: 100 }, // credits 100 → 100 ✓ (seed row)
+      { ...validRow2, balance: 150 }, // +50 → 150 ✓
+      { ...validRow3, balance: 999 }, // +25 → should be 175 ✗
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].status).toBe('warning');
+    expect(results[0].continuity).toMatchObject({
+      checked: true,
+      discontinuities: 1,
+    });
+    expect(results[0].continuity?.sample[0]).toMatchObject({
+      expectedBalance: 175,
+      actualBalance: 999,
+    });
   });
 });
 

@@ -27,6 +27,10 @@ import {
 } from './parser';
 import { STALE_PROCESSING_MS } from './imports.constants';
 import type { ParsedRow as ServerParsedRow, PreviewFileResult, PreviewApiResponse } from './parser';
+import {
+  BALANCE_DISCONTINUITY_THRESHOLD,
+  validateBalanceContinuity,
+} from './parser/balance-continuity';
 import { BankProfilesService } from '../bank-profiles/bank-profiles.service';
 import {
   IMPORT_COMPLETED_EVENT,
@@ -1039,10 +1043,16 @@ export class ImportsService {
         const finalBalance = computeFinalBalance(valid);
         const periods = buildPeriods(valid);
 
+        // ENGINE-027 — same continuity authority as confirm, over the FULL
+        // parsed set, so the user sees the breaks before confirming.
+        const continuity = validateBalanceContinuity(transactions);
+
         const status =
           valid.length === 0
             ? 'error'
-            : warnings.length > 0 || report.invalidRows > 0
+            : warnings.length > 0 ||
+                report.invalidRows > 0 ||
+                continuity.discontinuities > 0
               ? 'warning'
               : 'success';
 
@@ -1065,6 +1075,7 @@ export class ImportsService {
           transactions: valid,
           warnings,
           validation,
+          continuity,
           processedAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -1362,6 +1373,28 @@ export class ImportsService {
         });
       }
 
+      // ENGINE-027 — running-balance continuity over the FULL server parse
+      // (the same function preview ran, so the two paths agree). Above the
+      // threshold the file is refused; below it the breaks become warnings.
+      const continuity = validateBalanceContinuity(serverParsedRaw);
+      if (
+        continuity.checked &&
+        continuity.discontinuityRatio > BALANCE_DISCONTINUITY_THRESHOLD
+      ) {
+        this.events.emit(IMPORT_FAILED_EVENT, {
+          condominiumId,
+          batchId: existing.id,
+          stage: 'VALIDATE',
+          errorCode: 'BALANCE_DISCONTINUITY_EXCEEDED',
+          actorUserId: user.sub,
+        } satisfies ImportFailedEventPayload);
+        throw new BadRequestException({
+          code: 'BALANCE_DISCONTINUITY_EXCEEDED',
+          reason: `File ${file.fileName} has ${continuity.discontinuities} of ${continuity.totalComparisons} consecutive rows breaking running-balance continuity (${(continuity.discontinuityRatio * 100).toFixed(1)}% > ${(BALANCE_DISCONTINUITY_THRESHOLD * 100).toFixed(0)}%). Verify the file is complete and unmodified.`,
+          continuity,
+        });
+      }
+
       // ENGINE-054 — totals accumulate in integer-cent space.
       const totalIncome = sumAmounts(validTransactions.map((t) => t.credits));
       const totalExpenses = sumAmounts(validTransactions.map((t) => t.charges));
@@ -1420,6 +1453,12 @@ export class ImportsService {
       // for backward compat) with any server-side parser warnings, since the
       // server-parsed rows are what is actually being stored.
       const mergedWarnings = [...(file.warnings ?? []), ...parserWarnings];
+      // ENGINE-027 — sub-threshold continuity breaks persist as a warning.
+      if (continuity.checked && continuity.discontinuities > 0) {
+        mergedWarnings.push(
+          `${continuity.discontinuities} of ${continuity.totalComparisons} consecutive rows do not match the running balance (balance ≠ previous balance + credit − charge).`,
+        );
+      }
 
       // PENDING batch from upload step — update to COMPLETED, preserve storageKey.
       // Optimistic precondition: the row must still match the (updatedAt, status)
