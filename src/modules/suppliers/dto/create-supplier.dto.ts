@@ -5,6 +5,7 @@ import {
   IsEnum,
   IsOptional,
   IsString,
+  MaxLength,
   MinLength,
 } from 'class-validator';
 
@@ -19,17 +20,6 @@ export enum SupplierTypeDto {
   ELEVATOR = 'ELEVATOR',
   TECHNOLOGY = 'TECHNOLOGY',
   ADMINISTRATION = 'ADMINISTRATION',
-}
-
-// Coarse directory bucket driving the Proveedores filter chips + card icon.
-export enum SupplierCategoryDto {
-  ADMINISTRATION = 'ADMINISTRATION',
-  SURVEILLANCE = 'SURVEILLANCE',
-  GARDENING = 'GARDENING',
-  CLEANING = 'CLEANING',
-  MAINTENANCE = 'MAINTENANCE',
-  SERVICES = 'SERVICES',
-  OTHER = 'OTHER',
 }
 
 // FIXED → recurring "Proveedor fijo"; OCCASIONAL → ad-hoc "Eventual".
@@ -50,22 +40,18 @@ export class CreateSupplierDto {
   @MinLength(1)
   supplierName: string;
 
-  // Legacy fine-grained type. Optional for new callers (the Proveedores wizard
-  // sends `category` only) — the service derives it from `category` when omitted
-  // so the dashboard + reconciliation continue to see a populated `type`.
+  @ApiPropertyOptional({ example: 'cat_abc123', description: 'ID of a supplier category created by the tenant.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  categoryId?: string;
+
+  // Legacy fine-grained type — kept for back-compat with dashboard + reconciliation.
+  // Defaults to MAINTENANCE at the DB level when not provided.
   @ApiPropertyOptional({ enum: SupplierTypeDto })
   @IsOptional()
   @IsEnum(SupplierTypeDto)
   type?: SupplierTypeDto;
-
-  @ApiPropertyOptional({
-    enum: SupplierCategoryDto,
-    default: SupplierCategoryDto.OTHER,
-    description: 'Coarse directory bucket shown in the Proveedores UI.',
-  })
-  @IsOptional()
-  @IsEnum(SupplierCategoryDto)
-  category?: SupplierCategoryDto;
 
   @ApiPropertyOptional({
     enum: SupplierEngagementDto,
