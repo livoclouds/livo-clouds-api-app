@@ -24,6 +24,8 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { AuditService } from '../../src/modules/audit/audit.service';
 import { BankProfilesService } from '../../src/modules/bank-profiles/bank-profiles.service';
 import { ClassificationService } from '../../src/modules/classification/classification.service';
+import { BatchClassificationService } from '../../src/modules/classification/batch-classification.service';
+import { ManualClassificationService } from '../../src/modules/classification/manual-classification.service';
 import { DashboardService } from '../../src/modules/dashboard/dashboard.service';
 import { ImportsService } from '../../src/modules/imports/imports.service';
 import { ImportsParserService } from '../../src/modules/imports/parser';
@@ -68,6 +70,8 @@ export async function createPipelineContext(): Promise<PipelineContext> {
       SummaryRecomputeService,
       TerracePaymentLinkService,
       ReconciliationLifecycleService,
+      BatchClassificationService,
+      ManualClassificationService,
       ClassificationService,
       DashboardService,
     ],
@@ -179,6 +183,8 @@ export async function createImportsContext(): Promise<ImportsContext> {
       SummaryRecomputeService,
       TerracePaymentLinkService,
       ReconciliationLifecycleService,
+      BatchClassificationService,
+      ManualClassificationService,
       ClassificationService,
       AuditService,
       BankProfilesService,
