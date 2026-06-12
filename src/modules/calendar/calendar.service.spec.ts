@@ -17,6 +17,7 @@ interface PrismaMock {
   };
   resident: { findFirst: jest.Mock };
   condominiumSettings: { findUnique: jest.Mock };
+  transaction: { findMany: jest.Mock };
 }
 
 interface AuditMock {
@@ -38,6 +39,8 @@ function makePrismaMock(): PrismaMock {
     },
     resident: { findFirst: jest.fn().mockResolvedValue(null) },
     condominiumSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+    // CAL-011: no approved payment linked by default, so cancel/delete proceeds.
+    transaction: { findMany: jest.fn().mockResolvedValue([]) },
   };
 }
 
@@ -49,12 +52,22 @@ function makeEventEmitterMock(): EventEmitterMock {
   return { emit: jest.fn().mockReturnValue(true) };
 }
 
+function makeReconciliationMock(): { reopenTransaction: jest.Mock } {
+  return { reopenTransaction: jest.fn().mockResolvedValue(undefined) };
+}
+
 function makeService(
   prisma: PrismaMock,
   audit: AuditMock,
   events: EventEmitterMock = makeEventEmitterMock(),
+  reconciliation: { reopenTransaction: jest.Mock } = makeReconciliationMock(),
 ): CalendarService {
-  return new CalendarService(prisma as never, audit as never, events as never);
+  return new CalendarService(
+    prisma as never,
+    audit as never,
+    events as never,
+    reconciliation as never,
+  );
 }
 
 function baseEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {

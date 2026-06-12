@@ -8,7 +8,7 @@
  * self-skips when no TEST_DATABASE_URL is configured.
  */
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { EventStatus, EventType, type Prisma } from '@prisma/client';
+import { EventStatus, EventType, FlowType, type Prisma } from '@prisma/client';
 
 import { UserRole } from '../../src/common/types';
 import {
@@ -17,7 +17,10 @@ import {
   CalendarEventVisibilityDto,
 } from '../../src/modules/calendar/dto/create-calendar-event.dto';
 import type { ListCalendarEventsDto } from '../../src/modules/calendar/dto/list-calendar-events.dto';
-import type { UpdateCalendarEventDto } from '../../src/modules/calendar/dto/update-calendar-event.dto';
+import {
+  PaidLinkActionDto,
+  type UpdateCalendarEventDto,
+} from '../../src/modules/calendar/dto/update-calendar-event.dto';
 import {
   closePipelineContext,
   createPipelineContext,
@@ -98,6 +101,50 @@ function terraceMetadata(overrides: Record<string, unknown> = {}): Record<string
     customKeywords: [],
     ...overrides,
   };
+}
+
+/**
+ * Seeds an APPROVED income transaction linked to a terrace booking (CAL-011
+ * fixture). Transaction.importBatchId is NOT NULL, so a bankProfile + importBatch
+ * are created alongside it. Returns the transaction id.
+ */
+async function seedApprovedLinkedPayment(
+  ctx: PipelineContext,
+  tenant: SeededTenant,
+  bookingId: string,
+): Promise<string> {
+  const bankProfile = await ctx.prisma.bankProfile.create({
+    data: { condominiumId: tenant.condominiumId, name: `Generic-${Date.now()}`, excelAliases: {} },
+  });
+  const batch = await ctx.prisma.importBatch.create({
+    data: {
+      condominiumId: tenant.condominiumId,
+      importedById: tenant.userId,
+      bankProfileId: bankProfile.id,
+      fileName: 'estado.xlsx',
+      fileType: 'xlsx',
+      fileSizeBytes: 1024,
+      fileHash: `hash-${bookingId}`,
+    },
+  });
+  const tx = await ctx.prisma.transaction.create({
+    data: {
+      condominiumId: tenant.condominiumId,
+      importBatchId: batch.id,
+      transactionDate: new Date('2026-06-12T00:00:00.000Z'),
+      description: 'PAGO RESERVA TERRAZA',
+      credits: 1500,
+      balance: 1500,
+      flowType: FlowType.INCOME,
+      matchedCalendarEventId: bookingId,
+      matchSource: 'AUTO_TERRACE_BOOKING',
+      reconciliationStatus: 'APPROVED',
+      reconciledById: tenant.userId,
+      reconciledAt: new Date('2026-06-12T01:00:00.000Z'),
+    },
+    select: { id: true },
+  });
+  return tx.id;
 }
 
 describeIntegration('calendar service (integration)', () => {
@@ -411,6 +458,153 @@ describeIntegration('calendar service (integration)', () => {
         UserRole.RESIDENT,
       )) as { id: string };
       expect(visible.id).toBe(publicEvent.id);
+    });
+  });
+
+  // ── CAL-006: optimistic lock on update ───────────────────────────────────────
+
+  describe('optimistic lock (CAL-006)', () => {
+    it('rejects a stale update with 409 STALE_OVERRIDE when expectedUpdatedAt no longer matches', async () => {
+      const created = (await ctx.calendar.create(
+        tenant.condominiumId,
+        tenant.userId,
+        eventDto({ title: 'Original' }),
+      )) as { id: string };
+
+      // A version the modal never saw (an hour in the past) → conflict.
+      const staleVersion = '2020-01-01T00:00:00.000Z';
+      await expect(
+        ctx.calendar.update(tenant.condominiumId, tenant.userId, created.id, {
+          title: 'Stale save',
+          expectedUpdatedAt: staleVersion,
+        } as UpdateCalendarEventDto),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'STALE_OVERRIDE' }),
+      });
+
+      // The stale save did not land.
+      const row = (await ctx.calendar.findOne(tenant.condominiumId, created.id)) as {
+        title: string;
+      };
+      expect(row.title).toBe('Original');
+    });
+
+    it('accepts an update carrying the current updatedAt', async () => {
+      const created = (await ctx.calendar.create(
+        tenant.condominiumId,
+        tenant.userId,
+        eventDto({ title: 'Original' }),
+      )) as { id: string; updatedAt: Date | string };
+
+      const updated = (await ctx.calendar.update(
+        tenant.condominiumId,
+        tenant.userId,
+        created.id,
+        {
+          title: 'Fresh save',
+          expectedUpdatedAt: new Date(created.updatedAt).toISOString(),
+        } as UpdateCalendarEventDto,
+      )) as { title: string };
+      expect(updated.title).toBe('Fresh save');
+    });
+  });
+
+  // ── CAL-011: operator decision on cancel/delete of a paid booking ────────────
+
+  describe('paid booking link decision (CAL-011)', () => {
+    async function seedPaidBooking(): Promise<{ bookingId: string; txId: string }> {
+      const booking = (await ctx.calendar.create(
+        tenant.condominiumId,
+        tenant.userId,
+        eventDto({
+          title: 'Terraza pagada',
+          eventType: EventTypeDto.TERRACE_BOOKING,
+          startDate: '2026-06-20T18:00:00.000Z',
+          endDate: '2026-06-20T22:00:00.000Z',
+          metadata: terraceMetadata({ paymentStatus: 'PAID' }),
+        }),
+      )) as { id: string };
+      const txId = await seedApprovedLinkedPayment(ctx, tenant, booking.id);
+      return { bookingId: booking.id, txId };
+    }
+
+    it('deleting a paid-linked booking with no action returns 409 PAID_BOOKING_LINKED', async () => {
+      const { bookingId, txId } = await seedPaidBooking();
+
+      await expect(
+        ctx.calendar.remove(tenant.condominiumId, tenant.userId, bookingId),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'PAID_BOOKING_LINKED',
+          linkedTransactionIds: [txId],
+        }),
+      });
+
+      // Nothing was deleted; the payment is untouched.
+      const row = await ctx.prisma.calendarEvent.findUniqueOrThrow({ where: { id: bookingId } });
+      expect(row.deletedAt).toBeNull();
+      const tx = await ctx.prisma.transaction.findUniqueOrThrow({ where: { id: txId } });
+      expect(tx.reconciliationStatus).toBe('APPROVED');
+    });
+
+    it('KEEP deletes the booking and retains the approved income', async () => {
+      const { bookingId, txId } = await seedPaidBooking();
+
+      await ctx.calendar.remove(
+        tenant.condominiumId,
+        tenant.userId,
+        bookingId,
+        PaidLinkActionDto.KEEP,
+      );
+
+      const row = await ctx.prisma.calendarEvent.findUniqueOrThrow({ where: { id: bookingId } });
+      expect(row.deletedAt).not.toBeNull();
+      // Income retained: the transaction stays APPROVED and linked.
+      const tx = await ctx.prisma.transaction.findUniqueOrThrow({ where: { id: txId } });
+      expect(tx.reconciliationStatus).toBe('APPROVED');
+    });
+
+    it('REOPEN reopens the linked payment back to reconciliation review before deleting', async () => {
+      const { bookingId, txId } = await seedPaidBooking();
+
+      await ctx.calendar.remove(
+        tenant.condominiumId,
+        tenant.userId,
+        bookingId,
+        PaidLinkActionDto.REOPEN,
+      );
+
+      const row = await ctx.prisma.calendarEvent.findUniqueOrThrow({ where: { id: bookingId } });
+      expect(row.deletedAt).not.toBeNull();
+      // The payment is back in review (PENDING) and the booking's paymentStatus reverted.
+      const tx = await ctx.prisma.transaction.findUniqueOrThrow({ where: { id: txId } });
+      expect(tx.reconciliationStatus).toBe('PENDING');
+      const meta = row.metadata as { paymentStatus: string };
+      expect(meta.paymentStatus).toBe('PENDING');
+    });
+
+    it('cancelling a paid-linked booking via update follows the same contract', async () => {
+      const { bookingId, txId } = await seedPaidBooking();
+
+      // No action → conflict.
+      await expect(
+        ctx.calendar.update(tenant.condominiumId, tenant.userId, bookingId, {
+          status: 'CANCELLED',
+        } as UpdateCalendarEventDto),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'PAID_BOOKING_LINKED' }),
+      });
+
+      // KEEP → cancel proceeds, income retained.
+      const updated = (await ctx.calendar.update(
+        tenant.condominiumId,
+        tenant.userId,
+        bookingId,
+        { status: 'CANCELLED', paidLinkAction: PaidLinkActionDto.KEEP } as UpdateCalendarEventDto,
+      )) as { status: string };
+      expect(updated.status).toBe('CANCELLED');
+      const tx = await ctx.prisma.transaction.findUniqueOrThrow({ where: { id: txId } });
+      expect(tx.reconciliationStatus).toBe('APPROVED');
     });
   });
 });

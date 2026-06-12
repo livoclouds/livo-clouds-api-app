@@ -6,10 +6,12 @@
  *   matchedCalendarEventId / AUTO_TERRACE_BOOKING → reconciliation approve →
  *   booking metadata paymentStatus PAID → reopen → PENDING revert.
  *
- * Also CHARACTERIZES today's known gaps (finding IDs inline):
- *   CAL-003 — two same-amount transactions both link to the same booking.
- *   CAL-005 — reopening either payer reverts the booking, no APPROVED-guard.
- *   CAL-012 — security-deposit amounts are not modeled and never match.
+ * Phase 3 (CAL-003/004/005/012) makes paymentStatus trustworthy; the cases below
+ * assert the CORRECTED behavior (the Phase-2 characterizations were flipped here):
+ *   CAL-003 — a second same-amount row is flagged TERRACE_DUPLICATE, not double-linked.
+ *   CAL-005 — reopening one of several approved payers keeps a still-covered booking PAID.
+ *   CAL-012 — deposit-amount (and rental==deposit) payments land in TERRACE_DEPOSIT review.
+ *   CAL-004 — a row reclassified away from terrace no longer marks the booking PAID.
  */
 import { FlowType, EventStatus, EventType, Prisma } from '@prisma/client';
 
@@ -252,10 +254,10 @@ describeIntegration('terrace booking matching (integration)', () => {
     expect(tx.matchSource).not.toBe('AUTO_TERRACE_BOOKING');
   });
 
-  it('CHARACTERIZATION: two same-amount rows in one batch both link to the SAME booking', async () => {
-    // CAL-003: the candidate list is loaded once per classifyBatch and a match
-    // does not consume the booking, so a duplicate payment links to the same
-    // event instead of being flagged. Phase 3 will surface this.
+  it('CAL-003: a second same-amount row in one batch is flagged TERRACE_DUPLICATE, not double-linked', async () => {
+    // Phase 3: the engine claims the booking the instant the first row links it,
+    // so the second same-amount transaction in the SAME run no longer links to
+    // the same event — it lands in review with a dedicated duplicate reason.
     const booking = await seedBooking(ctx, fx);
     await seedIncomeTransactions(ctx, fx, [
       { description: MATCHING_DESCRIPTION, credits: RENTAL_AMOUNT },
@@ -266,24 +268,54 @@ describeIntegration('terrace booking matching (integration)', () => {
 
     const txs = await ctx.prisma.transaction.findMany({
       where: { condominiumId: fx.condominiumId, importBatchId: fx.batchId },
-      orderBy: { balance: 'asc' },
     });
     expect(txs).toHaveLength(2);
-    expect(txs[0].matchedCalendarEventId).toBe(booking.id);
-    expect(txs[1].matchedCalendarEventId).toBe(booking.id); // CAL-003
+    // Loop order is not guaranteed, so assert on the partition: exactly one row
+    // links (AUTO), exactly one is the flagged duplicate (no link).
+    const linked = txs.filter((t) => t.matchedCalendarEventId === booking.id);
+    const duplicate = txs.filter(
+      (t) => t.requiresReviewReason === 'TERRACE_DUPLICATE',
+    );
+    expect(linked).toHaveLength(1);
+    expect(linked[0].classificationStatus).toBe('AUTO');
+    expect(duplicate).toHaveLength(1);
+    expect(duplicate[0].matchedCalendarEventId).toBeNull();
+    expect(duplicate[0].classificationStatus).toBe('NEEDS_REVIEW');
+    expect(duplicate[0].matchSource).toBe('AUTO_TERRACE_BOOKING');
   });
 
-  it('CHARACTERIZATION: reopening the second payer reverts the booking even though the first still pays it', async () => {
-    // CAL-005: no APPROVED-guard / other-payer check — Phase 3. unmark only
-    // looks at the booking's own paymentStatus, never at which transaction's
-    // approval set it, so the booking ends PENDING while an APPROVED payment
-    // for it still exists.
+  it('CAL-005: reopening one of two approved payers keeps the booking PAID while the other still covers it', async () => {
+    // Phase 3 other-payer guard. The engine no longer produces two links for one
+    // booking, so a legacy double-link is seeded directly: both transactions link
+    // the same booking and are approved (→ PAID). Reopening one must NOT revert a
+    // booking the other approved payment still covers; reopening the last one does.
     const booking = await seedBooking(ctx, fx);
-    await seedIncomeTransactions(ctx, fx, [
-      { description: MATCHING_DESCRIPTION, credits: RENTAL_AMOUNT },
-      { description: MATCHING_DESCRIPTION, credits: RENTAL_AMOUNT },
-    ]);
-    await ctx.classification.classifyBatch(fx.condominiumId, fx.batchId);
+    await ctx.prisma.transaction.createMany({
+      data: [
+        {
+          condominiumId: fx.condominiumId,
+          importBatchId: fx.batchId,
+          transactionDate: TX_DATE,
+          description: MATCHING_DESCRIPTION,
+          credits: RENTAL_AMOUNT,
+          balance: RENTAL_AMOUNT,
+          flowType: FlowType.INCOME,
+          matchedCalendarEventId: booking.id,
+          matchSource: 'AUTO_TERRACE_BOOKING',
+        },
+        {
+          condominiumId: fx.condominiumId,
+          importBatchId: fx.batchId,
+          transactionDate: TX_DATE,
+          description: MATCHING_DESCRIPTION,
+          credits: RENTAL_AMOUNT,
+          balance: 2 * RENTAL_AMOUNT,
+          flowType: FlowType.INCOME,
+          matchedCalendarEventId: booking.id,
+          matchSource: 'AUTO_TERRACE_BOOKING',
+        },
+      ],
+    });
 
     const [first, second] = await ctx.prisma.transaction.findMany({
       where: { condominiumId: fx.condominiumId, importBatchId: fx.batchId },
@@ -291,27 +323,66 @@ describeIntegration('terrace booking matching (integration)', () => {
     });
 
     await ctx.reconciliation.approveTransaction(fx.condominiumId, first.id, fx.userId);
-    expect(await readPaymentStatus(ctx, booking.id)).toBe('PAID');
-
-    // Second approval is silently absorbed (CAL-003) — booking stays PAID.
     await ctx.reconciliation.approveTransaction(fx.condominiumId, second.id, fx.userId);
     expect(await readPaymentStatus(ctx, booking.id)).toBe('PAID');
 
-    // Reopen ONLY the second payer: the booking reverts to PENDING although
-    // the first transaction is still APPROVED and still covers it. // CAL-005
+    // Reopen ONE payer — the other is still APPROVED and covers the booking.
     await ctx.reconciliation.reopenTransaction(fx.condominiumId, second.id, fx.userId);
-    expect(await readPaymentStatus(ctx, booking.id)).toBe('PENDING');
+    expect(await readPaymentStatus(ctx, booking.id)).toBe('PAID'); // CAL-005 guard
 
-    const firstAfter = await ctx.prisma.transaction.findUniqueOrThrow({
-      where: { id: first.id },
-    });
-    expect(firstAfter.reconciliationStatus).toBe('APPROVED');
+    // Reopen the LAST covering payer — now nothing approved remains → revert.
+    await ctx.reconciliation.reopenTransaction(fx.condominiumId, first.id, fx.userId);
+    expect(await readPaymentStatus(ctx, booking.id)).toBe('PENDING');
   });
 
-  it('CHARACTERIZATION: a deposit-amount transaction does NOT match', async () => {
-    // CAL-012: only terraceRentalAmount participates in matching — security
-    // deposits have no modeled payment path, so a deposit-sized INCOME row
-    // (1000 ≠ 1500) fails the amount filter and never links to the booking.
+  it('CAL-005: reopening an IGNORED stale-linked row does not revert a booking a real payment covers', async () => {
+    // Phase 3: the single-reopen path now reverts only on an APPROVED→PENDING
+    // edge. An IGNORED row carrying a stale link, when reopened, must not flip a
+    // booking that a separate APPROVED transaction genuinely paid.
+    const booking = await seedBooking(ctx, fx);
+    const realPayer = await ctx.prisma.transaction.create({
+      data: {
+        condominiumId: fx.condominiumId,
+        importBatchId: fx.batchId,
+        transactionDate: TX_DATE,
+        description: MATCHING_DESCRIPTION,
+        credits: RENTAL_AMOUNT,
+        balance: RENTAL_AMOUNT,
+        flowType: FlowType.INCOME,
+        matchedCalendarEventId: booking.id,
+        matchSource: 'AUTO_TERRACE_BOOKING',
+      },
+      select: { id: true },
+    });
+    const ignoredStale = await ctx.prisma.transaction.create({
+      data: {
+        condominiumId: fx.condominiumId,
+        importBatchId: fx.batchId,
+        transactionDate: TX_DATE,
+        description: MATCHING_DESCRIPTION,
+        credits: RENTAL_AMOUNT,
+        balance: 2 * RENTAL_AMOUNT,
+        flowType: FlowType.INCOME,
+        matchedCalendarEventId: booking.id,
+        matchSource: 'AUTO_TERRACE_BOOKING',
+        reconciliationStatus: 'IGNORED',
+      },
+      select: { id: true },
+    });
+
+    await ctx.reconciliation.approveTransaction(fx.condominiumId, realPayer.id, fx.userId);
+    expect(await readPaymentStatus(ctx, booking.id)).toBe('PAID');
+
+    // Reopen the IGNORED row: prior status was not APPROVED → no revert attempt,
+    // and even if attempted the other-payer guard would keep it PAID.
+    await ctx.reconciliation.reopenTransaction(fx.condominiumId, ignoredStale.id, fx.userId);
+    expect(await readPaymentStatus(ctx, booking.id)).toBe('PAID');
+  });
+
+  it('CAL-012: a deposit-amount transaction is flagged TERRACE_DEPOSIT and never linked as rental', async () => {
+    // Phase 3: the matcher now recognizes the security-deposit amount as a
+    // distinct kind. A deposit-sized INCOME row with terrace signals lands in
+    // review (TERRACE_DEPOSIT) instead of being ignored or mis-linked as rental.
     await seedBooking(ctx, fx);
     await seedIncomeTransactions(ctx, fx, [
       { description: MATCHING_DESCRIPTION, credits: DEPOSIT_AMOUNT },
@@ -322,7 +393,61 @@ describeIntegration('terrace booking matching (integration)', () => {
     const tx = await ctx.prisma.transaction.findFirstOrThrow({
       where: { condominiumId: fx.condominiumId, importBatchId: fx.batchId },
     });
-    expect(tx.matchedCalendarEventId).toBeNull(); // CAL-012
-    expect(tx.matchSource).not.toBe('AUTO_TERRACE_BOOKING');
+    expect(tx.matchedCalendarEventId).toBeNull();
+    expect(tx.matchSource).toBe('AUTO_TERRACE_BOOKING');
+    expect(tx.classificationStatus).toBe('NEEDS_REVIEW');
+    expect(tx.requiresReviewReason).toBe('TERRACE_DEPOSIT');
+  });
+
+  it('CAL-012: when rental == deposit, a matching payment is forced to TERRACE_DEPOSIT review (no auto-PAID)', async () => {
+    // The amount alone cannot tell rental from deposit, so it must not AUTO-link
+    // and silently mark the booking PAID while rent may still be outstanding.
+    await seedBooking(ctx, fx, {
+      metadata: terraceMetadata({ securityDepositAmount: RENTAL_AMOUNT }),
+    });
+    await seedIncomeTransactions(ctx, fx, [
+      { description: MATCHING_DESCRIPTION, credits: RENTAL_AMOUNT },
+    ]);
+
+    await ctx.classification.classifyBatch(fx.condominiumId, fx.batchId);
+
+    const tx = await ctx.prisma.transaction.findFirstOrThrow({
+      where: { condominiumId: fx.condominiumId, importBatchId: fx.batchId },
+    });
+    expect(tx.matchedCalendarEventId).toBeNull();
+    expect(tx.classificationStatus).toBe('NEEDS_REVIEW');
+    expect(tx.requiresReviewReason).toBe('TERRACE_DEPOSIT');
+  });
+
+  it('CAL-004: a row manually reclassified away from terrace no longer marks the booking PAID on approval', async () => {
+    // Phase 3: manualClassify clears matchedCalendarEventId, and approval is also
+    // guarded on matchSource — so a row reclassified to a plain unit payment can
+    // no longer resurrect the terrace booking's PAID state.
+    const booking = await seedBooking(ctx, fx);
+    await seedIncomeTransactions(ctx, fx, [
+      { description: MATCHING_DESCRIPTION, credits: RENTAL_AMOUNT },
+    ]);
+    await ctx.classification.classifyBatch(fx.condominiumId, fx.batchId);
+
+    const tx = await ctx.prisma.transaction.findFirstOrThrow({
+      where: { condominiumId: fx.condominiumId, importBatchId: fx.batchId },
+    });
+    expect(tx.matchedCalendarEventId).toBe(booking.id); // linked by the engine
+
+    // Operator reclassifies it to unit 101 as an ordinary payment.
+    await ctx.classification.manualClassify(
+      fx.condominiumId,
+      tx.id,
+      { unitNumber: '101', paymentConcept: 'MAINTENANCE' },
+      fx.userId,
+    );
+    const reclassified = await ctx.prisma.transaction.findUniqueOrThrow({
+      where: { id: tx.id },
+    });
+    expect(reclassified.matchedCalendarEventId).toBeNull();
+
+    // Approving it must NOT mark the booking PAID — the link is gone.
+    await ctx.reconciliation.approveTransaction(fx.condominiumId, tx.id, fx.userId);
+    expect(await readPaymentStatus(ctx, booking.id)).toBe('PENDING');
   });
 });
