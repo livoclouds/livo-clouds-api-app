@@ -16,6 +16,11 @@
  */
 import { ClassificationStatus } from '@prisma/client';
 import { ClassificationService } from './classification.service';
+import { BatchClassificationService } from './batch-classification.service';
+import { ManualClassificationService } from './manual-classification.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
+import { SummaryRecomputeService } from '../reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../reconciliation/terrace-payment-link.service';
 import { toCents } from '../../common/utils/money.util';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -170,12 +175,24 @@ function makeService(prisma: unknown): ClassificationService {
       .mockResolvedValue({ terraceGlobalKeywords: [], totalUnits: 10 }),
     invalidate: jest.fn(),
   };
-  return new ClassificationService(
+  // ENGINE-008 decomposition: real collaborator instances over the same
+  // prisma mock keep every write observable through the facade.
+  const summaries = new SummaryRecomputeService(prisma as never);
+  const terraceLinks = new TerracePaymentLinkService(prisma as never);
+  const lifecycle = new ReconciliationLifecycleService(
+    prisma as never,
+    summaries,
+    terraceLinks,
+  );
+  const batch = new BatchClassificationService(
     prisma as never,
     rulesService as never,
     events as never,
     settingsCache as never,
+    summaries,
   );
+  const manual = new ManualClassificationService(prisma as never, settingsCache as never);
+  return new ClassificationService(batch, manual, summaries, terraceLinks, lifecycle);
 }
 
 function allocationSumCents(store: Store): number {

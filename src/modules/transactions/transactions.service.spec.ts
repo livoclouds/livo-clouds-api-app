@@ -315,3 +315,120 @@ describe('escapeCsvValue — formula-injection neutralization (ENGINE-036)', () 
     expect(escapeCsvValue('say "hi"')).toBe('"say ""hi"""');
   });
 });
+
+describe('ENGINE-038 — list and export share one where-builder', () => {
+  const CLASSIFIED_DTO = {
+    flowType: 'INCOME',
+    dateFrom: '2026-05-01',
+    dateTo: '2026-05-31',
+    concept: 'mantenimiento',
+    unitNumber: '34',
+    residentName: 'Ana García',
+    confidenceLevel: 'HIGH',
+  } as never;
+
+  const RECONCILED_DTO = {
+    flowType: 'INCOME',
+    dateFrom: '2026-05-01',
+    dateTo: '2026-05-31',
+    q: 'terraza',
+    reconciliationStatus: 'APPROVED',
+  } as never;
+
+  async function drain(stream: NodeJS.ReadableStream): Promise<void> {
+    for await (const _chunk of stream) {
+      void _chunk;
+    }
+  }
+
+  it('classified: findClassified and prepareClassifiedExport emit an identical where', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.findClassified(CONDOMINIUM_ID, CLASSIFIED_DTO);
+    const listWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    prisma.transaction.findMany.mockClear();
+    prisma.transaction.count.mockClear();
+    const { stream } = await service.prepareClassifiedExport(CONDOMINIUM_ID, CLASSIFIED_DTO);
+    await drain(stream);
+    const exportWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    expect(exportWhere).toEqual(listWhere);
+    // The truncation pre-count runs against the very same where.
+    expect(prisma.transaction.count.mock.calls[0][0].where).toEqual(listWhere);
+  });
+
+  it('reconciled: findReconciled and prepareReconciledExport emit an identical where', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.findReconciled(CONDOMINIUM_ID, RECONCILED_DTO);
+    const listWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    prisma.transaction.findMany.mockClear();
+    const { stream } = await service.prepareReconciledExport(CONDOMINIUM_ID, RECONCILED_DTO);
+    await drain(stream);
+    const exportWhere = prisma.transaction.findMany.mock.calls[0][0].where;
+
+    expect(exportWhere).toEqual(listWhere);
+  });
+
+  it('classified: the status allowlist guard also protects the export path', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await expect(
+      service.prepareClassifiedExport(CONDOMINIUM_ID, {
+        classificationStatus: 'NEEDS_REVIEW',
+      } as never),
+    ).rejects.toThrow(
+      expect.objectContaining({
+        response: expect.objectContaining({ code: 'INVALID_CLASSIFICATION_STATUS' }),
+      }),
+    );
+  });
+});
+
+describe('ENGINE-037 — export truncation is an out-of-band signal', () => {
+  async function collect(stream: NodeJS.ReadableStream): Promise<string> {
+    let out = '';
+    for await (const chunk of stream) {
+      out += String(chunk);
+    }
+    return out;
+  }
+
+  it('truncated=false when the result set fits under the hard cap', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.count.mockResolvedValue(50_000);
+    const service = makeService(prisma);
+
+    const { truncated } = await service.prepareClassifiedExport(CONDOMINIUM_ID, {} as never);
+    expect(truncated).toBe(false);
+  });
+
+  it('truncated=true when the result set exceeds the hard cap, with no pseudo-row in the body', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.count.mockResolvedValue(50_001);
+    const service = makeService(prisma);
+
+    const { stream, truncated } = await service.prepareClassifiedExport(CONDOMINIUM_ID, {} as never);
+    const body = await collect(stream);
+
+    expect(truncated).toBe(true);
+    expect(body).not.toContain('# TRUNCATED');
+  });
+
+  it('reconciled export carries the same contract', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.count.mockResolvedValue(60_000);
+    const service = makeService(prisma);
+
+    const { stream, truncated } = await service.prepareReconciledExport(CONDOMINIUM_ID, {} as never);
+    const body = await collect(stream);
+
+    expect(truncated).toBe(true);
+    expect(body).not.toContain('# TRUNCATED');
+  });
+});

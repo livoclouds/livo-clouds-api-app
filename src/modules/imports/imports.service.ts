@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import * as Sentry from '@sentry/nestjs';
 import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
@@ -1780,6 +1781,13 @@ export class ImportsService {
         `classify-async: failed batchId=${batchId}: ${message}`,
         err instanceof Error ? err.stack : undefined,
       );
+      // ENGINE-033: this catch runs outside any HTTP request (setImmediate),
+      // so the Sentry exception filter never sees it — capture explicitly,
+      // tagged for triage. No-op until SENTRY_DSN is configured.
+      Sentry.captureException(err, {
+        tags: { batchId, condominiumId },
+        extra: { stage: 'classify-async', fileName },
+      });
       try {
         await this.prisma.importBatch.update({
           where: { id: batchId },

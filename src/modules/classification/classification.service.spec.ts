@@ -16,6 +16,11 @@ import {
   resolveRuleUnit,
   type DbRule,
 } from './classification.service';
+import { BatchClassificationService } from './batch-classification.service';
+import { ManualClassificationService } from './manual-classification.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
+import { SummaryRecomputeService } from '../reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../reconciliation/terrace-payment-link.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -140,12 +145,26 @@ function makeService(
     ),
     invalidate: jest.fn(),
   };
-  return new ClassificationService(
+  // ENGINE-008 decomposition: every collaborator is a real instance over the
+  // same prisma mock, so every behavioral assertion (call shapes, advisory
+  // locks, audit payloads) keeps observing the exact same writes through the
+  // facade.
+  const summaries = new SummaryRecomputeService(prisma as never);
+  const terraceLinks = new TerracePaymentLinkService(prisma as never);
+  const lifecycle = new ReconciliationLifecycleService(
+    prisma as never,
+    summaries,
+    terraceLinks,
+  );
+  const batch = new BatchClassificationService(
     prisma as never,
     rulesService as never,
     events as never,
     settingsCache as never,
+    summaries,
   );
+  const manual = new ManualClassificationService(prisma as never, settingsCache as never);
+  return new ClassificationService(batch, manual, summaries, terraceLinks, lifecycle);
 }
 
 function findClassifierUpdate(
@@ -2923,6 +2942,45 @@ describe('Phase 5 — chunked writes re-assert status (ENGINE-018)', () => {
     );
     expect(summary.skipped).toBe(0);
     expect(summary.total).toBe(1);
+  });
+});
+
+describe('Phase 6 — reapplyToPending pages the pending backlog (ENGINE-011)', () => {
+  it('walks id-ordered pages with an id > cursor bound and terminates on the short page', async () => {
+    const prisma = makePrismaMock();
+    const mkTx = (n: number) => ({
+      id: `tx-${String(n).padStart(4, '0')}`,
+      description: 'pago sin señal',
+      transactionDate: new Date('2026-06-01T00:00:00Z'),
+      credits: 100,
+      charges: null,
+      flowType: 'INCOME',
+      importBatch: null,
+    });
+    const fullPage = Array.from({ length: 200 }, (_, i) => mkTx(i + 1));
+    const shortPage = [mkTx(201)];
+    prisma.transaction.findMany
+      .mockResolvedValueOnce(fullPage)
+      .mockResolvedValueOnce(shortPage);
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    const summary = await service.reapplyToPending(CONDOMINIUM_ID, null);
+
+    // Exactly two round trips: a full page, then the short terminal page —
+    // the whole backlog is never loaded in one query.
+    expect(prisma.transaction.findMany).toHaveBeenCalledTimes(2);
+    const firstCall = prisma.transaction.findMany.mock.calls[0][0];
+    const secondCall = prisma.transaction.findMany.mock.calls[1][0];
+    expect(firstCall.where.id).toBeUndefined();
+    expect(firstCall).toEqual(
+      expect.objectContaining({ orderBy: { id: 'asc' }, take: 200 }),
+    );
+    // The bound is an explicit id > lastId predicate (immune to rows leaving
+    // the status predicate mid-run), not Prisma cursor+skip.
+    expect(secondCall.where.id).toEqual({ gt: 'tx-0200' });
+    expect(secondCall.cursor).toBeUndefined();
+    expect(summary.total).toBe(201);
   });
 });
 
