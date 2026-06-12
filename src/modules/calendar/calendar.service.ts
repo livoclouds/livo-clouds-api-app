@@ -372,7 +372,7 @@ export class CalendarService {
     const end = new Date(dto.endDate);
 
     if (end <= start) {
-      throw new BadRequestException('endDate must be after startDate');
+      throw new BadRequestException('endDateAfterStart');
     }
 
     let resolvedMetadata: TerraceBookingMetadata | undefined;
@@ -382,7 +382,7 @@ export class CalendarService {
         select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
       });
       if (cs !== null && !cs.terraceBookingEnabled) {
-        throw new BadRequestException('Terrace bookings are disabled for this condominium');
+        throw new BadRequestException('terraceDisabled');
       }
       let defaults = TERRACE_BOOKING_DEFAULTS;
       if (!dto.metadata && cs) {
@@ -431,9 +431,12 @@ export class CalendarService {
         select: { id: true },
       });
       if (conflict) {
-        throw new ConflictException(
-          'Terrace already booked for the requested time slot',
-        );
+        // CAL-046: stable machine code so the web can tell a terrace
+        // double-booking apart from any other 409 instead of assuming.
+        throw new ConflictException({
+          code: 'TERRACE_SLOT_CONFLICT',
+          reason: 'Terrace already booked for the requested time slot',
+        });
       }
     }
 
@@ -501,7 +504,7 @@ export class CalendarService {
     const end = new Date(dto.endDate ?? existing.endDate);
 
     if (end <= start) {
-      throw new BadRequestException('endDate must be after startDate');
+      throw new BadRequestException('endDateAfterStart');
     }
 
     if (dto.residentId && dto.residentId !== existing.residentId) {
@@ -550,9 +553,12 @@ export class CalendarService {
         select: { id: true },
       });
       if (conflict) {
-        throw new ConflictException(
-          'Terrace already booked for the requested time slot',
-        );
+        // CAL-046: stable machine code so the web can tell a terrace
+        // double-booking apart from any other 409 instead of assuming.
+        throw new ConflictException({
+          code: 'TERRACE_SLOT_CONFLICT',
+          reason: 'Terrace already booked for the requested time slot',
+        });
       }
     }
 
@@ -612,7 +618,7 @@ export class CalendarService {
             select: { terraceBookingEnabled: true },
           });
           if (cs !== null && !cs.terraceBookingEnabled) {
-            throw new BadRequestException('Terrace bookings are disabled for this condominium');
+            throw new BadRequestException('terraceDisabled');
           }
         }
         const result = validateTerraceMetadata(dto.metadata);
@@ -636,7 +642,7 @@ export class CalendarService {
           select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
         });
         if (cs !== null && !cs.terraceBookingEnabled) {
-          throw new BadRequestException('Terrace bookings are disabled for this condominium');
+          throw new BadRequestException('terraceDisabled');
         }
         const defaults: TerraceBookingMetadata = cs
           ? {
