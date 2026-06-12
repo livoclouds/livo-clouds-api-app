@@ -2,11 +2,15 @@ import { Body, Controller, Get, Param, Patch, Query, Request, UseGuards } from '
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { JwtPayload } from '../../common/types';
 import { CollectionService } from './collection.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
 import { FinancialHealthDto } from './dto/financial-health.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
+import { UpdateCollectionRecordDto } from './dto/update-collection-record.dto';
+
+type AuthedRequest = { condominiumId: string; user: JwtPayload };
 
 @ApiTags('Collection')
 @Controller('condominiums/:condominiumSlug/collection')
@@ -17,7 +21,7 @@ export class CollectionController {
   @Get()
   @ApiOperation({ summary: 'Get collection matrix for a year (paginated)' })
   findAll(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Query() dto: ListCollectionDto,
   ) {
     return this.collectionService.findAll(req.condominiumId, dto);
@@ -26,7 +30,7 @@ export class CollectionController {
   @Get('residents/:residentId')
   @ApiOperation({ summary: 'Get collection history for a resident (paginated)' })
   findByResident(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('residentId') residentId: string,
     @Query() dto: ListByResidentDto,
   ) {
@@ -40,7 +44,7 @@ export class CollectionController {
   @Get('residents/:residentId/account-statement')
   @ApiOperation({ summary: 'Get resident account statement with transactions and collection records' })
   getAccountStatement(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('residentId') residentId: string,
     @Query() dto: AccountStatementDto,
   ) {
@@ -48,9 +52,18 @@ export class CollectionController {
   }
 
   @Get('residents/:residentId/financial-health')
-  @ApiOperation({ summary: 'Explainable financial-health score + derived trend history for a resident' })
+  @ApiOperation({
+    summary: 'Explainable financial-health score + derived trend history for a resident',
+    description:
+      'Returns the current score (0–100 integer; factor weight/contribution/rawValue at ' +
+      '2-decimal precision), a per-month trend line, and `historyMeta` describing how much ' +
+      'history was actually available vs requested (months with no records are skipped and ' +
+      'the requested span is clamped to 1–36). All period boundaries and the "as-of" date ' +
+      'used for delinquency age are computed in UTC. AGREEMENT (convenio) debt is excluded ' +
+      "from the balance & collection-rate factors (under management); EXTRAORDINARY counts.",
+  })
   getFinancialHealth(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('residentId') residentId: string,
     @Query() dto: FinancialHealthDto,
   ) {
@@ -65,10 +78,10 @@ export class CollectionController {
   @RequirePermission('transactions.override')
   @ApiOperation({ summary: 'Manual override collection record' })
   update(
-    @Request() req: { condominiumId: string },
+    @Request() req: AuthedRequest,
     @Param('id') id: string,
-    @Body() dto: { status?: string; amountPaid?: number; paymentDate?: string; notes?: string },
+    @Body() dto: UpdateCollectionRecordDto,
   ) {
-    return this.collectionService.update(req.condominiumId, id, dto);
+    return this.collectionService.update(req.condominiumId, req.user.sub, id, dto);
   }
 }

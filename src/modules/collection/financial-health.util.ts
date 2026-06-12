@@ -7,6 +7,22 @@
 //
 // Moved server-side in Fase 3 (the web no longer computes it) and expanded from
 // 3 to 7 factors. Pure + deterministic: `now` is injected so it is testable.
+//
+// Contract notes (Fase 6 — RP-028/029/030):
+//  • Precision: factor weight/contribution/rawValue carry 2-decimal precision
+//    (round2) so the displayed breakdown reconciles with the score; only the
+//    headline `score` is a 0–100 integer.
+//  • Time semantics: all period math ("as of" boundaries, delinquency age) is
+//    computed in UTC (getUTC*/Date.UTC). Period keys are year*12+month.
+//  • Status handling per factor:
+//      - onTime / recurrence / trend  → count only PAID_ON_TIME, PAID_LATE,
+//        PARTIAL, UNPAID; PENDING/ADJUSTMENT/EXTRAORDINARY/AGREEMENT excluded.
+//      - collectionRate               → excludes AGREEMENT (debt under a
+//        negotiated plan, not a missed obligation); EXTRAORDINARY counts.
+//      - balance                      → AGREEMENT net is removed from the
+//        scoring balance (under-management); EXTRAORDINARY counts. The DISPLAYED
+//        account-statement balance / Balance KPI is untouched — this adjustment
+//        is internal to the score only.
 
 export type HealthBand = "excellent" | "good" | "watch" | "at_risk";
 
@@ -138,10 +154,26 @@ const ON_TIME = "PAID_ON_TIME";
 const LATE = "PAID_LATE";
 const PARTIAL = "PARTIAL";
 const UNPAID = "UNPAID";
+const AGREEMENT = "AGREEMENT";
 // PENDING/ADJUSTMENT/EXTRAORDINARY/AGREEMENT are excluded from punctuality — not
 // yet due or not a punctuality signal — so an agreement never drags the ratio.
 const COUNTED = new Set([ON_TIME, LATE, PARTIAL, UNPAID]);
 const PROBLEM = new Set([LATE, PARTIAL, UNPAID]);
+
+// 2-decimal rounding — keeps the factor breakdown precise (summed contributions
+// reconcile with the score) without noisy floating-point tails (RP-028).
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+// Net amount tied up in AGREEMENT (convenio) months: expected − paid. Removed
+// from the score's balance interpretation so a resident actively paying a
+// negotiated plan is not scored as a raw defaulter (RP-030).
+function agreementNet(records: ScoreRecordInput[]): number {
+  return records
+    .filter((r) => norm(r.status) === AGREEMENT)
+    .reduce((s, r) => s + (r.amountExpected - r.amountPaid), 0);
+}
 
 function consideredMonths(records: ScoreRecordInput[]): number {
   return records.filter((r) => COUNTED.has(norm(r.status))).length;
@@ -196,11 +228,15 @@ function trendDelta(records: ScoreRecordInput[]): number {
 }
 
 // Historical collection rate from the records themselves (amount paid vs
-// expected) — internally consistent with the derived history.
+// expected) — internally consistent with the derived history. AGREEMENT
+// (convenio) months are EXCLUDED: that debt is under a negotiated plan, not a
+// missed obligation, so it must not drag the rate. EXTRAORDINARY (special
+// assessments) ARE included — they are real obligations (RP-030).
 function collectionRateOf(records: ScoreRecordInput[]): number {
-  const expected = records.reduce((s, r) => s + r.amountExpected, 0);
+  const counted = records.filter((r) => norm(r.status) !== AGREEMENT);
+  const expected = counted.reduce((s, r) => s + r.amountExpected, 0);
   if (expected <= 0) return 1;
-  const paid = records.reduce((s, r) => s + r.amountPaid, 0);
+  const paid = counted.reduce((s, r) => s + r.amountPaid, 0);
   return clamp01(paid / expected);
 }
 
@@ -234,14 +270,18 @@ export function computeFinancialHealth(
   const ageMonths = oldestUnpaidAge(records, now);
   const delinquencyAge = clamp01(1 - ageMonths / DELINQUENCY_AGE_FLOOR);
 
-  // Factor 5 — outstanding balance. Zero/credit is perfect; a debt (positive
-  // balance) is scored against the larger of the expected total or the debt
-  // itself so the ratio never exceeds 1 and a tiny base cannot overstate health.
+  // Factor 5 — outstanding balance. AGREEMENT (convenio) net is removed from the
+  // scoring balance so a negotiated plan reads differently from raw delinquency
+  // (RP-030; the DISPLAYED balance/KPI is untouched). Zero/credit is perfect; a
+  // debt (positive balance) is scored against the larger of the expected total
+  // or the debt itself so the ratio never exceeds 1 and a tiny base cannot
+  // overstate health.
+  const scoringBalance = summary.balance - agreementNet(records);
   const balanceFactor =
-    summary.balance <= 0
+    scoringBalance <= 0
       ? 1
       : clamp01(
-          1 - summary.balance / Math.max(summary.totalExpected, summary.balance, 1),
+          1 - scoringBalance / Math.max(summary.totalExpected, scoringBalance, 1),
         );
 
   // Factor 6 — recurrence (chronicity). Problem months in the recent window.
@@ -267,14 +307,18 @@ export function computeFinancialHealth(
     Object.values(points).reduce((sum, p) => sum + p, 0),
   );
 
+  // 2-decimal precision (RP-028): contributions reconcile with the score and the
+  // breakdown is exact. rawValue carries the real objective input (the balance
+  // raw stays the resident's actual debt — the agreement leniency lives in the
+  // contribution, not in the displayed number).
   const factors: HealthFactor[] = [
-    { key: "onTime", weight: Math.round(W.onTime), contribution: Math.round(points.onTime), rawValue: Math.round(onTime * 100), unit: "percent" },
-    { key: "collectionRate", weight: Math.round(W.collectionRate), contribution: Math.round(points.collectionRate), rawValue: Math.round(collectionRate * 100), unit: "percent" },
-    { key: "monthsCurrent", weight: Math.round(W.monthsCurrent), contribution: Math.round(points.monthsCurrent), rawValue: summary.monthsUnpaid, unit: "months" },
-    { key: "delinquencyAge", weight: Math.round(W.delinquencyAge), contribution: Math.round(points.delinquencyAge), rawValue: ageMonths, unit: "months" },
-    { key: "balance", weight: Math.round(W.balance), contribution: Math.round(points.balance), rawValue: summary.balance, unit: "currency" },
-    { key: "recurrence", weight: Math.round(W.recurrence), contribution: Math.round(points.recurrence), rawValue: problems, unit: "months" },
-    { key: "trend", weight: Math.round(W.trend), contribution: Math.round(points.trend), rawValue: Math.round(delta * 100), unit: "signedPercent" },
+    { key: "onTime", weight: round2(W.onTime), contribution: round2(points.onTime), rawValue: round2(onTime * 100), unit: "percent" },
+    { key: "collectionRate", weight: round2(W.collectionRate), contribution: round2(points.collectionRate), rawValue: round2(collectionRate * 100), unit: "percent" },
+    { key: "monthsCurrent", weight: round2(W.monthsCurrent), contribution: round2(points.monthsCurrent), rawValue: summary.monthsUnpaid, unit: "months" },
+    { key: "delinquencyAge", weight: round2(W.delinquencyAge), contribution: round2(points.delinquencyAge), rawValue: ageMonths, unit: "months" },
+    { key: "balance", weight: round2(W.balance), contribution: round2(points.balance), rawValue: round2(summary.balance), unit: "currency" },
+    { key: "recurrence", weight: round2(W.recurrence), contribution: round2(points.recurrence), rawValue: problems, unit: "months" },
+    { key: "trend", weight: round2(W.trend), contribution: round2(points.trend), rawValue: round2(delta * 100), unit: "signedPercent" },
   ];
 
   return { score, band: bandFor(score), hasData, factors };

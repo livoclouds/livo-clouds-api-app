@@ -6,13 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { CalendarEventVisibility, EventType, EventStatus } from '@prisma/client';
-import { PaginatedResult, UserRole } from '../../common/types';
+import { CalendarEventVisibility, EventType, EventStatus, ReconciliationStatus } from '@prisma/client';
+import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
 import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
-import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
+import { PaidLinkActionDto, UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 import {
   validateTerraceMetadata,
   TERRACE_BOOKING_DEFAULTS,
@@ -25,7 +26,7 @@ import {
   validateRecurrenceRule,
 } from './recurrence';
 import { assertValidTimezone } from './timezone.util';
-import { buildVisibilityFilter, canSeeVisibility } from './visibility.util';
+import { CALENDAR_PERM, buildVisibilityFilter, canSeeVisibility } from './visibility.util';
 import {
   CALENDAR_TERRACE_CHANGED,
   type CalendarTerraceChangedPayload,
@@ -47,6 +48,53 @@ import {
 } from './reclassify/should-trigger-reclassify';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
+
+// Internal manager context for service-to-service reads (update/delete logic that
+// needs the real, unredacted event regardless of the caller's permissions).
+const INTERNAL_FULL_ACCESS: ReadonlySet<string> = new Set([CALENDAR_PERM.manage]);
+
+// CAL-002: terrace financial / review metadata fields that must be redacted from
+// any caller WITHOUT calendar.manage. Pre-event logistics (contractSigned,
+// guestParkingRequested, setupNotes) are left intact as non-sensitive.
+const REDACTED_TERRACE_FIELDS: ReadonlySet<string> = new Set([
+  'terraceRentalAmount',
+  'securityDepositAmount',
+  'paymentStatus',
+  'securityDepositStatus',
+  'depositDeductionAmount',
+  'depositDeductionReason',
+  'postEventReviewed',
+  'damagesReported',
+  'cleaningIssueReported',
+  'postEventReviewNotes',
+  'customKeywords',
+]);
+
+/**
+ * Strip sensitive terrace metadata for callers without calendar.manage (CAL-002).
+ * Returns the event unchanged for managers, non-terrace events, or absent/invalid
+ * metadata. Applies to both single events and expanded recurrence occurrences.
+ */
+function redactTerraceFinancials<T extends { eventType?: unknown; metadata?: unknown }>(
+  event: T,
+  canManage: boolean,
+): T {
+  if (canManage) return event;
+  const md = event.metadata;
+  if (
+    event.eventType !== EventType.TERRACE_BOOKING ||
+    md == null ||
+    typeof md !== 'object' ||
+    Array.isArray(md)
+  ) {
+    return event;
+  }
+  const safe: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(md as Record<string, unknown>)) {
+    if (!REDACTED_TERRACE_FIELDS.has(k)) safe[k] = v;
+  }
+  return { ...event, metadata: safe };
+}
 
 function assertRecurrenceAllowed(
   eventType: EventType,
@@ -73,6 +121,7 @@ export class CalendarService {
     private prisma: PrismaService,
     private audit: AuditService,
     private events: EventEmitter2,
+    private reconciliationLifecycle: ReconciliationLifecycleService,
   ) {}
 
   private readonly logger = new Logger(CalendarService.name);
@@ -95,19 +144,70 @@ export class CalendarService {
     }
   }
 
+  /**
+   * CAL-011: cancelling or deleting a terrace booking that still has APPROVED
+   * linked transactions would orphan attributed income (the booking disappears
+   * from the calendar while the rental stays counted). Force an explicit operator
+   * decision instead of silently keeping or dropping the money:
+   *   - no action  → 409 PAID_BOOKING_LINKED (the caller must choose)
+   *   - KEEP       → leave the approved payment as-is (income retained)
+   *   - REOPEN     → reopen each payment back to reconciliation review (the
+   *                  guarded reopen also reverts the booking's paymentStatus)
+   * Returns the affected transaction ids so the caller can annotate the audit log.
+   * A no-op (empty list) when nothing approved is linked.
+   */
+  private async resolveLinkedApprovedPayments(
+    condominiumId: string,
+    eventId: string,
+    userId: string,
+    paidLinkAction: PaidLinkActionDto | undefined,
+  ): Promise<string[]> {
+    const linked = await this.prisma.transaction.findMany({
+      where: {
+        condominiumId,
+        matchedCalendarEventId: eventId,
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+      },
+      select: { id: true },
+    });
+    if (linked.length === 0) return [];
+
+    if (!paidLinkAction) {
+      throw new ConflictException({
+        code: 'PAID_BOOKING_LINKED',
+        reason:
+          'This terrace booking has an approved payment linked. Choose whether to keep the recorded income or reopen the payment before cancelling.',
+        linkedTransactionIds: linked.map((t) => t.id),
+      });
+    }
+
+    if (paidLinkAction === PaidLinkActionDto.REOPEN) {
+      // Reuse the guarded reopen: it asserts state, reverts the booking
+      // paymentStatus (other-payer aware), audits, and recomputes summaries.
+      for (const t of linked) {
+        await this.reconciliationLifecycle.reopenTransaction(condominiumId, t.id, userId);
+      }
+    }
+
+    return linked.map((t) => t.id);
+  }
+
   async findAll(
     condominiumId: string,
     query: ListCalendarEventsDto,
-    role: UserRole = UserRole.ROOT,
+    perms: ReadonlySet<string> = INTERNAL_FULL_ACCESS,
   ): Promise<PaginatedResult<unknown>> {
+    // CAL-028: never reflect the raw user-supplied value back in the error message —
+    // only enumerate the allowed values. The reflected input is an information-leak /
+    // log-injection vector with no diagnostic benefit over the allowed-values list.
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
-        `Invalid eventType: "${query.type}". Valid values: ${Object.values(EventType).join(', ')}`,
+        `Invalid eventType. Valid values: ${Object.values(EventType).join(', ')}`,
       );
     }
     if (query.status && !Object.values(EventStatus).includes(query.status as EventStatus)) {
       throw new BadRequestException(
-        `Invalid status: "${query.status}". Valid values: ${Object.values(EventStatus).join(', ')}`,
+        `Invalid status. Valid values: ${Object.values(EventStatus).join(', ')}`,
       );
     }
 
@@ -129,7 +229,7 @@ export class CalendarService {
     const baseFilter: Record<string, unknown> = { condominiumId, deletedAt: null };
     if (query.type) baseFilter.eventType = query.type;
     if (query.status) baseFilter.status = query.status;
-    const visibilityFilter = buildVisibilityFilter(role);
+    const visibilityFilter = buildVisibilityFilter(perms);
     if (visibilityFilter.visibility) baseFilter.visibility = visibilityFilter.visibility;
 
     const singleWhere: Record<string, unknown> = {
@@ -226,7 +326,10 @@ export class CalendarService {
     });
 
     const total = merged.length;
-    const data = merged.slice(skip, skip + limit);
+    const canManage = perms.has(CALENDAR_PERM.manage);
+    const data = merged
+      .slice(skip, skip + limit)
+      .map((e) => redactTerraceFinancials(e, canManage));
 
     return {
       data,
@@ -239,7 +342,11 @@ export class CalendarService {
     };
   }
 
-  async findOne(condominiumId: string, id: string, role: UserRole = UserRole.ROOT) {
+  async findOne(
+    condominiumId: string,
+    id: string,
+    perms: ReadonlySet<string> = INTERNAL_FULL_ACCESS,
+  ) {
     const event = await this.prisma.calendarEvent.findFirst({
       where: { id, condominiumId, deletedAt: null },
       include: {
@@ -253,11 +360,11 @@ export class CalendarService {
       throw new NotFoundException('Calendar event not found');
     }
 
-    if (!canSeeVisibility(role, event.visibility)) {
+    if (!canSeeVisibility(perms, event.visibility)) {
       throw new NotFoundException('Calendar event not found');
     }
 
-    return event;
+    return redactTerraceFinancials(event, perms.has(CALENDAR_PERM.manage));
   }
 
   async create(condominiumId: string, userId: string, dto: CreateCalendarEventDto) {
@@ -265,7 +372,7 @@ export class CalendarService {
     const end = new Date(dto.endDate);
 
     if (end <= start) {
-      throw new BadRequestException('endDate must be after startDate');
+      throw new BadRequestException('endDateAfterStart');
     }
 
     let resolvedMetadata: TerraceBookingMetadata | undefined;
@@ -275,7 +382,7 @@ export class CalendarService {
         select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
       });
       if (cs !== null && !cs.terraceBookingEnabled) {
-        throw new BadRequestException('Terrace bookings are disabled for this condominium');
+        throw new BadRequestException('terraceDisabled');
       }
       let defaults = TERRACE_BOOKING_DEFAULTS;
       if (!dto.metadata && cs) {
@@ -298,6 +405,17 @@ export class CalendarService {
       if (!resident) throw new NotFoundException('Resident not found');
     }
 
+    // CAL-023: parentEventId is persisted with a global Cascade FK, so an unvalidated
+    // id allows cross-tenant linkage and a nonexistent id surfaces as an unhandled
+    // P2003 (500). Scope it to the tenant exactly like residentId before persisting.
+    if (dto.parentEventId) {
+      const parent = await this.prisma.calendarEvent.findFirst({
+        where: { id: dto.parentEventId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!parent) throw new NotFoundException('Parent calendar event not found');
+    }
+
     assertRecurrenceAllowed(dto.eventType, dto.recurrenceRule, start);
     assertValidTimezone(dto.timezone);
 
@@ -313,9 +431,12 @@ export class CalendarService {
         select: { id: true },
       });
       if (conflict) {
-        throw new ConflictException(
-          'Terrace already booked for the requested time slot',
-        );
+        // CAL-046: stable machine code so the web can tell a terrace
+        // double-booking apart from any other 409 instead of assuming.
+        throw new ConflictException({
+          code: 'TERRACE_SLOT_CONFLICT',
+          reason: 'Terrace already booked for the requested time slot',
+        });
       }
     }
 
@@ -377,13 +498,13 @@ export class CalendarService {
     // Update is gated to ROOT/TENANT_ADMIN at the controller, so passing ROOT here
     // is correct: the existence/visibility check should never hide a row from an
     // admin during a write operation.
-    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
+    const existing = await this.findOne(condominiumId, id);
 
     const start = new Date(dto.startDate ?? existing.startDate);
     const end = new Date(dto.endDate ?? existing.endDate);
 
     if (end <= start) {
-      throw new BadRequestException('endDate must be after startDate');
+      throw new BadRequestException('endDateAfterStart');
     }
 
     if (dto.residentId && dto.residentId !== existing.residentId) {
@@ -391,6 +512,16 @@ export class CalendarService {
         where: { id: dto.residentId, condominiumId, deletedAt: null },
       });
       if (!resident) throw new NotFoundException('Resident not found');
+    }
+
+    // CAL-023: tenant-scope parentEventId on update too (see create) so a changed
+    // value can never link to another tenant's event or a nonexistent row.
+    if (dto.parentEventId && dto.parentEventId !== existing.parentEventId) {
+      const parent = await this.prisma.calendarEvent.findFirst({
+        where: { id: dto.parentEventId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!parent) throw new NotFoundException('Parent calendar event not found');
     }
 
     const effectiveType = dto.eventType ?? existing.eventType;
@@ -422,10 +553,31 @@ export class CalendarService {
         select: { id: true },
       });
       if (conflict) {
-        throw new ConflictException(
-          'Terrace already booked for the requested time slot',
-        );
+        // CAL-046: stable machine code so the web can tell a terrace
+        // double-booking apart from any other 409 instead of assuming.
+        throw new ConflictException({
+          code: 'TERRACE_SLOT_CONFLICT',
+          reason: 'Terrace already booked for the requested time slot',
+        });
       }
+    }
+
+    // CAL-011: cancelling a terrace booking that still has an approved payment
+    // linked needs an explicit keep/reopen decision before any state is written.
+    // Runs only on the PENDING/CONFIRMED → CANCELLED edge so an ordinary edit of
+    // an already-cancelled (or never-paid) booking is unaffected.
+    let reopenedPaymentIds: string[] = [];
+    const cancellingTerrace =
+      existing.eventType === EventType.TERRACE_BOOKING &&
+      effectiveStatus === EventStatus.CANCELLED &&
+      existing.status !== EventStatus.CANCELLED;
+    if (cancellingTerrace) {
+      reopenedPaymentIds = await this.resolveLinkedApprovedPayments(
+        condominiumId,
+        id,
+        userId,
+        dto.paidLinkAction,
+      );
     }
 
     const data: Record<string, unknown> = {};
@@ -466,7 +618,7 @@ export class CalendarService {
             select: { terraceBookingEnabled: true },
           });
           if (cs !== null && !cs.terraceBookingEnabled) {
-            throw new BadRequestException('Terrace bookings are disabled for this condominium');
+            throw new BadRequestException('terraceDisabled');
           }
         }
         const result = validateTerraceMetadata(dto.metadata);
@@ -490,7 +642,7 @@ export class CalendarService {
           select: { terraceBookingEnabled: true, terraceRentalAmount: true, terraceSecurityDepositAmount: true },
         });
         if (cs !== null && !cs.terraceBookingEnabled) {
-          throw new BadRequestException('Terrace bookings are disabled for this condominium');
+          throw new BadRequestException('terraceDisabled');
         }
         const defaults: TerraceBookingMetadata = cs
           ? {
@@ -506,12 +658,31 @@ export class CalendarService {
       }
     }
 
-    await this.prisma.calendarEvent.updateMany({
-      where: { id, condominiumId, deletedAt: null },
+    // CAL-006: when the client sends the version it edited against, gate the write
+    // on the event's updatedAt. A zero-row update then means the event changed
+    // under the open modal (e.g. a reconciliation flipped the booking PAID) — a
+    // blind save would silently revert paymentStatus, so reject with the same
+    // STALE_OVERRIDE contract transactions already use. Without expectedUpdatedAt
+    // the behavior is unchanged (last-write-wins, the pre-Phase-3 default).
+    const updateResult = await this.prisma.calendarEvent.updateMany({
+      where: {
+        id,
+        condominiumId,
+        deletedAt: null,
+        ...(dto.expectedUpdatedAt
+          ? { updatedAt: new Date(dto.expectedUpdatedAt) }
+          : {}),
+      },
       data,
     });
+    if (dto.expectedUpdatedAt && updateResult.count === 0) {
+      throw new ConflictException({
+        code: 'STALE_OVERRIDE',
+        reason: 'Calendar event was modified by another user. Refresh and try again.',
+      });
+    }
 
-    const updated = await this.findOne(condominiumId, id, UserRole.ROOT);
+    const updated = await this.findOne(condominiumId, id);
 
     await this.audit.log({
       condominiumId,
@@ -522,7 +693,15 @@ export class CalendarService {
       entityType: 'CalendarEvent',
       entityId: id,
       beforeState: existing,
-      afterState: updated,
+      // CAL-011: record the operator's keep/reopen decision on the audited cancel
+      // so the income disposition is traceable.
+      afterState: cancellingTerrace
+        ? {
+            ...updated,
+            paidLinkAction: dto.paidLinkAction ?? null,
+            reopenedPaymentIds,
+          }
+        : updated,
     });
 
     this.emitTerraceChange(
@@ -555,8 +734,26 @@ export class CalendarService {
     return updated;
   }
 
-  async remove(condominiumId: string, userId: string, id: string) {
-    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
+  async remove(
+    condominiumId: string,
+    userId: string,
+    id: string,
+    paidLinkAction?: PaidLinkActionDto,
+  ) {
+    const existing = await this.findOne(condominiumId, id);
+
+    // CAL-011: deleting a terrace booking with an approved payment still linked
+    // needs an explicit keep/reopen decision (same contract as cancel) before the
+    // row is soft-deleted and the income would silently orphan.
+    let reopenedPaymentIds: string[] = [];
+    if (existing.eventType === EventType.TERRACE_BOOKING) {
+      reopenedPaymentIds = await this.resolveLinkedApprovedPayments(
+        condominiumId,
+        id,
+        userId,
+        paidLinkAction,
+      );
+    }
 
     await this.prisma.calendarEvent.updateMany({
       where: { id, condominiumId, deletedAt: null },
@@ -572,6 +769,10 @@ export class CalendarService {
       entityType: 'CalendarEvent',
       entityId: id,
       beforeState: existing,
+      // CAL-011: trace the operator's keep/reopen decision on a paid-linked delete.
+      ...(existing.eventType === EventType.TERRACE_BOOKING
+        ? { afterState: { paidLinkAction: paidLinkAction ?? null, reopenedPaymentIds } }
+        : {}),
     });
 
     this.emitTerraceChange(

@@ -78,7 +78,13 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
 
   p('calendar.read', 'calendar', 'read', 'tenant'),
   p('calendar.manage', 'calendar', 'manage', 'tenant'),
-  p('calendar.bookings.manage', 'calendar', 'manage', 'tenant', 'bookings'),
+  // Visibility tiers (Phase 4 — CAL-001/032). Distinct action verbs (NOT `read`)
+  // keep them out of the broad READ() sweep, so each role is granted them
+  // explicitly. They gate which CalendarEventVisibility levels a caller can see:
+  // viewCouncil → +COUNCIL_ONLY, viewPrivate → +PRIVATE. `calendar.manage` already
+  // implies full visibility (a manager must see what it can edit). visibility.util.ts.
+  p('calendar.viewCouncil', 'calendar', 'viewCouncil', 'tenant'),
+  p('calendar.viewPrivate', 'calendar', 'viewPrivate', 'tenant'),
 
   p('communications.read', 'communications', 'read', 'tenant'),
   p('communications.send', 'communications', 'send', 'tenant'),
@@ -216,11 +222,15 @@ const CONDOMINO_PERMS = [
   'dashboard.read',
   'reports.read',
   'calendar.read',
+  // Auditor/council read-only sees PUBLIC + COUNCIL_ONLY calendar events (not
+  // PRIVATE). Distinct from calendar.read so a custom resident-equivalent role
+  // does not inherit it (Phase 4 — CAL-001).
+  'calendar.viewCouncil',
   'notifications.read',
-  // Auditor sees the dossier (standard + restricted) but NOT legal-confidential,
-  // and cannot manage it. Owner decision 2026-06-05.
+  // Auditor sees STANDARD dossier entries only — not RESTRICTED or LEGAL_CONFIDENTIAL.
+  // Aligns with dossier-filters.ts which already gates read_only to STANDARD-only.
+  // Phase 5 audit (RP-008): viewRestricted removed to close the API/UI mismatch.
   'residents.dossier.view',
-  'residents.dossier.viewRestricted',
   // ARCO export for compliance — read-only, scoped to the auditor's view tier.
   'residents.dossier.export',
   // ARCO request tracker: oversight (view), no manage.

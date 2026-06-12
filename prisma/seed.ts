@@ -14,6 +14,22 @@ import {
   EventType,
   EventStatus,
   ReconciliationRuleKind,
+  CollectionStatus,
+  UnitGeneralStatus,
+  FlowType,
+  ClassificationStatus,
+  MatchSource,
+  ReconciliationStatus,
+  ImportStatus,
+  PetType,
+  DossierCategory,
+  DossierSeverity,
+  DossierStatus,
+  DossierConfidentiality,
+  DossierEventType,
+  ArcoRequestType,
+  ArcoRequestStatus,
+  ArcoRequestEventType,
 } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import * as fs from 'fs';
@@ -352,6 +368,648 @@ function splitName(full: string): { firstName: string; lastName: string } {
 
 function csvResidentType(perfil: string): ResidentType {
   return perfil.toLowerCase().includes('residente') ? 'RESIDENT' : 'OWNER';
+}
+
+// ─── Dev-only rich resident 360 profiles (cotoalameda units 1–5) ─────────────
+// The resident profile screen (/residents/[id]) computes every KPI, chart and
+// timeline from CollectionRecord + Transaction history, and reads household,
+// dossier (antecedentes) and ARCO data — none of which the base seed creates, so
+// the demo resident's profile renders empty after every reset. This block gives
+// the first five Coto La Alameda units a complete, DETERMINISTIC 360 profile with
+// finances from Jan 2020 → last closed month, each unit a distinct financial
+// "personality" so the screen can be tested against many states:
+//   unit 1 → al corriente · unit 2 → moroso · unit 3 → mixto
+//   unit 4 → impecable (100%) · unit 5 → en recuperación (convenio)
+// DEV-ONLY: reached only from the destructive seed (the guard at the top of
+// main() blocks it in production) and scoped to the cotoalameda demo condo. It is
+// idempotent because the seed's cleanup deletes transactions/collection records/
+// household rows, and dossier + ARCO cascade-delete with the resident.
+
+type ProfileKind = 'current' | 'delinquent' | 'mixed' | 'excellent' | 'recovering';
+
+interface YearMonth {
+  year: number;
+  month: number; // 1–12
+}
+
+interface MonthPlan extends YearMonth {
+  status: CollectionStatus;
+  generalStatus: UnitGeneralStatus;
+  amountPaid: number;
+  paymentDate: Date | null;
+  flags: string[];
+}
+
+const PROFILE_HISTORY_START: YearMonth = { year: 2020, month: 1 };
+
+function utcDate(ym: YearMonth, day: number): Date {
+  return new Date(Date.UTC(ym.year, ym.month - 1, day));
+}
+
+function addDays(base: Date, days: number): Date {
+  return new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+// Inclusive list of months from start → end (oldest first).
+function monthRange(start: YearMonth, end: YearMonth): YearMonth[] {
+  const out: YearMonth[] = [];
+  let y = start.year;
+  let m = start.month;
+  while (y < end.year || (y === end.year && m <= end.month)) {
+    out.push({ year: y, month: m });
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return out;
+}
+
+// Last fully-closed month relative to today, so an in-progress current month is
+// never mistaken for a missed payment.
+function lastClosedMonth(): YearMonth {
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  let month = now.getUTCMonth() + 1; // current month, 1–12
+  month -= 1;
+  if (month === 0) {
+    month = 12;
+    year -= 1;
+  }
+  return { year, month };
+}
+
+function generalStatusFor(status: CollectionStatus, recentDelinquent: boolean): UnitGeneralStatus {
+  switch (status) {
+    case CollectionStatus.UNPAID:
+      return recentDelinquent ? UnitGeneralStatus.DELINQUENT : UnitGeneralStatus.IN_DEBT;
+    case CollectionStatus.PARTIAL:
+      return UnitGeneralStatus.PARTIAL;
+    case CollectionStatus.AGREEMENT:
+      return UnitGeneralStatus.AGREEMENT;
+    default:
+      return UnitGeneralStatus.CURRENT;
+  }
+}
+
+// Deterministic per-month payment plan for a profile kind. Returns the months and
+// the final outstanding balance (0 for every kind except `delinquent`, which is
+// deliberately left in arrears).
+function buildMonthlyPlan(
+  kind: ProfileKind,
+  fee: number,
+  months: YearMonth[],
+): { plan: MonthPlan[]; outstanding: number } {
+  const n = months.length;
+  const recentUnpaidStart = n - 9; // delinquent: last ~9 months unpaid
+
+  const plan: MonthPlan[] = months.map((ym, i) => {
+    let status: CollectionStatus = CollectionStatus.PAID_ON_TIME;
+    let amountPaid = fee;
+    let recentDelinquent = false;
+
+    if (kind === 'excellent') {
+      // Every month paid on time — pristine record.
+    } else if (kind === 'current') {
+      if (i % 17 === 5) status = CollectionStatus.PAID_LATE; // paid in full, just late
+    } else if (kind === 'mixed') {
+      if (i === 4 || i === 5) {
+        status = CollectionStatus.UNPAID;
+        amountPaid = 0;
+      } else if (i % 13 === 7) {
+        status = CollectionStatus.PARTIAL;
+        amountPaid = Math.round(fee / 2);
+      } else if (i % 11 === 3) {
+        status = CollectionStatus.PAID_LATE;
+      }
+    } else if (kind === 'recovering') {
+      if (ym.year === 2021 || ym.year === 2022) {
+        const r = i % 3;
+        if (r === 0) {
+          status = CollectionStatus.UNPAID;
+          amountPaid = 0;
+        } else if (r === 1) {
+          status = CollectionStatus.PARTIAL;
+          amountPaid = Math.round(fee / 2);
+        } else {
+          status = CollectionStatus.PAID_LATE;
+        }
+      }
+      if (ym.year === 2023 && ym.month === 1) {
+        status = CollectionStatus.AGREEMENT; // payment agreement entered, then on time
+        amountPaid = fee;
+      }
+    } else if (kind === 'delinquent') {
+      if (i >= recentUnpaidStart) {
+        status = CollectionStatus.UNPAID;
+        amountPaid = 0;
+        recentDelinquent = true;
+      } else if (i % 19 === 9) {
+        status = CollectionStatus.PAID_LATE;
+      }
+    }
+
+    const day = status === CollectionStatus.PAID_LATE ? 15 : status === CollectionStatus.PARTIAL ? 20 : 5;
+    const flags =
+      status === CollectionStatus.UNPAID
+        ? ['OVERDUE']
+        : status === CollectionStatus.PAID_LATE
+          ? ['LATE']
+          : status === CollectionStatus.PARTIAL
+            ? ['PARTIAL']
+            : [];
+
+    return {
+      ...ym,
+      status,
+      generalStatus: generalStatusFor(status, recentDelinquent),
+      amountPaid,
+      paymentDate: amountPaid > 0 ? utcDate(ym, day) : null,
+      flags,
+    };
+  });
+
+  let outstanding = plan.reduce((sum, p) => sum + (fee - p.amountPaid), 0);
+
+  // Every non-delinquent profile ends "caught up": settle the accumulated
+  // deficit with a top-up on the last month so summary.balance lands at 0 and the
+  // "Balance en el tiempo" curve returns to zero.
+  if (kind !== 'delinquent' && outstanding > 0) {
+    const last = plan[plan.length - 1];
+    last.status = CollectionStatus.PAID_ON_TIME;
+    last.generalStatus = UnitGeneralStatus.CURRENT;
+    last.amountPaid += outstanding;
+    last.paymentDate = last.paymentDate ?? utcDate(last, 5);
+    last.flags = [];
+    outstanding = 0;
+  }
+
+  return { plan, outstanding };
+}
+
+// Per-unit household / documentation / antecedentes / ARCO content. Keyed by unit
+// number; user-visible content is Spanish (demo data), identifiers English.
+interface ProfileSpec {
+  kind: ProfileKind;
+  documentation: Record<string, boolean>;
+  additionalResidents: Array<{
+    name: string;
+    residentType: ResidentType;
+    relationship: string;
+    phone?: string;
+    email?: string;
+  }>;
+  vehicles: Array<{ make: string; model: string; color: string; plates: string; hasTag: boolean }>;
+  pets: Array<{ name: string; petType: PetType; description: string }>;
+  dossier: Array<{
+    category: DossierCategory;
+    severity: DossierSeverity;
+    status: DossierStatus;
+    confidentiality: DossierConfidentiality;
+    title: string;
+    description: string;
+    referenceFolio?: string;
+    amount?: number;
+    occurredAt: Date;
+    resolvedAt?: Date;
+  }>;
+  arco: Array<{
+    type: ArcoRequestType;
+    status: ArcoRequestStatus;
+    channel: string;
+    description: string;
+    resolution?: string;
+    referenceFolio?: string;
+    receivedAt: Date;
+    resolvedAt?: Date;
+  }>;
+}
+
+const ALL_DOCS_TRUE = {
+  propertyTax: true,
+  titleDeed: true,
+  ownerDocumentation: true,
+  nationalId: true,
+  proofOfAddress: true,
+};
+
+function buildProfileSpecs(): Record<string, ProfileSpec> {
+  return {
+    // ── Unit 1 — Jose Manuel Parra Salazar — al corriente ─────────────────────
+    '1': {
+      kind: 'current',
+      documentation: { ...ALL_DOCS_TRUE },
+      additionalResidents: [
+        { name: 'Maria Fernanda Salazar de Parra', residentType: 'CO_OWNER', relationship: 'Cónyuge', phone: '3320742345', email: 'fer.salazar@hotmail.com' },
+        { name: 'Diego Parra Salazar', residentType: 'RESIDENT', relationship: 'Hijo' },
+      ],
+      vehicles: [
+        { make: 'Mazda', model: 'CX-5', color: 'Gris', plates: 'JAL-1001', hasTag: true },
+        { make: 'Toyota', model: 'Corolla', color: 'Blanco', plates: 'JAL-1002', hasTag: true },
+      ],
+      pets: [{ name: 'Rocky', petType: 'DOG', description: 'Labrador, tamaño grande' }],
+      dossier: [
+        {
+          category: 'COEXISTENCE',
+          severity: 'LOW',
+          status: 'RESOLVED',
+          confidentiality: 'STANDARD',
+          title: 'Queja por ruido en evento familiar',
+          description: 'Vecino reportó música alta una noche. Se conversó con el residente y se resolvió de inmediato.',
+          referenceFolio: 'ACTA-2022-014',
+          occurredAt: new Date(Date.UTC(2022, 6, 9)),
+          resolvedAt: new Date(Date.UTC(2022, 6, 12)),
+        },
+      ],
+      arco: [
+        {
+          type: 'ACCESS',
+          status: 'COMPLETED',
+          channel: 'Correo electrónico',
+          description: 'El titular solicitó copia de los datos personales que el condominio conserva sobre él.',
+          resolution: 'Se entregó el paquete de acceso ARCO con la información resguardada.',
+          referenceFolio: 'ARCO-2024-003',
+          receivedAt: new Date(Date.UTC(2024, 1, 5)),
+          resolvedAt: new Date(Date.UTC(2024, 1, 12)),
+        },
+      ],
+    },
+
+    // ── Unit 2 — Alicia Becerra Gomez — morosa ────────────────────────────────
+    '2': {
+      kind: 'delinquent',
+      documentation: { propertyTax: false, titleDeed: true, ownerDocumentation: true, nationalId: true, proofOfAddress: false },
+      additionalResidents: [
+        { name: 'Karen Saldierna Becerra', residentType: 'RESIDENT', relationship: 'Hija', phone: '4431335560' },
+      ],
+      vehicles: [{ make: 'Nissan', model: 'Versa', color: 'Plata', plates: 'JAL-2001', hasTag: false }],
+      pets: [{ name: 'Michu', petType: 'CAT', description: 'Gato doméstico, esterilizado' }],
+      dossier: [
+        {
+          category: 'SANCTION',
+          severity: 'MEDIUM',
+          status: 'OPEN',
+          confidentiality: 'RESTRICTED',
+          title: 'Multa por adeudo de cuotas de mantenimiento',
+          description: 'Sanción aplicada por adeudo acumulado de cuotas ordinarias conforme al reglamento interno.',
+          referenceFolio: 'SAN-2026-007',
+          amount: 1500,
+          occurredAt: new Date(Date.UTC(2026, 1, 15)),
+        },
+        {
+          category: 'COEXISTENCE',
+          severity: 'LOW',
+          status: 'IN_PROGRESS',
+          confidentiality: 'STANDARD',
+          title: 'Estacionamiento en cajón ajeno',
+          description: 'Se reportó uso del cajón de otro residente. En seguimiento con la administración.',
+          referenceFolio: 'ACTA-2025-031',
+          occurredAt: new Date(Date.UTC(2025, 10, 3)),
+        },
+      ],
+      arco: [
+        {
+          type: 'RECTIFICATION',
+          status: 'IN_REVIEW',
+          channel: 'En persona',
+          description: 'La titular solicitó corregir su número de teléfono y correo registrados.',
+          referenceFolio: 'ARCO-2026-001',
+          receivedAt: new Date(Date.UTC(2026, 2, 2)),
+        },
+      ],
+    },
+
+    // ── Unit 3 — Miguel Arnoldo Gonzalez Padilla — mixto ──────────────────────
+    '3': {
+      kind: 'mixed',
+      documentation: { propertyTax: true, titleDeed: false, ownerDocumentation: true, nationalId: true, proofOfAddress: true },
+      additionalResidents: [
+        { name: 'Laura Padilla Mendez', residentType: 'RESIDENT', relationship: 'Cónyuge', phone: '3312512533' },
+        { name: 'Sofia Gonzalez Padilla', residentType: 'RESIDENT', relationship: 'Hija' },
+      ],
+      vehicles: [
+        { make: 'Volkswagen', model: 'Jetta', color: 'Negro', plates: 'JAL-3001', hasTag: true },
+        { make: 'Honda', model: 'CR-V', color: 'Azul', plates: 'JAL-3002', hasTag: true },
+      ],
+      pets: [
+        { name: 'Max', petType: 'DOG', description: 'Beagle, tamaño mediano' },
+        { name: 'Luna', petType: 'CAT', description: 'Gata persa' },
+      ],
+      dossier: [
+        {
+          category: 'COEXISTENCE',
+          severity: 'LOW',
+          status: 'RESOLVED',
+          confidentiality: 'STANDARD',
+          title: 'Queja por ladridos de mascota',
+          description: 'Vecino reportó ladridos recurrentes. Se acordó horario de paseo y se resolvió.',
+          referenceFolio: 'ACTA-2023-022',
+          occurredAt: new Date(Date.UTC(2023, 4, 18)),
+          resolvedAt: new Date(Date.UTC(2023, 5, 2)),
+        },
+      ],
+      arco: [],
+    },
+
+    // ── Unit 4 — Oscar Aldair Llanes Contreras — impecable ────────────────────
+    '4': {
+      kind: 'excellent',
+      documentation: { ...ALL_DOCS_TRUE },
+      additionalResidents: [
+        { name: 'Andrea Contreras Ruiz', residentType: 'RESIDENT', relationship: 'Cónyuge', phone: '3312560024' },
+      ],
+      vehicles: [
+        { make: 'Tesla', model: 'Model 3', color: 'Blanco', plates: 'JAL-4001', hasTag: true },
+        { make: 'Mazda', model: '3 Sedán', color: 'Rojo', plates: 'JAL-4002', hasTag: true },
+      ],
+      pets: [],
+      dossier: [],
+      arco: [],
+    },
+
+    // ── Unit 5 — Jose de Jesus Estrella Jimenez — en recuperación ─────────────
+    '5': {
+      kind: 'recovering',
+      documentation: { propertyTax: true, titleDeed: true, ownerDocumentation: false, nationalId: true, proofOfAddress: true },
+      additionalResidents: [
+        { name: 'Mariana Jimenez de Estrella', residentType: 'RESIDENT', relationship: 'Cónyuge', phone: '3171067606' },
+        { name: 'Emilio Estrella Jimenez', residentType: 'RESIDENT', relationship: 'Hijo' },
+        { name: 'Valentina Estrella Jimenez', residentType: 'RESIDENT', relationship: 'Hija' },
+      ],
+      vehicles: [{ make: 'Chevrolet', model: 'Aveo', color: 'Gris', plates: 'JAL-5001', hasTag: true }],
+      pets: [{ name: 'Thor', petType: 'DOG', description: 'Pitbull, registrado como raza de manejo especial' }],
+      dossier: [
+        {
+          category: 'LEGAL',
+          severity: 'MEDIUM',
+          status: 'RESOLVED',
+          confidentiality: 'LEGAL_CONFIDENTIAL',
+          title: 'Convenio de pago por adeudo histórico',
+          description: 'Se formalizó convenio de pago para regularizar el adeudo 2021–2022. Cumplido en su totalidad.',
+          referenceFolio: 'CONV-2023-002',
+          amount: 9000,
+          occurredAt: new Date(Date.UTC(2023, 0, 10)),
+          resolvedAt: new Date(Date.UTC(2023, 11, 20)),
+        },
+        {
+          category: 'DANGEROUS_PET',
+          severity: 'LOW',
+          status: 'RESOLVED',
+          confidentiality: 'STANDARD',
+          title: 'Registro de mascota de manejo especial',
+          description: 'Se registró perro de raza de manejo especial; se verificó documentación, vacunas y bozal.',
+          referenceFolio: 'ACTA-2023-040',
+          occurredAt: new Date(Date.UTC(2023, 7, 5)),
+          resolvedAt: new Date(Date.UTC(2023, 7, 15)),
+        },
+      ],
+      arco: [
+        {
+          type: 'OPPOSITION',
+          status: 'COMPLETED',
+          channel: 'Correo electrónico',
+          description: 'El titular se opuso al uso de su teléfono para comunicaciones promocionales del condominio.',
+          resolution: 'Se excluyó al titular de las listas de difusión promocional.',
+          referenceFolio: 'ARCO-2024-009',
+          receivedAt: new Date(Date.UTC(2024, 8, 1)),
+          resolvedAt: new Date(Date.UTC(2024, 8, 9)),
+        },
+      ],
+    },
+  };
+}
+
+async function seedDevResidentProfiles(): Promise<void> {
+  const condo = await prisma.condominium.findUnique({ where: { slug: 'cotoalameda' } });
+  if (!condo) {
+    console.log('⚠️  Skipping rich resident profiles: cotoalameda condo not found');
+    return;
+  }
+  const condoId = condo.id;
+  const fee = CONDO_DEFINITIONS[0].settings.ordinaryFeeAmount;
+
+  const importer = await prisma.user.findFirst({
+    where: { condominiumId: condoId },
+    orderBy: { createdAt: 'asc' },
+  });
+  if (!importer) {
+    console.log('⚠️  Skipping rich resident profiles: no cotoalameda user to attribute the import batch');
+    return;
+  }
+
+  const specs = buildProfileSpecs();
+  const months = monthRange(PROFILE_HISTORY_START, lastClosedMonth());
+
+  // One synthetic import batch parents all seeded payment transactions (the FK is
+  // required). It is wiped + recreated on each seed run.
+  const batch = await prisma.importBatch.create({
+    data: {
+      condominiumId: condoId,
+      importedById: importer.id,
+      fileName: 'seed-historico-residentes-2020.xlsx',
+      fileType: 'xlsx',
+      fileSizeBytes: 0,
+      fileHash: 'seed-resident-profiles-2020',
+      status: ImportStatus.COMPLETED,
+    },
+  });
+
+  let totalCr = 0;
+  let totalTx = 0;
+  let totalHousehold = 0;
+  let totalDossier = 0;
+  let totalArco = 0;
+
+  for (const unit of Object.keys(specs)) {
+    const spec = specs[unit];
+    const resident = await prisma.resident.findFirst({
+      where: { condominiumId: condoId, unitNumberNormalized: unit },
+    });
+    if (!resident) {
+      console.log(`⚠️  Unit ${unit} not found in cotoalameda — skipping its profile`);
+      continue;
+    }
+    const residentId = resident.id;
+    const payerName = `${resident.firstName} ${resident.lastName}`.trim();
+
+    const { plan, outstanding } = buildMonthlyPlan(spec.kind, fee, months);
+
+    // Collection records (one per month) + payment transactions (paid months).
+    const collectionData = plan.map((p) => ({
+      condominiumId: condoId,
+      residentId,
+      year: p.year,
+      month: p.month,
+      status: p.status,
+      generalStatus: p.generalStatus,
+      amountExpected: fee,
+      amountPaid: p.amountPaid,
+      paymentDate: p.paymentDate,
+      flags: p.flags,
+    }));
+
+    const txData: Prisma.TransactionCreateManyInput[] = [];
+    let cumExpected = 0;
+    let cumPaid = 0;
+    for (const p of plan) {
+      cumExpected += fee;
+      cumPaid += p.amountPaid;
+      if (p.amountPaid > 0 && p.paymentDate) {
+        txData.push({
+          condominiumId: condoId,
+          importBatchId: batch.id,
+          residentId,
+          transactionDate: p.paymentDate,
+          description: `Pago mantenimiento ${pad2(p.month)}/${p.year} - Unidad ${unit}`,
+          credits: p.amountPaid,
+          balance: Math.max(0, cumExpected - cumPaid),
+          flowType: FlowType.INCOME,
+          category: 'Mantenimiento',
+          paymentConcept: 'maintenance',
+          reference: `SEED-${unit}-${p.year}${pad2(p.month)}`,
+          payerName,
+          unitNumberDetected: unit,
+          paymentPeriodYear: p.year,
+          paymentPeriodMonth: p.month,
+          classificationStatus: ClassificationStatus.AUTO,
+          matchSource: MatchSource.AUTO_UNIT_NUMBER,
+          confidenceScore: 1,
+          matchedAt: p.paymentDate,
+          reconciliationStatus: ReconciliationStatus.APPROVED,
+        });
+      }
+    }
+
+    await prisma.collectionRecord.createMany({ data: collectionData });
+    if (txData.length) await prisma.transaction.createMany({ data: txData });
+    totalCr += collectionData.length;
+    totalTx += txData.length;
+
+    // Household: additional residents, vehicles, pets.
+    if (spec.additionalResidents.length) {
+      await prisma.additionalResident.createMany({
+        data: spec.additionalResidents.map((a) => ({
+          residentId,
+          name: a.name,
+          residentType: a.residentType,
+          relationship: a.relationship,
+          phone: a.phone ?? null,
+          email: a.email ?? null,
+        })),
+      });
+      totalHousehold += spec.additionalResidents.length;
+    }
+    if (spec.vehicles.length) {
+      await prisma.vehicle.createMany({
+        data: spec.vehicles.map((v) => ({
+          residentId,
+          condominiumId: condoId,
+          make: v.make,
+          model: v.model,
+          color: v.color,
+          plates: v.plates,
+          hasTag: v.hasTag,
+        })),
+      });
+      totalHousehold += spec.vehicles.length;
+    }
+    if (spec.pets.length) {
+      await prisma.pet.createMany({
+        data: spec.pets.map((p) => ({
+          residentId,
+          condominiumId: condoId,
+          name: p.name,
+          petType: p.petType,
+          description: p.description,
+        })),
+      });
+      totalHousehold += spec.pets.length;
+    }
+
+    // Antecedentes (dossier) — each entry gets a CREATED event for its timeline.
+    for (const d of spec.dossier) {
+      await prisma.residentDossierEntry.create({
+        data: {
+          condominiumId: condoId,
+          residentId,
+          category: d.category,
+          severity: d.severity,
+          status: d.status,
+          confidentiality: d.confidentiality,
+          title: d.title,
+          description: d.description,
+          referenceFolio: d.referenceFolio ?? null,
+          amount: d.amount ?? null,
+          occurredAt: d.occurredAt,
+          resolvedAt: d.resolvedAt ?? null,
+          createdBy: importer.id,
+          events: {
+            create: [
+              {
+                condominiumId: condoId,
+                type: DossierEventType.CREATED,
+                toStatus: d.status,
+                note: 'Registro creado (seed de demostración).',
+                createdBy: importer.id,
+              },
+            ],
+          },
+        },
+      });
+      totalDossier += 1;
+    }
+
+    // ARCO requests — each gets a CREATED event; dueDate denormalized (~12 days).
+    for (const a of spec.arco) {
+      await prisma.arcoRequest.create({
+        data: {
+          condominiumId: condoId,
+          residentId,
+          type: a.type,
+          status: a.status,
+          channel: a.channel,
+          description: a.description,
+          resolution: a.resolution ?? null,
+          referenceFolio: a.referenceFolio ?? null,
+          receivedAt: a.receivedAt,
+          dueDate: addDays(a.receivedAt, 12),
+          resolvedAt: a.resolvedAt ?? null,
+          createdBy: importer.id,
+          events: {
+            create: [
+              {
+                condominiumId: condoId,
+                type: ArcoRequestEventType.CREATED,
+                toStatus: a.status,
+                note: 'Solicitud registrada (seed de demostración).',
+                createdBy: importer.id,
+              },
+            ],
+          },
+        },
+      });
+      totalArco += 1;
+    }
+
+    // Keep the resident header consistent with the seeded history.
+    await prisma.resident.update({
+      where: { id: residentId },
+      data: {
+        debt: outstanding,
+        paymentStatus: outstanding > 0 ? PaymentStatus.OVERDUE : PaymentStatus.CURRENT,
+        documentation: spec.documentation,
+      },
+    });
+  }
+
+  console.log(
+    `✅ Rich resident profiles (cotoalameda u1–5): ${totalCr} collection records, ${totalTx} transactions, ${totalHousehold} household rows, ${totalDossier} dossier, ${totalArco} ARCO`,
+  );
 }
 
 async function main() {
@@ -1067,6 +1725,9 @@ async function main() {
     ],
   });
   console.log('✅ Calendar events: 6');
+
+  // ─── Rich dev-only 360 profiles for cotoalameda units 1–5 ──────────────────
+  await seedDevResidentProfiles();
 
   // ─── Summary ───────────────────────────────────────────────────────────────
   console.log('\n✨ Seed completed successfully!');

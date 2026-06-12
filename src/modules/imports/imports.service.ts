@@ -8,9 +8,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import * as Sentry from '@sentry/nestjs';
 import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
+import { sumAmounts } from '../../common/utils/money.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ClassificationService } from '../classification/classification.service';
@@ -18,8 +20,18 @@ import { StorageService } from '../storage/storage.service';
 import { SettingsService } from '../settings/settings.service';
 import { ConfirmImportDto, ParsedTransactionDto } from './dto/confirm-import.dto';
 import { ListImportBatchesDto } from './dto/list-import-batches.dto';
-import { ImportsParserService, buildPeriods, ImportProfileMismatchError } from './parser';
+import {
+  ImportsParserService,
+  buildPeriods,
+  computeFinalBalance,
+  ImportProfileMismatchError,
+} from './parser';
+import { STALE_PROCESSING_MS } from './imports.constants';
 import type { ParsedRow as ServerParsedRow, PreviewFileResult, PreviewApiResponse } from './parser';
+import {
+  BALANCE_DISCONTINUITY_THRESHOLD,
+  validateBalanceContinuity,
+} from './parser/balance-continuity';
 import { BankProfilesService } from '../bank-profiles/bank-profiles.service';
 import {
   IMPORT_COMPLETED_EVENT,
@@ -63,11 +75,15 @@ function isPdfMagicBytes(buffer: Buffer): boolean {
 
 // CLAUDE.md §11 Stage 3 — abort if the ratio of domain-invalid rows exceeds 30 %.
 const INVALID_ROWS_THRESHOLD = 0.30;
+// ENGINE-028 — cap on per-row validation errors echoed in the preview payload.
+const VALIDATION_SAMPLE_LIMIT = 20;
 
 export type RowErrorField =
   | 'date'
   | 'charges'
   | 'credits'
+  | 'balance'
+  | 'amounts'
   | 'description'
   | 'flowType';
 
@@ -95,7 +111,20 @@ interface ParsedRow {
   transactionNumber?: string;
   time?: string;
   receipt?: string;
+  // ENGINE-029/030 — money cells the parser refused to guess about; each one
+  // becomes a precise row error below (mirrors parser/types.ts AmountParseIssue).
+  parseIssues?: Array<{
+    field: 'charges' | 'credits' | 'balance';
+    issue: 'ambiguousDecimal' | 'unparseable';
+    raw: string;
+  }>;
 }
+
+const PARSE_ISSUE_MESSAGES: Record<'ambiguousDecimal' | 'unparseable', string> = {
+  ambiguousDecimal:
+    "Ambiguous decimal format (e.g. '1.234,56') — amounts must use the 1,234.56 convention",
+  unparseable: 'Amount could not be parsed',
+};
 
 function validateRows<T extends ParsedRow>(
   rows: T[],
@@ -120,11 +149,45 @@ function validateRows<T extends ParsedRow>(
       }
     }
 
-    if (!Number.isFinite(row.charges) || row.charges < 0) {
+    // ENGINE-029/030 — parser-flagged money cells get a precise reason and
+    // suppress the generic finite checks for those fields (no double count).
+    const flaggedFields = new Set<string>();
+    for (const issue of row.parseIssues ?? []) {
+      flaggedFields.add(issue.field);
+      rowErrors.push({
+        rowIndex,
+        field: issue.field,
+        message: `${PARSE_ISSUE_MESSAGES[issue.issue]} (got '${issue.raw}')`,
+      });
+    }
+
+    if (!flaggedFields.has('charges') && (!Number.isFinite(row.charges) || row.charges < 0)) {
       rowErrors.push({ rowIndex, field: 'charges', message: 'Charges must be a finite, non-negative number' });
     }
-    if (!Number.isFinite(row.credits) || row.credits < 0) {
+    if (!flaggedFields.has('credits') && (!Number.isFinite(row.credits) || row.credits < 0)) {
       rowErrors.push({ rowIndex, field: 'credits', message: 'Credits must be a finite, non-negative number' });
+    }
+    // ENGINE-027 groundwork — a NaN balance would otherwise die at the
+    // Postgres Decimal cast during confirm.
+    if (!flaggedFields.has('balance') && !Number.isFinite(row.balance)) {
+      rowErrors.push({ rowIndex, field: 'balance', message: 'Balance must be a finite number' });
+    }
+
+    // ENGINE-053 — a row carrying BOTH a charge and a credit is counted
+    // differently by batch totals, monthly summaries, and CSV export; the
+    // source file must split it into two single-sided rows.
+    if (
+      Number.isFinite(row.charges) &&
+      Number.isFinite(row.credits) &&
+      row.charges > 0 &&
+      row.credits > 0
+    ) {
+      rowErrors.push({
+        rowIndex,
+        field: 'amounts',
+        message:
+          'Row has both a charge and a credit; split it into two single-sided rows in the source file',
+      });
     }
 
     if (!row.description || row.description.trim().length === 0) {
@@ -155,8 +218,11 @@ function validateRows<T extends ParsedRow>(
 
 // UF-001 reconciliation — compare client preview rows to server-parsed rows.
 // Server rows are the persistence source of truth; the diff is informational
-// (audit trail only). Matching is positional after sorting by date+description
-// to be resilient to insertion order differences across parser versions.
+// (audit trail only). Matching is positional after sorting both sides by
+// (date, description, amount, balance) — ENGINE-051 — so the comparison is an
+// effective multiset equality: resilient to emission-order differences across
+// parser versions while still catching every value or row-count tamper.
+// Sample `rowIndex` values refer to the SORTED order, not the file order.
 export interface ReconciliationSample {
   rowIndex: number;
   field: 'date' | 'description' | 'amount' | 'balance' | 'rowCount';
@@ -175,12 +241,36 @@ function normalizeForCompare(s: string): string {
   return s.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+type ReconcilableRow = {
+  date: string;
+  description: string;
+  charges?: number | null;
+  credits?: number | null;
+  balance?: number | null;
+};
+
+// ENGINE-051 — canonical row ordering shared by both sides of the
+// reconciliation. Sorting makes the positional compare order-resilient.
+function compareReconcilableRows(a: ReconcilableRow, b: ReconcilableRow): number {
+  if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+  const descA = normalizeForCompare(a.description);
+  const descB = normalizeForCompare(b.description);
+  if (descA !== descB) return descA < descB ? -1 : 1;
+  const amountA = (a.credits ?? 0) - (a.charges ?? 0);
+  const amountB = (b.credits ?? 0) - (b.charges ?? 0);
+  if (amountA !== amountB) return amountA - amountB;
+  return (a.balance ?? 0) - (b.balance ?? 0);
+}
+
 function reconcileRows(
-  clientRows: ParsedTransactionDto[],
-  serverRows: ServerParsedRow[],
+  clientRowsInput: ParsedTransactionDto[],
+  serverRowsInput: ServerParsedRow[],
 ): ReconciliationReport {
   const sampleMismatches: ReconciliationSample[] = [];
   let mismatchCount = 0;
+
+  const clientRows = [...clientRowsInput].sort(compareReconcilableRows);
+  const serverRows = [...serverRowsInput].sort(compareReconcilableRows);
 
   const len = Math.max(clientRows.length, serverRows.length);
   for (let i = 0; i < len; i++) {
@@ -469,6 +559,9 @@ export class ImportsService {
       result: 'SUCCESS',
       afterState: {
         fileCount: files.length,
+        // ENGINE-062 (explicit policy): the immutable audit trail keeps the
+        // ORIGINAL filename — evidence-chain value, access already gated by
+        // audit.read. Application/info logs use the sanitized name instead.
         fileNames: files.map((f) => f.originalname),
         fileSizes: files.map((f) => f.size),
       },
@@ -562,7 +655,9 @@ export class ImportsService {
       }
 
       const { file, fileHash } = plan;
-      this.logger.log(`upload: file=${file.originalname}, size=${file.size}B, mime=${file.mimetype}`);
+      // ENGINE-062: info logs carry the sanitized name only — bank filenames can
+      // incidentally embed account identifiers (the audit trail keeps the original).
+      this.logger.log(`upload: file=${this.sanitizeFileName(file.originalname)}, size=${file.size}B, mime=${file.mimetype}`);
 
       const duplicate = dedupByHash.get(fileHash);
 
@@ -595,18 +690,63 @@ export class ImportsService {
 
       const fileType = file.mimetype.includes('pdf') ? 'pdf' : 'xlsx';
 
-      const batch = await this.prisma.importBatch.create({
-        data: {
-          condominiumId,
-          importedById: user.sub,
-          fileName: file.originalname,
-          fileType,
-          fileSizeBytes: file.size,
-          fileHash,
-          status: 'PENDING',
-        },
-        include: { _count: { select: { transactions: true } } },
-      });
+      let batch: BatchWithCount;
+      try {
+        batch = await this.prisma.importBatch.create({
+          data: {
+            condominiumId,
+            importedById: user.sub,
+            fileName: file.originalname,
+            fileType,
+            fileSizeBytes: file.size,
+            fileHash,
+            status: 'PENDING',
+          },
+          include: { _count: { select: { transactions: true } } },
+        });
+      } catch (err) {
+        // ENGINE-017 — a genuinely concurrent upload of the same file lost the
+        // race against the partial unique index (condominiumId, fileHash)
+        // WHERE status <> 'FAILED'. Re-fetch the winner and route it through
+        // the same duplicate semantics the up-front check applies.
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === 'P2002'
+        ) {
+          const winner = await this.prisma.importBatch.findFirst({
+            where: { condominiumId, fileHash, status: { not: 'FAILED' } },
+            include: { _count: { select: { transactions: true } } },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (winner) {
+            this.logger.log(
+              `upload: P2002 race lost — returning existing live batch id=${winner.id} status=${winner.status}`,
+            );
+            dedupByHash.set(fileHash, winner);
+            if (
+              winner.status === 'COMPLETED' &&
+              winner._count.transactions > 0
+            ) {
+              results.push({
+                fileName: file.originalname,
+                status: 'duplicate',
+                code: 'DUPLICATE_FILE',
+                message: 'File already imported',
+                existingBatchId: winner.id,
+              });
+            } else {
+              results.push({
+                fileName: file.originalname,
+                status: 'queued',
+                batchId: winner.id,
+                message: 'File already queued',
+              });
+            }
+            continue;
+          }
+        }
+        throw err;
+      }
 
       dedupByHash.set(fileHash, batch);
 
@@ -618,9 +758,11 @@ export class ImportsService {
       if (this.storage.isConfigured()) {
         const storageKey = `condominiums/${condominiumId}/imports/${batch.id}/${this.sanitizeFileName(file.originalname)}`;
         let r2Failed = false;
+        let putSucceeded = false;
         try {
           this.logger.log(`upload: uploading to R2, key=${storageKey}`);
           await this.storage.uploadFile(storageKey, file.buffer, file.mimetype);
+          putSucceeded = true;
           await this.prisma.importBatch.update({
             where: { id: batch.id },
             data: { storageKey, storageProvider: 'r2' },
@@ -628,6 +770,23 @@ export class ImportsService {
           this.logger.log(`upload: R2 upload complete, key=${storageKey}`);
         } catch (err) {
           r2Failed = true;
+          // ENGINE-048 — the PUT landed but the storageKey pointer update
+          // failed: without a compensating delete the R2 object would be
+          // orphaned forever (no DB pointer → invisible to retention sweeps).
+          // Best-effort: a double failure is logged and accepted.
+          if (putSucceeded) {
+            try {
+              await this.storage.deleteFile(storageKey);
+              this.logger.warn(
+                `upload: compensating R2 delete after pointer-update failure, key=${storageKey}`,
+              );
+            } catch (cleanupErr) {
+              this.logger.error(
+                `upload: compensating R2 delete failed, key=${storageKey} is orphaned`,
+                cleanupErr instanceof Error ? cleanupErr.stack : String(cleanupErr),
+              );
+            }
+          }
           this.logger.error(
             'upload: R2 upload failed',
             err instanceof Error ? err.stack : String(err),
@@ -854,16 +1013,49 @@ export class ImportsService {
           continue;
         }
 
-        const totalIncome = transactions.reduce((sum, tx) => sum + tx.credits, 0);
-        const totalExpenses = transactions.reduce((sum, tx) => sum + tx.charges, 0);
-        const sorted = [...transactions].sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-        );
-        const finalBalance = sorted[0]?.balance ?? 0;
-        const periods = buildPeriods(transactions);
+        // ENGINE-028 — preview runs the exact same domain validation confirm
+        // applies, so the row count and totals shown to the user are computed
+        // over the rows that will actually persist, and invalid rows are
+        // surfaced (capped sample) instead of silently vanishing at confirm.
+        const { valid, report } = validateRows(transactions);
+        const validation = {
+          totalRows: report.totalRows,
+          validRows: report.validRows,
+          invalidRows: report.invalidRows,
+          invalidRatio: report.invalidRatio,
+          sampleErrors: report.errors.slice(0, VALIDATION_SAMPLE_LIMIT),
+        };
+
+        if (report.invalidRatio > INVALID_ROWS_THRESHOLD) {
+          results.push({
+            ...base,
+            fileType,
+            fileHash: hash,
+            statusMessage: `${report.invalidRows} of ${report.totalRows} rows are invalid (${(report.invalidRatio * 100).toFixed(1)}% exceeds the ${(INVALID_ROWS_THRESHOLD * 100).toFixed(0)}% limit).`,
+            validation,
+          });
+          continue;
+        }
+
+        // ENGINE-054 — totals accumulate in integer-cent space.
+        const totalIncome = sumAmounts(valid.map((tx) => tx.credits));
+        const totalExpenses = sumAmounts(valid.map((tx) => tx.charges));
+        // ENGINE-026 — same finalBalance authority as confirm.
+        const finalBalance = computeFinalBalance(valid);
+        const periods = buildPeriods(valid);
+
+        // ENGINE-027 — same continuity authority as confirm, over the FULL
+        // parsed set, so the user sees the breaks before confirming.
+        const continuity = validateBalanceContinuity(transactions);
 
         const status =
-          transactions.length === 0 ? 'error' : warnings.length > 0 ? 'warning' : 'success';
+          valid.length === 0
+            ? 'error'
+            : warnings.length > 0 ||
+                report.invalidRows > 0 ||
+                continuity.discontinuities > 0
+              ? 'warning'
+              : 'success';
 
         results.push({
           id,
@@ -873,16 +1065,18 @@ export class ImportsService {
           fileHash: hash,
           status,
           statusMessage:
-            transactions.length === 0
+            valid.length === 0
               ? 'No transactions could be extracted from this file.'
               : undefined,
           periods,
-          transactionCount: transactions.length,
+          transactionCount: valid.length,
           totalIncome,
           totalExpenses,
           finalBalance,
-          transactions,
+          transactions: valid,
           warnings,
+          validation,
+          continuity,
           processedAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -1116,8 +1310,38 @@ export class ImportsService {
 
       // UF-001 — server-side canonical re-parse. These rows replace the
       // client-supplied array for all persistence-side computations.
-      const { transactions: serverParsedRaw, warnings: parserWarnings } =
-        await this.parser.parseBuffer(r2Buffer, existing.fileType);
+      // ENGINE-005 — resolve the bank-profile field aliases with the exact
+      // same inputs preview used, so a custom-alias profile that previewed
+      // fine cannot fail confirm as false tampering (or a 500).
+      const profileContext = await this.bankProfiles.resolveFieldsForBatch({
+        condominiumId,
+        bankProfileId: dto.bankProfileId,
+        fileType: existing.fileType as 'xlsx' | 'pdf',
+      });
+      let serverParsedRaw: ServerParsedRow[];
+      let parserWarnings: string[];
+      try {
+        ({ transactions: serverParsedRaw, warnings: parserWarnings } =
+          await this.parser.parseBuffer(
+            r2Buffer,
+            existing.fileType,
+            profileContext.fields,
+          ));
+      } catch (err) {
+        if (err instanceof ImportProfileMismatchError) {
+          throw new BadRequestException({
+            code: 'PROFILE_MISMATCH',
+            reason:
+              'The selected bank profile does not match the columns found in this file. Update the profile or pick a different one.',
+            fileName: file.fileName,
+            missingFields: err.missingFields,
+            actualHeaders: err.actualHeaders,
+            bankProfileId: dto.bankProfileId ?? null,
+            profileName: profileContext.profileName ?? null,
+          });
+        }
+        throw err;
+      }
       this.logger.log(
         `confirm: server re-parse produced ${serverParsedRaw.length} rows (client sent ${file.transactions.length})`,
       );
@@ -1150,16 +1374,33 @@ export class ImportsService {
         });
       }
 
-      const totalIncome = validTransactions.reduce(
-        (sum, t) => sum + (t.credits ?? 0),
-        0,
-      );
-      const totalExpenses = validTransactions.reduce(
-        (sum, t) => sum + (t.charges ?? 0),
-        0,
-      );
-      const finalBalance =
-        validTransactions[validTransactions.length - 1]?.balance ?? 0;
+      // ENGINE-027 — running-balance continuity over the FULL server parse
+      // (the same function preview ran, so the two paths agree). Above the
+      // threshold the file is refused; below it the breaks become warnings.
+      const continuity = validateBalanceContinuity(serverParsedRaw);
+      if (
+        continuity.checked &&
+        continuity.discontinuityRatio > BALANCE_DISCONTINUITY_THRESHOLD
+      ) {
+        this.events.emit(IMPORT_FAILED_EVENT, {
+          condominiumId,
+          batchId: existing.id,
+          stage: 'VALIDATE',
+          errorCode: 'BALANCE_DISCONTINUITY_EXCEEDED',
+          actorUserId: user.sub,
+        } satisfies ImportFailedEventPayload);
+        throw new BadRequestException({
+          code: 'BALANCE_DISCONTINUITY_EXCEEDED',
+          reason: `File ${file.fileName} has ${continuity.discontinuities} of ${continuity.totalComparisons} consecutive rows breaking running-balance continuity (${(continuity.discontinuityRatio * 100).toFixed(1)}% > ${(BALANCE_DISCONTINUITY_THRESHOLD * 100).toFixed(0)}%). Verify the file is complete and unmodified.`,
+          continuity,
+        });
+      }
+
+      // ENGINE-054 — totals accumulate in integer-cent space.
+      const totalIncome = sumAmounts(validTransactions.map((t) => t.credits));
+      const totalExpenses = sumAmounts(validTransactions.map((t) => t.charges));
+      // ENGINE-026 — same finalBalance authority as preview.
+      const finalBalance = computeFinalBalance(validTransactions);
 
       // Phase 2 IMP-001 — strict trust-boundary enforcement. Reconciliation
       // compares the client preview rows against the server re-parsed rows
@@ -1168,7 +1409,10 @@ export class ImportsService {
       // as tampering and the confirm is rejected with PAYLOAD_MISMATCH. The
       // IMPORT_TAMPERING_DETECTED audit row is written first so the forensic
       // trace survives the rejection.
-      const reconciliation = reconcileRows(file.transactions, serverParsedRaw);
+      // ENGINE-028 — the comparison runs against the VALIDATED server rows:
+      // preview returns only valid rows, so the client echo must be measured
+      // against the same set or every invalid-row file would false-positive.
+      const reconciliation = reconcileRows(file.transactions, validTransactions);
       const rowCountMismatch =
         reconciliation.clientRowCount !== reconciliation.serverRowCount;
       if (reconciliation.mismatchCount > 0 || rowCountMismatch) {
@@ -1210,6 +1454,12 @@ export class ImportsService {
       // for backward compat) with any server-side parser warnings, since the
       // server-parsed rows are what is actually being stored.
       const mergedWarnings = [...(file.warnings ?? []), ...parserWarnings];
+      // ENGINE-027 — sub-threshold continuity breaks persist as a warning.
+      if (continuity.checked && continuity.discontinuities > 0) {
+        mergedWarnings.push(
+          `${continuity.discontinuities} of ${continuity.totalComparisons} consecutive rows do not match the running balance (balance ≠ previous balance + credit − charge).`,
+        );
+      }
 
       // PENDING batch from upload step — update to COMPLETED, preserve storageKey.
       // Optimistic precondition: the row must still match the (updatedAt, status)
@@ -1363,7 +1613,8 @@ export class ImportsService {
           (exceptionPayload?.code as string | undefined) ??
           (err instanceof Error ? err.constructor.name : 'UNEXPECTED_ERROR');
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`confirm: failed for file=${file.fileName} (${errorCode}): ${message}`);
+        // ENGINE-062: sanitized name in app logs (original preserved in audit trail).
+        this.logger.error(`confirm: failed for file=${this.sanitizeFileName(file.fileName)} (${errorCode}): ${message}`);
         await this.audit.log({
           condominiumId,
           userId: user.sub,
@@ -1455,6 +1706,12 @@ export class ImportsService {
         data: {
           status: 'COMPLETED',
           completedAt: new Date(),
+          // ENGINE-058 — persist the classification summary so precision is
+          // queryable per batch (total = transactionCount, already persisted).
+          classifiedCount: classificationSummary.classified,
+          needsReviewCount: classificationSummary.needsReview,
+          unmatchedCount: classificationSummary.unmatched,
+          classifiedAt: new Date(),
         },
       });
 
@@ -1524,6 +1781,13 @@ export class ImportsService {
         `classify-async: failed batchId=${batchId}: ${message}`,
         err instanceof Error ? err.stack : undefined,
       );
+      // ENGINE-033: this catch runs outside any HTTP request (setImmediate),
+      // so the Sentry exception filter never sees it — capture explicitly,
+      // tagged for triage. No-op until SENTRY_DSN is configured.
+      Sentry.captureException(err, {
+        tags: { batchId, condominiumId },
+        extra: { stage: 'classify-async', fileName },
+      });
       try {
         await this.prisma.importBatch.update({
           where: { id: batchId },
@@ -1581,14 +1845,84 @@ export class ImportsService {
     }
   }
 
+  // ENGINE-002 — an honest delete. The batch row is kept and flagged FAILED
+  // (audit anchor; FAILED is exactly what the ENGINE-017 partial unique index
+  // excludes, so delete-then-reupload yields exactly one live copy), but its
+  // transactions are HARD-deleted (PaymentAllocation rows cascade), terrace
+  // links are reverted, counters are zeroed, and the affected monthly
+  // summaries are recomputed — so deleted money disappears from listings and
+  // dashboards instead of silently double-counting after a re-upload.
   async remove(condominiumId: string, id: string, user: JwtPayload) {
     const existing = await this.findOne(condominiumId, id);
 
-    const result = await this.prisma.importBatch.updateMany({
-      where: { id, condominiumId },
-      data: { status: 'FAILED', errorMessage: 'Deleted by user' },
+    // A live classification run owns the batch's rows; deleting under it
+    // would race classifyBatch's chunked updates. Stale PROCESSING (the
+    // crashed-mid-classify case the reaper also handles) stays deletable.
+    const isStale =
+      Date.now() - new Date(existing.updatedAt).getTime() >=
+      STALE_PROCESSING_MS;
+    if (existing.status === 'PROCESSING' && !isStale) {
+      throw new ConflictException({
+        code: 'IMPORT_BATCH_PROCESSING',
+        reason:
+          'Classification for this batch is still running. Retry once it finishes (or stalls).',
+        existingBatchId: id,
+      });
+    }
+
+    // Capture the affected months BEFORE the rows disappear — the recompute
+    // derives nothing from the batch afterwards.
+    const periods = await this.prisma.transaction.groupBy({
+      by: ['transactionDate'],
+      where: { condominiumId, importBatchId: id },
     });
-    if (result.count === 0) throw new NotFoundException('Import batch not found');
+    const uniqueMonths = new Map<string, { year: number; month: number }>();
+    for (const { transactionDate } of periods) {
+      const d = new Date(transactionDate);
+      const key = `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
+      if (!uniqueMonths.has(key)) {
+        uniqueMonths.set(key, {
+          year: d.getUTCFullYear(),
+          month: d.getUTCMonth() + 1,
+        });
+      }
+    }
+
+    // Terrace bookings paid by this batch's transactions must not stay PAID
+    // once their proof transaction is gone.
+    await this.classification.revertTerraceLinksForBatch(
+      condominiumId,
+      id,
+      user.sub,
+    );
+
+    const [deleted, updated] = await this.prisma.$transaction([
+      this.prisma.transaction.deleteMany({
+        where: { condominiumId, importBatchId: id },
+      }),
+      this.prisma.importBatch.updateMany({
+        where: { id, condominiumId },
+        data: {
+          status: 'FAILED',
+          errorMessage: 'Deleted by user',
+          totalRows: 0,
+          totalIncome: 0,
+          totalExpenses: 0,
+          finalBalance: 0,
+          transactionCount: 0,
+          processedCount: 0,
+          classifiedCount: 0,
+          needsReviewCount: 0,
+          unmatchedCount: 0,
+        },
+      }),
+    ]);
+    if (updated.count === 0) throw new NotFoundException('Import batch not found');
+
+    await this.classification.recomputeSummariesForMonths(
+      condominiumId,
+      Array.from(uniqueMonths.values()),
+    );
 
     await this.audit.log({
       condominiumId,
@@ -1603,10 +1937,15 @@ export class ImportsService {
         fileName: existing.fileName,
         status: existing.status,
         transactionCount: existing.transactionCount,
+        totalIncome: existing.totalIncome,
+        totalExpenses: existing.totalExpenses,
+        finalBalance: existing.finalBalance,
       },
       afterState: {
         status: 'FAILED',
         errorMessage: 'Deleted by user',
+        transactionsDeleted: deleted.count,
+        monthsRecomputed: Array.from(uniqueMonths.keys()),
       },
     });
 

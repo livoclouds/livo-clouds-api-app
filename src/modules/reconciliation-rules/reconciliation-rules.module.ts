@@ -1,10 +1,12 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ReconciliationRulesController } from './reconciliation-rules.controller';
 import { ReconciliationRulesService } from './reconciliation-rules.service';
-import { ClassificationModule } from '../classification/classification.module';
 
+// ENGINE-010 (Phase 6): no ClassificationModule import — the orchestration
+// endpoints (GET system / POST apply-pending) live on RuleApplicationController
+// in ClassificationModule, so the dependency is strictly one-way:
+// Classification → ReconciliationRules.
 @Module({
-  imports: [forwardRef(() => ClassificationModule)],
   controllers: [ReconciliationRulesController],
   providers: [ReconciliationRulesService],
   exports: [ReconciliationRulesService],

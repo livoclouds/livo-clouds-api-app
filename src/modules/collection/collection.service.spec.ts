@@ -50,8 +50,10 @@ function makePrismaMock(): PrismaMock {
   };
 }
 
+const auditMock = { log: jest.fn().mockResolvedValue(undefined) };
+
 function makeService(prisma: PrismaMock): CollectionService {
-  return new CollectionService(prisma as never);
+  return new CollectionService(prisma as never, auditMock as never);
 }
 
 function makeResident(
@@ -173,6 +175,22 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       expect(result.summary.totalPaid).toBe(7000);
       // balance = totalExpected − totalPaid (POSITIVE = owes) = 27500 − 7000
       expect(result.summary.balance).toBe(27500 - 7000);
+      // compliancePercent = totalPaid / totalExpected · 100 = 7000 / 27500 · 100
+      expect(result.summary.compliancePercent).toBeCloseTo((7000 / 27500) * 100);
+    });
+
+    it('returns null compliancePercent when nothing is expected yet (no history)', async () => {
+      prisma.transaction.aggregate.mockResolvedValue({ _sum: { credits: 0 } });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({
+        _sum: { allocatedAmount: 0 },
+      });
+      prisma.collectionRecord.groupBy.mockResolvedValue([]);
+
+      const result = await service.getAccountStatement(CONDOMINIUM_ID, RESIDENT_ID);
+
+      expect(result.summary.totalExpected).toBe(0);
+      // Null (not 0%) so the web renders a dash instead of a misleading "0%".
+      expect(result.summary.compliancePercent).toBeNull();
     });
 
     it('adds this resident\'s allocation shares to totalPaid without double-counting', async () => {
@@ -344,12 +362,55 @@ describe('CollectionService — Phase 5 collection-query performance', () => {
       );
     });
 
-    it('pulls the full collection history (large crLimit) and is tenant-scoped', async () => {
+    it('pulls the full collection history with the documented cap and is tenant-scoped (RP-027)', async () => {
       prisma.collectionRecord.groupBy.mockResolvedValue([]);
       await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID);
       const findArg = prisma.collectionRecord.findMany.mock.calls[0][0];
-      expect(findArg.take).toBeGreaterThan(24); // not the bounded 24-row window
+      // Named cap (FINANCIAL_HEALTH_HISTORY_CAP) — intentionally above the public
+      // crLimit of 600 so the score sees the complete history.
+      expect(findArg.take).toBe(1200);
       expect(findArg.where).toMatchObject({ condominiumId: CONDOMINIUM_ID, residentId: RESIDENT_ID });
+    });
+
+    it('reports history-availability metadata (RP-018/029)', async () => {
+      prisma.transaction.aggregate.mockResolvedValue({ _sum: { credits: 0 } });
+      prisma.collectionRecord.groupBy.mockResolvedValue([
+        { status: 'PAID_ON_TIME', _count: { _all: 2 }, _sum: { amountExpected: 2000 } },
+      ]);
+      prisma.collectionRecord.findMany.mockResolvedValue([
+        { year: 2026, month: 1, status: 'PAID_ON_TIME', amountPaid: 1000, amountExpected: 1000 },
+        { year: 2026, month: 2, status: 'PAID_ON_TIME', amountPaid: 1000, amountExpected: 1000 },
+      ]);
+
+      // Ask for 12 months but only 2 of them have records → fewer points returned,
+      // and the response says so explicitly instead of leaving it silent.
+      const result = await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID, 12);
+
+      // The history reports the score "as of" each of the trailing months that
+      // have any records up to them, so its exact length tracks the wall clock;
+      // assert only the clock-independent invariants of the metadata.
+      expect(result.historyMeta).toEqual(
+        expect.objectContaining({
+          requestedMonths: 12,
+          effectiveMonths: 12,
+          returnedPoints: result.history.length,
+          timezone: 'UTC',
+        }),
+      );
+      expect(result.historyMeta.returnedPoints).toBeGreaterThan(0);
+      expect(result.historyMeta.returnedPoints).toBeLessThanOrEqual(12);
+      // Earliest available point is the first month with any record (Jan 2026).
+      expect(result.historyMeta.earliest).toEqual({ year: 2026, month: 1 });
+      // Contiguous monthly history → coverage equals the number of points.
+      expect(result.historyMeta.coverageMonths).toBe(result.historyMeta.returnedPoints);
+    });
+
+    it('clamps an out-of-range historyMonths and records it in the metadata (RP-018)', async () => {
+      prisma.collectionRecord.groupBy.mockResolvedValue([]);
+      prisma.collectionRecord.findMany.mockResolvedValue([]);
+      const result = await service.getFinancialHealth(CONDOMINIUM_ID, RESIDENT_ID, 999);
+      expect(result.historyMeta.requestedMonths).toBe(999);
+      expect(result.historyMeta.effectiveMonths).toBe(36); // clamped to the 1–36 range
     });
 
     it('Fase 4 — applies the condominium score weights (null → defaults)', async () => {

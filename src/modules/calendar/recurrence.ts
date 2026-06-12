@@ -64,8 +64,19 @@ export function validateRecurrenceRule(rrule: string, startDate: Date): void {
   }
 
   if (until != null) {
-    const sample = rule.between(startDate, until, true);
-    if (sample.length > MAX_OCCURRENCES_PER_EVENT) {
+    // CAL-013: count occurrences via an early-exit iterator instead of
+    // materializing the whole UNTIL span. `rule.between(startDate, until, true)`
+    // would allocate every occurrence up front — an adversarial rule such as
+    // `FREQ=DAILY;UNTIL=99991231T235959Z` (well under the 500-char cap) forces
+    // ~2.9M Date allocations and blocks the event loop before the length check.
+    // `all(iterator)` stops as soon as the callback returns false, so we never
+    // collect more than MAX_OCCURRENCES_PER_EVENT + 1 dates regardless of span.
+    let occurrences = 0;
+    rule.all((_date, index) => {
+      occurrences = index + 1;
+      return index < MAX_OCCURRENCES_PER_EVENT;
+    });
+    if (occurrences > MAX_OCCURRENCES_PER_EVENT) {
       throw new RecurrenceValidationError(
         'recurrenceTooMany',
         `Recurrence would generate more than ${MAX_OCCURRENCES_PER_EVENT} occurrences in the bounded range.`,

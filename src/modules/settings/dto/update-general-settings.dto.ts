@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEmail,
   IsInt,
   IsNumber,
@@ -70,13 +71,19 @@ export class UpdateGeneralSettingsDto {
   @IsString()
   businessHours?: string;
 
-  // Resident dossier retention window in days. 0 disables auto-purge (opt-in).
+  // Resident dossier retention window in days. 0 = no window (opt-in).
   @ApiPropertyOptional({ example: 365, minimum: 0, maximum: 3650 })
   @IsOptional()
   @IsInt()
   @Min(0)
   @Max(3650)
   dossierRetentionDays?: number;
+
+  // Whether the scheduled auto-purge runs (gates the sweep alongside the window).
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  autopurgeEnabled?: boolean;
 
   // Per-condominium financial-health score weights (Fase 4). Relative importances;
   // auto-normalized to sum 100 at compute time. The service rejects an all-zero set.

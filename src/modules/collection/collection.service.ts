@@ -1,10 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CollectionStatus, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResult } from '../../common/types';
+import { AuditService } from '../audit/audit.service';
 import { AccountStatementDto } from './dto/account-statement.dto';
 import { ListByResidentDto } from './dto/list-by-resident.dto';
 import { ListCollectionDto } from './dto/list-collection.dto';
+import { UpdateCollectionRecordDto } from './dto/update-collection-record.dto';
 import {
   buildScoreHistory,
   computeFinancialHealth,
@@ -12,9 +14,20 @@ import {
   ScoreRecordInput,
 } from './financial-health.util';
 
+const COLLECTION_MODULE = 'collection';
+
+// The financial-health score needs the resident's COMPLETE collection history,
+// so the internal account-statement read intentionally uses a cap ABOVE the
+// public crLimit (600). Named + documented so it is not a silent magic number
+// (RP-027). 1200 = a century of monthly records, far beyond any real account.
+const FINANCIAL_HEALTH_HISTORY_CAP = 1200;
+
 @Injectable()
 export class CollectionService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
 
   async findAll(
     condominiumId: string,
@@ -236,6 +249,12 @@ export class CollectionService {
         // this way; computing it as paid − expected inverted the sign for every
         // consumer (Capa 1 bug, fixed in Fase 3).
         balance: totalExpected - totalPaid,
+        // Share of the amount expected "as of today" that has been settled, in
+        // percent (0–100+). Computed server-side over the same filtered window as
+        // totalPaid/totalExpected so the web only renders it (no client-side
+        // financial math). Null when nothing is expected yet (no history) — the
+        // web shows a dash instead of a misleading 0%.
+        compliancePercent: totalExpected > 0 ? (totalPaid / totalExpected) * 100 : null,
       },
     };
   }
@@ -252,7 +271,7 @@ export class CollectionService {
   ) {
     const statement = await this.getAccountStatement(condominiumId, residentId, {
       crPage: 1,
-      crLimit: 1000,
+      crLimit: FINANCIAL_HEALTH_HISTORY_CAP,
     });
     const records: ScoreRecordInput[] = statement.collectionRecords.map((r) => ({
       year: r.year,
@@ -272,40 +291,78 @@ export class CollectionService {
       | Record<HealthFactorKey, number>
       | undefined;
     const health = computeFinancialHealth(statement.summary, records, now, weights);
-    const months = Math.min(36, Math.max(1, Math.floor(historyMonths || 12)));
+    // historyMonths is clamped to 1–36; months with no records are skipped. Both
+    // mean the caller can get fewer points than requested, so the response carries
+    // explicit availability metadata instead of leaving it silent (RP-018). All
+    // period math is UTC (RP-029).
+    const requestedMonths = Math.floor(historyMonths || 12);
+    const months = Math.min(36, Math.max(1, requestedMonths));
     const history = buildScoreHistory(records, months, now, weights);
+    const earliest = history.length
+      ? { year: history[0].year, month: history[0].month }
+      : null;
+    const latest = history.length
+      ? { year: history[history.length - 1].year, month: history[history.length - 1].month }
+      : null;
+    const coverageMonths =
+      earliest && latest
+        ? latest.year * 12 + latest.month - (earliest.year * 12 + earliest.month) + 1
+        : 0;
     return {
       current: { ...health, computedAt: now.toISOString() },
       history,
+      historyMeta: {
+        requestedMonths,
+        effectiveMonths: months,
+        returnedPoints: history.length,
+        coverageMonths,
+        earliest,
+        latest,
+        timezone: 'UTC' as const,
+      },
     };
   }
 
   async update(
     condominiumId: string,
+    userId: string,
     id: string,
-    dto: {
-      status?: string;
-      amountPaid?: number;
-      paymentDate?: string;
-      notes?: string;
-    },
+    dto: UpdateCollectionRecordDto,
   ) {
-    const record = await this.prisma.collectionRecord.findFirst({
-      where: { id, condominiumId },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const before = await tx.collectionRecord.findFirst({
+        where: { id, condominiumId },
+      });
 
-    if (!record) {
-      throw new NotFoundException('Collection record not found');
-    }
+      if (!before) throw new NotFoundException('Collection record not found');
 
-    return this.prisma.collectionRecord.update({
-      where: { id },
-      data: {
-        status: dto.status ? (dto.status as CollectionStatus) : undefined,
-        amountPaid: dto.amountPaid,
-        notes: dto.notes,
-        paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : undefined,
-      },
+      const updated = await tx.collectionRecord.update({
+        where: { id },
+        data: {
+          status: dto.status,
+          amountPaid: dto.amountPaid,
+          notes: dto.notes,
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : undefined,
+        },
+      });
+
+      await this.audit.log(
+        {
+          condominiumId,
+          userId,
+          action: 'COLLECTION_RECORD_UPDATED',
+          actionCategory: 'FINANCIAL',
+          module: COLLECTION_MODULE,
+          entityType: 'CollectionRecord',
+          entityId: id,
+          beforeState: before,
+          afterState: updated,
+          result: 'SUCCESS',
+        },
+        tx,
+      );
+
+      return updated;
     });
   }
 }

@@ -20,12 +20,13 @@ import {
 // from imports.service.ts to keep DTO and service decoupled.
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_ROWS_PER_IMPORT = 10_000;
-// Phase 2 IMP-012 — permissive date regex chosen over @IsISO8601() so that
-// rows produced by the PDF parser (DD/MM/YYYY) still pass alongside the
-// XLSX parser's ISO-8601 output. Accepts: YYYY-MM-DD, YYYY-MM-DDTHH:mm[:ss[.sss]]Z|±HH:mm
-// and DD/MM/YYYY or D/M/YYYY.
+// ENGINE-050 — ISO-8601 only. Both server parsers (XLSX and PDF) emit
+// YYYY-MM-DD, and confirm's reconciliation compares dates with strict string
+// equality — a D/M/YYYY date can never match a server row, so accepting it
+// here only converted a clear validation error into a false PAYLOAD_MISMATCH.
+// Accepts: YYYY-MM-DD and YYYY-MM-DDTHH:mm[:ss[.sss]][Z|±HH:mm].
 const DATE_REGEX =
-  /^(?:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?|\d{1,2}\/\d{1,2}\/\d{4})$/;
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 // Reject path traversal and control characters in filename (IMP-012 + IMP-015
 // defensive overlap at the DTO surface).
 const SAFE_FILENAME_REGEX = /^[^/\\\x00-\x1f]+$/;
@@ -41,7 +42,7 @@ export class ParsedTransactionDto {
   @MinLength(8)
   @MaxLength(40)
   @Matches(DATE_REGEX, {
-    message: 'date must be ISO-8601 (YYYY-MM-DD[Thh:mm:ss[.sss][Z|±HH:mm]]) or DD/MM/YYYY',
+    message: 'date must be ISO-8601 (YYYY-MM-DD[Thh:mm[:ss[.sss]][Z|±HH:mm]])',
   })
   date: string;
 

@@ -29,3 +29,65 @@ describe('parseExcelBuffer', () => {
     expect(second.flowType).toBe('expense');
   });
 });
+
+/**
+ * ENGINE-029/030 — amount-parsing safety. Text amounts either parse under the
+ * US/MX convention or the row is FLAGGED (NaN + parseIssues), never guessed.
+ */
+describe('parseExcelBuffer — amount conventions (ENGINE-029/030)', () => {
+  async function parseAmountColumn(cells: Array<string | number>) {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Movimientos');
+    sheet.addRow(['Fecha', 'Descripción', 'Cargo', 'Abono', 'Saldo']);
+    cells.forEach((cell, i) => {
+      sheet.addRow([`0${i + 1}/03/2026`, `ROW ${i + 1}`, '', cell, 1000]);
+    });
+    const arrayBuffer = await workbook.xlsx.writeBuffer();
+    return parseExcelBuffer(Buffer.from(arrayBuffer as ArrayBuffer));
+  }
+
+  it('parses US/MX-convention text amounts exactly', async () => {
+    const { transactions } = await parseAmountColumn([
+      '1,234.56',
+      '$ 2,000.00',
+      '1234.5',
+      '987',
+    ]);
+    expect(transactions.map((t) => t.credits)).toEqual([1234.56, 2000, 1234.5, 987]);
+    expect(transactions.every((t) => t.parseIssues === undefined)).toBe(true);
+  });
+
+  it('parses parenthesized negatives and stores the absolute value', async () => {
+    const { transactions } = await parseAmountColumn(['(1,234.56)']);
+    expect(transactions[0].credits).toBe(1234.56);
+    expect(transactions[0].parseIssues).toBeUndefined();
+  });
+
+  it("flags European-format '1.234,56' as ambiguousDecimal — NEVER 1.23 (ENGINE-029)", async () => {
+    const { transactions } = await parseAmountColumn(['1.234,56', '1234,56']);
+    for (const tx of transactions) {
+      expect(tx.credits).toBeNaN();
+      expect(tx.parseIssues).toEqual([
+        expect.objectContaining({ field: 'credits', issue: 'ambiguousDecimal' }),
+      ]);
+    }
+  });
+
+  it('flags non-numeric text as unparseable — NEVER $0.00 (ENGINE-030)', async () => {
+    const { transactions } = await parseAmountColumn(['abc', '12..34']);
+    for (const tx of transactions) {
+      expect(tx.credits).toBeNaN();
+      expect(tx.parseIssues).toEqual([
+        expect.objectContaining({ field: 'credits', issue: 'unparseable' }),
+      ]);
+    }
+  });
+
+  it('keeps empty cells legal as 0 and numeric cells on the fast path', async () => {
+    const { transactions } = await parseAmountColumn(['', 1500.75]);
+    expect(transactions[0].credits).toBe(0);
+    expect(transactions[0].parseIssues).toBeUndefined();
+    expect(transactions[1].credits).toBe(1500.75);
+    expect(transactions[1].parseIssues).toBeUndefined();
+  });
+});

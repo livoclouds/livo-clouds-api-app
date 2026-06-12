@@ -1,6 +1,7 @@
 import { ValidationArguments } from 'class-validator';
 import {
   SafeRegexConstraint,
+  SafeTriggerPatternConstraint,
   UnitOutcomeShapeConstraint,
   MAX_EXTRACTION_PATTERN_LENGTH,
 } from './unit-rule.validators';
@@ -99,5 +100,30 @@ describe('UnitOutcomeShapeConstraint', () => {
   it('defaults to CONCEPT when ruleKind is omitted', () => {
     expect(on({ name: 'r' })).toBe(true);
     expect(on({ name: 'r', assignedUnitNumber: '5' })).toBe(false);
+  });
+});
+
+describe('SafeTriggerPatternConstraint (ENGINE-041)', () => {
+  const c = new SafeTriggerPatternConstraint();
+
+  it('accepts a plain trigger with NO capture group (the differentiator vs SafeRegexConstraint)', () => {
+    expect(c.validate('casa\\s*\\d+')).toBe(true);
+    expect(c.validate('mantenimiento')).toBe(true);
+  });
+
+  it('rejects RE2-unsupported syntax that would silently never fire (lookahead/backreference)', () => {
+    expect(c.validate('casa(?=\\d)')).toBe(false);
+    expect(c.validate('(\\d+)-\\1')).toBe(false);
+  });
+
+  it('rejects catastrophic-backtracking shapes early with a friendly message', () => {
+    expect(c.validate('(a+)+')).toBe(false);
+    expect(c.validate('([a-z]*)*')).toBe(false);
+  });
+
+  it('rejects empty, non-string, and over-long entries', () => {
+    expect(c.validate('')).toBe(false);
+    expect(c.validate(42)).toBe(false);
+    expect(c.validate('a'.repeat(MAX_EXTRACTION_PATTERN_LENGTH + 1))).toBe(false);
   });
 });

@@ -21,6 +21,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { RbacModule } from './common/rbac/rbac.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { SentryContextInterceptor } from './common/interceptors/sentry-context.interceptor';
+import { PrismaReconnectInterceptor } from './prisma/prisma-reconnect.interceptor';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuditModule } from './modules/audit/audit.module';
@@ -32,6 +33,7 @@ import { ImportsModule } from './modules/imports/imports.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { SupplierCategoriesModule } from './modules/supplier-categories/supplier-categories.module';
+import { QuotationsModule } from './modules/quotations/quotations.module';
 import { SecurityModule } from './modules/security/security.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -48,6 +50,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { ExpenseCategoriesModule } from './modules/expense-categories/expense-categories.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
@@ -92,12 +95,14 @@ import { SupportModule } from './modules/support/support.module';
     CollectionModule,
     CondominiumsModule,
     ClassificationModule,
+    ReconciliationModule,
     DashboardModule,
     ImportsModule,
     TransactionsModule,
     InventoryModule,
     SuppliersModule,
     SupplierCategoriesModule,
+    QuotationsModule,
     SecurityModule,
     NotificationsModule,
     PettyCashModule,
@@ -128,6 +133,8 @@ import { SupportModule } from './modules/support/support.module';
     // RBAC Phase 2: enforces @RequirePermission. No-op for routes without it, so
     // it coexists with the legacy @Roles guard during the migration.
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // Outermost interceptor: retries once on Prisma P1017 (Neon idle drop).
+    { provide: APP_INTERCEPTOR, useClass: PrismaReconnectInterceptor },
     // Runs after the guards, so request.user + request.condominiumId are set;
     // stamps each Sentry event with the tenant + actor.
     { provide: APP_INTERCEPTOR, useClass: SentryContextInterceptor },

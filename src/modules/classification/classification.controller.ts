@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Get,
   NotFoundException,
   Param,
   Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -15,9 +17,10 @@ import { CondominiumAccessGuard } from '../../common/guards/condominium-access.g
 import { JwtPayload } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClassificationService } from './classification.service';
+import { ClassificationMetricsService } from './classification-metrics.service';
 import { ManualMatchDto } from './dto/manual-match.dto';
 import { ManualClassifyDto } from './dto/manual-classify.dto';
-import { BulkReconcileDto } from './dto/bulk-reconcile.dto';
+import { PrecisionQueryDto } from './dto/precision-query.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('Classification')
@@ -26,8 +29,29 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 export class ClassificationController {
   constructor(
     private readonly classificationService: ClassificationService,
+    private readonly metricsService: ClassificationMetricsService,
     private readonly prisma: PrismaService,
   ) {}
+
+  @Get('classification/precision')
+  @RequirePermission('transactions.read')
+  @ApiOperation({
+    summary:
+      'Classification precision metrics — override rates per matchSource and per rule (ENGINE-058)',
+  })
+  async getPrecision(
+    @Request() req: { condominiumId: string },
+    @Query() query: PrecisionQueryDto,
+  ) {
+    const metrics = await this.metricsService.getPrecisionMetrics(
+      req.condominiumId,
+      {
+        from: query.from ? new Date(query.from) : undefined,
+        to: query.to ? new Date(query.to) : undefined,
+      },
+    );
+    return { data: metrics };
+  }
 
   @Post('imports/:batchId/classify')
   @RequirePermission('transactions.override')
@@ -120,60 +144,4 @@ export class ClassificationController {
     return { data: { success: true } };
   }
 
-  @Patch('transactions/:id/approve')
-  @RequirePermission('transactions.override')
-  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Approve a transaction so it affects official financial data' })
-  async approveTransaction(
-    @Request() req: { condominiumId: string },
-    @CurrentUser() user: JwtPayload,
-    @Param('id') transactionId: string,
-  ) {
-    await this.classificationService.approveTransaction(req.condominiumId, transactionId, user.sub);
-    return { data: { success: true } };
-  }
-
-  @Patch('transactions/:id/ignore')
-  @RequirePermission('transactions.override')
-  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Ignore a transaction so it is excluded from financial data' })
-  async ignoreTransaction(
-    @Request() req: { condominiumId: string },
-    @CurrentUser() user: JwtPayload,
-    @Param('id') transactionId: string,
-  ) {
-    await this.classificationService.ignoreTransaction(req.condominiumId, transactionId, user.sub);
-    return { data: { success: true } };
-  }
-
-  @Patch('transactions/:id/reopen')
-  @RequirePermission('transactions.override')
-  @Throttle({ burst: { limit: 10, ttl: 10_000 }, sustained: { limit: 60, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Reopen a transaction back to PENDING reconciliation status' })
-  async reopenTransaction(
-    @Request() req: { condominiumId: string },
-    @CurrentUser() user: JwtPayload,
-    @Param('id') transactionId: string,
-  ) {
-    await this.classificationService.reopenTransaction(req.condominiumId, transactionId, user.sub);
-    return { data: { success: true } };
-  }
-
-  @Post('transactions/bulk-reconcile')
-  @RequirePermission('transactions.override')
-  @Throttle({ burst: { limit: 5, ttl: 10_000 }, sustained: { limit: 20, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Bulk approve, ignore, or reopen multiple transactions' })
-  async bulkReconcile(
-    @Request() req: { condominiumId: string },
-    @CurrentUser() user: JwtPayload,
-    @Body() dto: BulkReconcileDto,
-  ) {
-    const result = await this.classificationService.bulkReconcile(
-      req.condominiumId,
-      dto.ids,
-      dto.action,
-      user.sub,
-    );
-    return { data: result };
-  }
 }

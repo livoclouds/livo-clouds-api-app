@@ -72,6 +72,31 @@ describe('permission-catalog', () => {
       expect(admin).not.toContain('files.delete');
     });
 
+    it('calendar visibility tiers (Phase 4): auditor sees council, resident/guard do not — CAL-001', () => {
+      const auditor = presetForRole('READ_ONLY');
+      const admin = presetForRole('TENANT_ADMIN');
+      const resident = presetForRole('RESIDENT');
+      const guard = presetForRole('GUARD');
+      const supervisor = presetForRole('SUPERVISOR');
+
+      // Auditor/council read-only: council tier, never private.
+      expect(auditor).toContain('calendar.viewCouncil');
+      expect(auditor).not.toContain('calendar.viewPrivate');
+      // Administrator: full visibility (inherits both tiers from ALL_TENANT).
+      expect(admin).toContain('calendar.viewCouncil');
+      expect(admin).toContain('calendar.viewPrivate');
+      // Resident / guard / supervisor: PUBLIC only — no view tiers granted.
+      for (const preset of [resident, guard, supervisor]) {
+        expect(preset).not.toContain('calendar.viewCouncil');
+        expect(preset).not.toContain('calendar.viewPrivate');
+      }
+    });
+
+    it('calendar.bookings.manage is removed from the catalog (CAL-031)', () => {
+      expect(isValidPermission('calendar.bookings.manage')).toBe(false);
+      expect(ALL_PERMISSION_KEYS).not.toContain('calendar.bookings.manage');
+    });
+
     it('Resident/Condomino is read-only', () => {
       const condo = presetForRole('READ_ONLY');
       expect(condo).toContain('dashboard.read');
@@ -90,10 +115,11 @@ describe('permission-catalog', () => {
       expect(
         condo.every((k) => !WRITE_ACTIONS.some((a) => k.endsWith(`.${a}`))),
       ).toBe(true);
-      // Auditor sees the dossier (standard + restricted) but never the
-      // legal-confidential tier, and cannot manage it.
+      // Auditor sees STANDARD dossier entries only — not RESTRICTED or LEGAL_CONFIDENTIAL.
+      // Phase 5 audit (RP-008): viewRestricted removed from CONDOMINO_PERMS to align the
+      // API grant with the UI filter (dossier-filters.ts already shows STANDARD-only).
       expect(condo).toContain('residents.dossier.view');
-      expect(condo).toContain('residents.dossier.viewRestricted');
+      expect(condo).not.toContain('residents.dossier.viewRestricted');
       expect(condo).not.toContain('residents.dossier.viewLegal');
       expect(condo).not.toContain('residents.dossier.manage');
       // ARCO export is a read-tier action the auditor holds (no write verb).

@@ -20,6 +20,44 @@ export class EmailService implements OnModuleInit {
     }
   }
 
+  /**
+   * Generic transactional send used by domain modules that build their own
+   * localized subject + HTML (e.g. the ARCO data-subject notifications). Like
+   * the password-reset send it never throws — a delivery failure is logged but
+   * must not block the API response — and it no-ops when RESEND_API_KEY is
+   * unset so non-production environments stay quiet.
+   */
+  async sendTransactionalEmail(
+    to: string,
+    subject: string,
+    html: string,
+  ): Promise<void> {
+    const apiKey = this.configService.get<string>('email.resendApiKey');
+    if (!apiKey) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'email.transactional.skipped',
+          reason: 'RESEND_API_KEY_NOT_CONFIGURED',
+          subject,
+        }),
+      );
+      return;
+    }
+    const from = this.configService.get<string>('email.from')!;
+    try {
+      const resend = new Resend(apiKey);
+      await resend.emails.send({ from, to, subject, html });
+    } catch (err) {
+      this.logger.error(
+        JSON.stringify({
+          event: 'email.transactional.failed',
+          reason: err instanceof Error ? err.message : 'UNKNOWN',
+        }),
+      );
+      // Do not rethrow — email failure must not block the API response.
+    }
+  }
+
   async sendPasswordResetEmail(to: string, rawToken: string): Promise<void> {
     const apiKey = this.configService.get<string>('email.resendApiKey');
 

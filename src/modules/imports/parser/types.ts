@@ -1,3 +1,15 @@
+// ENGINE-029/030 — a money cell the parser refused to guess about. The value
+// stays NaN (never silently 0) and validateRows turns the issue into a row
+// error, so the row is rejected with a visible reason instead of importing
+// corrupted amounts.
+export type AmountIssue = 'ambiguousDecimal' | 'unparseable';
+
+export interface AmountParseIssue {
+  field: 'charges' | 'credits' | 'balance';
+  issue: AmountIssue;
+  raw: string;
+}
+
 export interface ParsedRow {
   date: string;
   description: string;
@@ -8,6 +20,7 @@ export interface ParsedRow {
   transactionNumber?: string;
   time?: string;
   receipt?: string;
+  parseIssues?: AmountParseIssue[];
 }
 
 export interface DetectedPeriod {
@@ -23,6 +36,25 @@ const MONTH_NAMES_ES: Record<number, string> = {
   5: 'Mayo', 6: 'Junio', 7: 'Julio', 8: 'Agosto',
   9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre',
 };
+
+// ENGINE-026 — the single finalBalance authority shared by preview and
+// confirm. Semantics: the balance of the chronologically latest row; equal
+// dates are broken by the LATEST array index, because banks list intra-day
+// movements in file order, so the last row of the latest day carries the
+// closing balance. Empty input yields 0.
+export function computeFinalBalance(
+  rows: Array<Pick<ParsedRow, 'date' | 'balance'>>,
+): number {
+  let best: { time: number; balance: number } | null = null;
+  for (const row of rows) {
+    const time = new Date(row.date).getTime();
+    if (Number.isNaN(time)) continue;
+    if (!best || time >= best.time) {
+      best = { time, balance: row.balance };
+    }
+  }
+  return best?.balance ?? 0;
+}
 
 export function buildPeriods(transactions: ParsedRow[]): DetectedPeriod[] {
   const map = new Map<string, DetectedPeriod>();

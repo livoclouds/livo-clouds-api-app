@@ -17,15 +17,25 @@ export enum EventStatusDto {
   CANCELLED = 'CANCELLED',
 }
 
+// CAL-011: how to handle an APPROVED transaction still linked to a terrace booking
+// when that booking is cancelled — keep the recorded income, or reopen the payment
+// back to reconciliation review.
+export enum PaidLinkActionDto {
+  KEEP = 'KEEP',
+  REOPEN = 'REOPEN',
+}
+
 export class UpdateCalendarEventDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   description?: string;
 
   @ApiPropertyOptional({ enum: EventTypeDto })
@@ -51,11 +61,13 @@ export class UpdateCalendarEventDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   location?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   unitNumber?: string;
 
   @ApiPropertyOptional()
@@ -71,6 +83,7 @@ export class UpdateCalendarEventDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   notes?: string;
 
   @ApiPropertyOptional({ description: 'Event-type-specific metadata (e.g. TerraceBookingMetadata)' })
@@ -114,4 +127,21 @@ export class UpdateCalendarEventDto {
   @IsOptional()
   @IsEnum(CalendarEventVisibilityDto)
   visibility?: CalendarEventVisibilityDto;
+
+  @ApiPropertyOptional({
+    description:
+      'CAL-006 optimistic lock: the event updatedAt the client edited against (ISO 8601). When sent and it no longer matches, the update is rejected with 409 STALE_OVERRIDE instead of silently overwriting concurrent changes (e.g. a reconciliation that flipped the booking PAID).',
+  })
+  @IsOptional()
+  @IsDateString()
+  expectedUpdatedAt?: string;
+
+  @ApiPropertyOptional({
+    enum: PaidLinkActionDto,
+    description:
+      'CAL-011: required when cancelling a terrace booking that still has an APPROVED linked transaction. KEEP retains the recorded income; REOPEN sends the payment back to reconciliation review. Omitting it on such a cancel returns 409 PAID_BOOKING_LINKED.',
+  })
+  @IsOptional()
+  @IsEnum(PaidLinkActionDto)
+  paidLinkAction?: PaidLinkActionDto;
 }

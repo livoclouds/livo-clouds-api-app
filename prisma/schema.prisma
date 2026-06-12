@@ -124,6 +124,33 @@ enum SupplierEngagement {
   OCCASIONAL
 }
 
+// Quotation enums intentionally use the exact camelCase values the web app's
+// QuotationCategory / QuotationStatus unions already ship (see
+// livo-clouds-web-app/src/types/quotations.types.ts). Prisma permits these
+// identifiers, and matching them removes any lossy API<->web mapping layer.
+enum QuotationCategory {
+  carpentry
+  hardware
+  gateRepair
+  masonry
+  gardening
+  surveillance
+  lighting
+  stationery
+  signage
+  painting
+  other
+}
+
+enum QuotationStatus {
+  received
+  pendingReview
+  providerSelected
+  inProgress
+  completed
+  cancelled
+}
+
 enum FlowType {
   INCOME
   EXPENSE
@@ -142,6 +169,9 @@ enum MatchSource {
   MANUAL
   RULE
   AUTO_TERRACE_BOOKING
+  // ENGINE-043: re-applied from a recurring manual correction
+  // (ReconciliationCorrectionPattern with occurrenceCount >= 2).
+  CORRECTION_PATTERN
 }
 
 enum ImportStatus {
@@ -198,6 +228,10 @@ enum NotificationType {
   USER_ADDED
   PERMISSIONS_CHANGED
   SESSION_EXPIRING
+
+  // ARCO data-subject rights — Phase 7a. Admin alert when a request passes its
+  // LFPDPPP legal deadline.
+  ARCO_OVERDUE
 }
 
 enum RootScope {
@@ -232,6 +266,27 @@ enum RequiresReviewReason {
   NO_MATCH
   TERRACE_AMBIGUOUS
   MANUAL_UNMATCHED
+  // ENGINE-045: one payment names >= 2 units ("casas 307 y 43") — the detection
+  // is high-confidence but how the amount splits across units is the operator's
+  // call, so the row must always land in review with a dedicated, triageable reason.
+  MULTI_UNIT_SPLIT_REQUIRED
+  // CAL-003 (calendar Phase 3): a second same-amount transaction tried to link a
+  // terrace booking already claimed by an active (non-IGNORED) payment in the
+  // same run — flagged for the operator instead of silently double-absorbed.
+  TERRACE_DUPLICATE
+  // CAL-012 (calendar Phase 3): the amount matches the booking's security deposit
+  // rather than its rental (or rental == deposit, so the two are indistinguishable).
+  // Deposits have no auto-link path, so the row lands in review for a manual call.
+  TERRACE_DEPOSIT
+}
+
+// ENGINE-009: which bank-specific extraction strategy the classification engine
+// applies to a batch. Promoted to a validated field so the dialect no longer
+// depends on a free-text bankName substring ("bajio") that silently degrades
+// when the profile is renamed.
+enum BankDialect {
+  GENERIC
+  BANBAJIO
 }
 
 enum ReconciliationStatus {
@@ -375,6 +430,8 @@ model Condominium {
   supportTickets                   SupportTicket[]
   residentDossierEntries           ResidentDossierEntry[]
   arcoRequests                     ArcoRequest[]
+  quotationRequests                QuotationRequest[]
+  quotations                       Quotation[]
 
   @@map("condominiums")
 }
@@ -399,9 +456,20 @@ model CondominiumSettings {
   defaultLocale     String    @default("es")
 
   // Resident dossier (antecedentes) retention — Capa 2D. Days after soft-delete
-  // before the recycle bin is auto-purged. 0 = disabled (opt-in per condominium);
+  // before the recycle bin is auto-purged. 0 = no window (opt-in per condominium);
   // LEGAL category / LEGAL_CONFIDENTIAL entries are never auto-purged regardless.
   dossierRetentionDays Int @default(0)
+  // Whether the scheduled auto-purge actually runs. The sweep only purges when
+  // this is true AND dossierRetentionDays > 0, so an admin can pause the purge
+  // without losing the configured window. Shared gate for the ARCO retention
+  // sweep below.
+  autopurgeEnabled Boolean @default(false)
+
+  // ARCO (data-subject rights) retention — months after a request is resolved
+  // (COMPLETED/REJECTED) before it and its evidence are auto-purged. 0 = no
+  // window (opt-in per condominium). Gated by autopurgeEnabled. Mexican law
+  // commonly keeps these ~6 years (72 months) for liability evidence.
+  arcoRetentionMonths Int @default(0)
 
   // Financial-health score weights — Fase 4. Per-condominium override of the 7
   // factor weights (onTime, collectionRate, monthsCurrent, delinquencyAge,
@@ -908,6 +976,68 @@ model SupplierCategory {
   @@map("supplier_categories")
 }
 
+/// A request for quotes on a piece of work (painting, gate repair, etc.). Each
+/// request gathers one or more provider Quotations; the chosen one is tracked by
+/// `selectedQuotationId` (a plain id, validated in the service against the
+/// request's own quotations — no FK cycle). Soft-deleted via `deletedAt`.
+model QuotationRequest {
+  id            String            @id @default(uuid())
+  condominiumId String
+  title         String
+  description   String            @default("")
+  category      QuotationCategory
+  status        QuotationStatus   @default(received)
+  targetStartDate DateTime?       @db.Date
+  targetEndDate   DateTime?       @db.Date
+  // Id of the winning Quotation (one of this request's `quotations`), or null.
+  selectedQuotationId String?
+  beforePhotos  String[]          @default([])
+  afterPhotos   String[]          @default([])
+  comments      String            @default("")
+  // JWT `sub` of the actor. API-owned, never from the request body.
+  createdBy     String?
+  updatedBy     String?
+  deletedAt     DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  quotations  Quotation[]
+
+  @@index([condominiumId])
+  @@index([condominiumId, status])
+  @@index([condominiumId, category])
+  @@index([deletedAt])
+  @@map("quotation_requests")
+}
+
+/// A single provider's quote attached to a QuotationRequest. Hard-deleted (it is
+/// a child row of the request); the parent FK cascades on request deletion.
+model Quotation {
+  id                 String    @id @default(uuid())
+  condominiumId      String
+  requestId          String
+  providerName       String
+  providerPhone      String?
+  providerEmail      String?
+  amount             Decimal   @db.Decimal(12, 2)
+  currency           String    @default("MXN")
+  quoteDate          DateTime  @db.Date
+  estimatedStartDate DateTime? @db.Date
+  estimatedEndDate   DateTime? @db.Date
+  documentUrl        String?
+  notes              String    @default("")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  condominium Condominium      @relation(fields: [condominiumId], references: [id])
+  request     QuotationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([condominiumId])
+  @@map("quotations")
+}
+
 /// Condo-editable catalog that classifies EXPENSE transactions (e.g.
 /// "Administración", "Vigilancia", "Jardinería"). The income side keeps using the
 /// hardcoded `paymentConcept` enum; this is the expense-side counterpart, modeled
@@ -964,6 +1094,12 @@ model ImportBatch {
   finalBalance     Decimal      @default(0) @db.Decimal(15, 2)
   transactionCount Int          @default(0)
   processedCount   Int          @default(0)
+  // ENGINE-058 — persisted classification summary (precision baseline).
+  // `classifiedAt IS NULL` distinguishes pre-harness batches from "0 classified".
+  classifiedCount  Int          @default(0)
+  needsReviewCount Int          @default(0)
+  unmatchedCount   Int          @default(0)
+  classifiedAt     DateTime?
   warnings         Json         @default("[]")
   errorMessage     String?
   storageKey       String?
@@ -985,6 +1121,9 @@ model ImportBatch {
   transactions  Transaction[]
 
   @@index([condominiumId])
+  // ENGINE-017 — a PARTIAL unique index (condominiumId, fileHash) WHERE
+  // status <> 'FAILED' also exists in SQL only (Prisma cannot model partial
+  // indexes). See migration 20260612010000_import_batches_live_filehash_unique.
   @@index([fileHash])
   @@index([status])
   @@index([createdAt])
@@ -998,6 +1137,10 @@ model BankProfile {
   condominiumId String
   name          String
   bankName      String?
+  // ENGINE-009: bank-specific extraction strategy applied by the classification
+  // engine. Defaulted from the bankName at create time; renaming the profile
+  // never silently changes the engine behavior — only this field does.
+  dialect       BankDialect @default(GENERIC)
   isDefault     Boolean  @default(false)
   isActive      Boolean  @default(true)
   useSameForPdf Boolean  @default(true)
@@ -1036,6 +1179,10 @@ model Transaction {
   // All units when one payment covers several houses ("casas 307 y 43"). The
   // scalar above stays the 1:1 primary (null for multi); this array surfaces the
   // full set for the "Unidad detectada" column and drives manual allocations.
+  // ENGINE-021: the pairing is enforced structurally by the DB CHECK constraint
+  // transactions_unit_detection_sync_check (scalar NULL · array '{}' legacy ·
+  // array = ARRAY[scalar]) — Prisma does not diff CHECK constraints, so it
+  // lives only in the migration SQL.
   unitNumbersDetected    String[]              @default([])
   payerNameDetected      String?
   paymentConcept         String?
@@ -1046,6 +1193,12 @@ model Transaction {
   paymentPeriodYear      Int?
   paymentPeriodMonth     Int?
   matchSource            MatchSource?
+  // ENGINE-042: which hardcoded extraction pattern produced the unit link
+  // (UNIT_PATTERNS label like "casa"/"#", or "banbajio:segment"/
+  // "banbajio:amount-gate"). Null for rule/correction matches — matchedRuleId
+  // and matchSource attribute those. Feeds the per-pattern override-rate
+  // buckets in ClassificationMetricsService.
+  matchedPatternLabel    String?
   confidenceScore        Decimal?              @db.Decimal(5, 4)
   matchedAt              DateTime?
   classificationVersion  Int                   @default(1)
@@ -1304,6 +1457,10 @@ model ReconciliationRule {
   // EXPENSE rule; both ignored for CONCEPT/UNIT rules.
   expenseCategoryId     String?
   supplierId            String?
+  // ENGINE-015: the confidence ASSIGNED to this rule's matches (stamped as the
+  // transaction's confidenceScore). The engine's fixed 0.8 AUTO gate then decides
+  // auto-classify vs manual review — the field name is historical; it is not a
+  // per-rule gate the score is compared against.
   confidenceThreshold   Decimal                @default(0.80) @db.Decimal(3, 2)
   isActive              Boolean                @default(true)
   priority              Int                    @default(0)
@@ -1943,6 +2100,9 @@ enum ArcoRequestType {
 }
 
 enum ArcoRequestStatus {
+  // Identity not yet verified — the request is logged but substantive handling
+  // (and the 20-business-day clock) starts once the data subject is verified.
+  PENDING_VERIFICATION
   RECEIVED
   IN_REVIEW
   COMPLETED
@@ -1957,6 +2117,45 @@ enum ArcoRequestEventType {
   ATTACHMENT_ADDED
   ATTACHMENT_REMOVED
   ACCESS_PACKET_GENERATED
+  // Phase 7a — SLA automation, notifications & retention.
+  OVERDUE
+  ESCALATED_BY_SYSTEM
+  NOTIFIED
+  RETENTION_PURGE
+}
+
+// Legal basis for processing the ARCO request (LFPDPPP / GDPR Art. 6 analog).
+enum ArcoLegalBasis {
+  CONSENT
+  CONTRACT
+  LEGAL_OBLIGATION
+  VITAL_INTEREST
+  PUBLIC_TASK
+  LEGITIMATE_INTEREST
+}
+
+// How the requester's identity was confirmed before substantive handling.
+enum ArcoIdentityVerificationMethod {
+  GOVERNMENT_ID
+  PASSPORT
+  CURP
+  AGENT_NOTARIZED
+  OTHER
+}
+
+// Type of official ID the requester presented (the number is stored masked).
+enum ArcoRequesterIdType {
+  INE
+  PASSPORT
+  CURP
+  OTHER
+}
+
+// Relationship of the requester to the data subject.
+enum ArcoRequesterRelationship {
+  SELF
+  LEGAL_AGENT
+  AUTHORIZED_REPRESENTATIVE
 }
 
 model ArcoRequest {
@@ -1971,8 +2170,26 @@ model ArcoRequest {
   description    String
   // Admin's resolution notes once handled.
   resolution     String?
+  // Mandatory written justification when status = REJECTED (LFPDPPP Art. 12).
+  rejectionReason String?
   // Official reference (oficio/acta) backing the request or its resolution.
   referenceFolio String?
+
+  // --- Compliance: legal basis & identity verification (LFPDPPP Art. 12) ---
+  legalBasis                 ArcoLegalBasis?
+  // Identity of the person who filed the request and their standing.
+  requesterName              String?
+  requesterRelationship      ArcoRequesterRelationship?
+  requesterIdType            ArcoRequesterIdType?
+  // Only the last digits are kept; the service masks before persisting.
+  requesterIdNumberMasked    String?
+  // Whether the requester's identity has been confirmed. While false the
+  // request sits in PENDING_VERIFICATION.
+  identityVerified           Boolean                         @default(false)
+  identityVerificationMethod ArcoIdentityVerificationMethod?
+  identityVerifiedAt         DateTime?
+  // API-owned actor field — JWT sub of the verifying user.
+  identityVerifiedBy         String?
   // When the resident submitted it (admin-set; defaults to now).
   receivedAt     DateTime          @default(now())
   // LFPDPPP legal response deadline — denormalized at creation

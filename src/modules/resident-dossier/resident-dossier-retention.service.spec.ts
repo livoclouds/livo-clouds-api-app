@@ -32,11 +32,13 @@ function makeService(over: {
 }
 
 describe('DossierRetentionService.sweep', () => {
-  it('only scans condominiums with retention enabled (days > 0)', async () => {
+  it('only scans condominiums with auto-purge on AND a positive window', async () => {
     const { service, prisma } = makeService();
     await service.sweep();
     expect(prisma.condominiumSettings.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { dossierRetentionDays: { gt: 0 } } }),
+      expect.objectContaining({
+        where: { autopurgeEnabled: true, dossierRetentionDays: { gt: 0 } },
+      }),
     );
   });
 

@@ -14,15 +14,29 @@
  * tenant database would be destructive: `resetDb()` TRUNCATEs. Use a throwaway DB
  * (CI Postgres service container, or an ephemeral Neon branch locally).
  */
+import { NotFoundException } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
+import type { ImportBatch } from '@prisma/client';
 
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { AuditService } from '../../src/modules/audit/audit.service';
+import { BankProfilesService } from '../../src/modules/bank-profiles/bank-profiles.service';
+import { CalendarService } from '../../src/modules/calendar/calendar.service';
 import { ClassificationService } from '../../src/modules/classification/classification.service';
+import { BatchClassificationService } from '../../src/modules/classification/batch-classification.service';
+import { ManualClassificationService } from '../../src/modules/classification/manual-classification.service';
 import { DashboardService } from '../../src/modules/dashboard/dashboard.service';
+import { ImportsService } from '../../src/modules/imports/imports.service';
+import { ImportsParserService } from '../../src/modules/imports/parser';
 import { ReconciliationRulesService } from '../../src/modules/reconciliation-rules/reconciliation-rules.service';
+import { ReconciliationLifecycleService } from '../../src/modules/reconciliation/reconciliation-lifecycle.service';
+import { SummaryRecomputeService } from '../../src/modules/reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../../src/modules/reconciliation/terrace-payment-link.service';
 import { SettingsCacheService } from '../../src/modules/settings/settings-cache.service';
+import { SettingsService } from '../../src/modules/settings/settings.service';
+import { StorageService } from '../../src/modules/storage/storage.service';
 
 /**
  * Resolved integration DB URL. When unset, integration suites skip themselves
@@ -41,6 +55,10 @@ export interface PipelineContext {
   prisma: PrismaService;
   classification: ClassificationService;
   dashboard: DashboardService;
+  /** Calendar safety net (CAL-007): real CalendarService against the test DB. */
+  calendar: CalendarService;
+  /** Calendar safety net (CAL-007/CAL-022): approve/reopen lifecycle entrypoint. */
+  reconciliation: ReconciliationLifecycleService;
 }
 
 /** Boots the minimal NestJS context and connects PrismaService to the test DB. */
@@ -54,8 +72,17 @@ export async function createPipelineContext(): Promise<PipelineContext> {
       PrismaService,
       SettingsCacheService,
       ReconciliationRulesService,
+      SummaryRecomputeService,
+      TerracePaymentLinkService,
+      ReconciliationLifecycleService,
+      BatchClassificationService,
+      ManualClassificationService,
       ClassificationService,
       DashboardService,
+      // Calendar safety net (CAL-007): CalendarService + its AuditService
+      // dependency, exercised against the same real Postgres.
+      AuditService,
+      CalendarService,
     ],
   }).compile();
 
@@ -67,12 +94,158 @@ export async function createPipelineContext(): Promise<PipelineContext> {
     prisma: moduleRef.get(PrismaService),
     classification: moduleRef.get(ClassificationService),
     dashboard: moduleRef.get(DashboardService),
+    calendar: moduleRef.get(CalendarService),
+    reconciliation: moduleRef.get(ReconciliationLifecycleService),
   };
 }
 
 /** Tears the context down (PrismaService.$disconnect via onModuleDestroy). */
 export async function closePipelineContext(ctx: PipelineContext): Promise<void> {
   await ctx.moduleRef.close();
+}
+
+// ─── Imports context (ENGINE-032) ────────────────────────────────────────────
+// Boots the full ImportsService dependency chain against the test database,
+// replacing only StorageService (Cloudflare R2) with an in-memory stub so the
+// upload → confirm → classify flow runs hermetically — no network, no bucket.
+
+/**
+ * In-memory replacement for StorageService backed by a Map<string, Buffer>.
+ * Method names and signatures mirror the real service exactly (the subset the
+ * imports flow touches) so it can be dropped in via `{ provide: StorageService,
+ * useValue: stub }`. R2 access-logging is intentionally omitted — it is a
+ * side-channel concern of the real service, not of the flow under test.
+ */
+export interface MemStorageStub {
+  /** The backing store — assert on stored buffers directly in tests. */
+  files: Map<string, Buffer>;
+  isConfigured(): boolean;
+  getBucketName(): string;
+  uploadFile(
+    key: string,
+    buffer: Buffer,
+    mimeType: string,
+    ctx?: unknown,
+  ): Promise<string>;
+  downloadFile(key: string, ctx?: unknown): Promise<Buffer>;
+  deleteFile(key: string, ctx?: unknown): Promise<void>;
+  getPresignedUrl(
+    key: string,
+    expiresIn?: number,
+    ctx?: unknown,
+    log?: boolean,
+  ): Promise<string>;
+}
+
+/** Builds a fresh in-memory storage stub (one Map per context). */
+export function createMemStorageStub(): MemStorageStub {
+  const files = new Map<string, Buffer>();
+  return {
+    files,
+    isConfigured: () => true,
+    getBucketName: () => 'memory',
+    uploadFile: async (key, buffer) => {
+      files.set(key, Buffer.from(buffer));
+      return key;
+    },
+    downloadFile: async (key) => {
+      const stored = files.get(key);
+      // Mirrors the real service's not-found contract (NotFoundException).
+      if (!stored) throw new NotFoundException('Storage object not found');
+      return Buffer.from(stored);
+    },
+    deleteFile: async (key) => {
+      files.delete(key);
+    },
+    getPresignedUrl: async (key) => `memory://${key}`,
+  };
+}
+
+export interface ImportsContext {
+  moduleRef: TestingModule;
+  prisma: PrismaService;
+  imports: ImportsService;
+  classification: ClassificationService;
+  parser: ImportsParserService;
+  storage: MemStorageStub;
+}
+
+/**
+ * Boots everything ImportsService needs:
+ *   PrismaService · SettingsCacheService → SettingsService (fees guard) ·
+ *   ReconciliationRulesService → ClassificationService (deferred classify) ·
+ *   AuditService · BankProfilesService · ImportsParserService (server re-parse)
+ *   · ConfigService (ConfigModule) · EventEmitter2 (EventEmitterModule),
+ * with StorageService replaced by the in-memory stub.
+ */
+export async function createImportsContext(): Promise<ImportsContext> {
+  const storage = createMemStorageStub();
+
+  const moduleRef = await Test.createTestingModule({
+    imports: [
+      ConfigModule.forRoot({ isGlobal: true }),
+      EventEmitterModule.forRoot(),
+    ],
+    providers: [
+      PrismaService,
+      SettingsCacheService,
+      SettingsService,
+      ReconciliationRulesService,
+      SummaryRecomputeService,
+      TerracePaymentLinkService,
+      ReconciliationLifecycleService,
+      BatchClassificationService,
+      ManualClassificationService,
+      ClassificationService,
+      AuditService,
+      BankProfilesService,
+      ImportsParserService,
+      ImportsService,
+      { provide: StorageService, useValue: storage },
+    ],
+  }).compile();
+
+  await moduleRef.init();
+
+  return {
+    moduleRef,
+    prisma: moduleRef.get(PrismaService),
+    imports: moduleRef.get(ImportsService),
+    classification: moduleRef.get(ClassificationService),
+    parser: moduleRef.get(ImportsParserService),
+    storage,
+  };
+}
+
+export async function closeImportsContext(ctx: ImportsContext): Promise<void> {
+  await ctx.moduleRef.close();
+}
+
+/**
+ * Polls the import batch every 50 ms until it reaches a terminal status
+ * (COMPLETED or FAILED) and returns the terminal row. confirm() defers
+ * classification via `setImmediate`, so the only reliable e2e synchronization
+ * point is the batch row itself. Throws when `timeoutMs` elapses first.
+ */
+export async function waitForBatchTerminal(
+  prisma: PrismaService,
+  batchId: string,
+  timeoutMs = 15_000,
+): Promise<ImportBatch> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const batch = await prisma.importBatch.findUnique({ where: { id: batchId } });
+    if (batch && (batch.status === 'COMPLETED' || batch.status === 'FAILED')) {
+      return batch;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitForBatchTerminal: batch ${batchId} did not reach COMPLETED/FAILED ` +
+          `within ${timeoutMs}ms (last status: ${batch?.status ?? 'not found'})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /**
@@ -84,6 +257,8 @@ export async function closePipelineContext(ctx: PipelineContext): Promise<void> 
 export async function resetDb(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
     `TRUNCATE TABLE
+       "audit_logs",
+       "calendar_events",
        "transactions",
        "financial_monthly_summaries",
        "reconciliation_rules",

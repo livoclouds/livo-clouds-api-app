@@ -20,6 +20,7 @@ import { ReconciliationRuleKind } from '@prisma/client';
 import {
   MAX_EXTRACTION_PATTERN_LENGTH,
   SafeRegexConstraint,
+  SafeTriggerPatternConstraint,
   UnitOutcomeShapeConstraint,
 } from '../validators/unit-rule.validators';
 import { ExtractionRecipeShapeConstraint } from '../validators/extraction-recipe.validators';
@@ -49,12 +50,15 @@ export class CreateReconciliationRuleDto {
   @MaxLength(80, { each: true })
   keywords: string[];
 
+  // ENGINE-041: each trigger is RE2 compile-checked at save time — an invalid
+  // entry used to be accepted and then silently never fire (a dead rule).
   @ApiPropertyOptional({ type: [String] })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(50)
   @IsString({ each: true })
   @MaxLength(MAX_EXTRACTION_PATTERN_LENGTH, { each: true })
+  @Validate(SafeTriggerPatternConstraint, { each: true })
   unitPatterns?: string[];
 
   @ApiPropertyOptional()
@@ -118,7 +122,16 @@ export class CreateReconciliationRuleDto {
   @Validate(ExtractionRecipeShapeConstraint)
   extractionRecipe?: unknown;
 
-  @ApiPropertyOptional({ minimum: 0, maximum: 1, default: 0.8 })
+  // ENGINE-015: this is the confidence ASSIGNED to the rule's matches (stamped
+  // as the transaction's confidenceScore); the engine's fixed 0.8 AUTO gate
+  // decides auto-classify vs manual review. The name is historical.
+  @ApiPropertyOptional({
+    minimum: 0,
+    maximum: 1,
+    default: 0.8,
+    description:
+      "Confidence assigned to this rule's matches (>= 0.80 auto-classifies; below goes to manual review)",
+  })
   @IsOptional()
   @IsNumber()
   @Min(0)

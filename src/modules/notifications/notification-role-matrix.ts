@@ -57,6 +57,10 @@ export const NOTIFICATION_ROLE_ACCESS = {
   // Finance — ROOT excluded: condominium-level operational events
   NEGATIVE_BALANCE: [UserRole.TENANT_ADMIN],
 
+  // ARCO data-subject rights — ROOT excluded: condominium-level compliance.
+  // Only the tenant admin (residents.arco.manage holder) acts on overdue requests.
+  ARCO_OVERDUE: [UserRole.TENANT_ADMIN],
+
   // Incidents
   NEW_INCIDENT: [UserRole.ROOT, UserRole.TENANT_ADMIN],
 

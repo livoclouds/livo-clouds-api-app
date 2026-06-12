@@ -8,7 +8,21 @@ export interface TerraceCandidate {
   unitNumber: string | null;
   startDate: Date;
   terraceRentalAmount: number;
+  /** CAL-012: the booking's security deposit, matched as a distinct amount kind. */
+  securityDepositAmount: number;
+  /**
+   * CAL-012: only an un-settled (PENDING) deposit is still expected, so a
+   * deposit-amount match only flags when the deposit has not yet been received.
+   */
+  securityDepositStatus: 'PENDING' | 'RECEIVED' | 'RETURNED' | 'RETAINED';
   customKeywords: string[];
+  /**
+   * CAL-003: the booking's rental is already covered by an active (non-IGNORED)
+   * transaction — either persisted PAID, linked by an APPROVED/PENDING payment,
+   * or claimed by an earlier match in this same run. A further rental-amount
+   * match is a duplicate, not a new payment, and must not auto-link.
+   */
+  claimed: boolean;
 }
 
 export interface TerraceMatchInput {
@@ -32,7 +46,12 @@ export interface TerraceMatchResult {
   matchSource: 'AUTO_TERRACE_BOOKING';
   confidenceScore: number;
   classificationStatus: 'AUTO' | 'NEEDS_REVIEW';
-  requiresReviewReason: 'TERRACE_AMBIGUOUS' | 'LOW_CONFIDENCE' | null;
+  requiresReviewReason:
+    | 'TERRACE_AMBIGUOUS'
+    | 'TERRACE_DUPLICATE'
+    | 'TERRACE_DEPOSIT'
+    | 'LOW_CONFIDENCE'
+    | null;
   paymentConcept: 'AMENITY';
   matchedAt: Date | null;
 }
@@ -106,8 +125,10 @@ function inDateWindow(transactionDate: Date, eventStartDate: Date): boolean {
  * events against a single transaction and returns the best match, or null if no match is
  * strong enough to warrant any action.
  *
- * Callers are responsible for pre-filtering candidates: only pass events that are
- * TERRACE_BOOKING, not CANCELLED, not deleted, and have paymentStatus === 'PENDING'.
+ * Callers pre-filter candidates to TERRACE_BOOKING events that are not CANCELLED and
+ * not deleted. Unlike phase 1, the pool now also includes claimed bookings (PAID, or
+ * already linked by an active payment) so a duplicate payment can be detected (CAL-003);
+ * such candidates carry `claimed: true` and never auto-link.
  *
  * The transaction must be INCOME (terrace rental is always received income).
  */
@@ -124,15 +145,29 @@ export function matchTerraceBooking(
   // and the per-candidate customKeywords already pre-normalized by the metadata validator.
   const normalizedGlobalKeywords = normalizeTerraceKeywordList(input.globalKeywords ?? []);
 
-  // Step 1: filter to candidates with matching amount and date in window.
-  const amountAndDateMatches = candidates.filter(
-    (c) => amountMatches(input.amount, c.terraceRentalAmount) && inDateWindow(input.transactionDate, c.startDate),
-  );
+  // Step 1: keep candidates whose RENTAL or (un-settled) DEPOSIT amount matches and
+  // whose date is in window. CAL-012: tracking which amount kind matched lets the
+  // winner branch route deposit-sized payments to review instead of auto-linking
+  // them as rental.
+  const amountAndDateMatches = candidates
+    .map((c) => {
+      const rentalMatch = amountMatches(input.amount, c.terraceRentalAmount);
+      const depositMatch =
+        c.securityDepositStatus === 'PENDING' &&
+        amountMatches(input.amount, c.securityDepositAmount);
+      return { candidate: c, rentalMatch, depositMatch };
+    })
+    .filter(
+      (m) =>
+        (m.rentalMatch || m.depositMatch) &&
+        inDateWindow(input.transactionDate, m.candidate.startDate),
+    );
 
   if (amountAndDateMatches.length === 0) return null;
 
   // Step 2: score each candidate by supporting signals.
-  const scored = amountAndDateMatches.map((c) => {
+  const scored = amountAndDateMatches.map((m) => {
+    const c = m.candidate;
     let score = 0;
 
     const residentSignal =
@@ -150,7 +185,7 @@ export function matchTerraceBooking(
     const keywordSignal = hasTerraceKeyword(normalizedDesc, c.customKeywords, normalizedGlobalKeywords);
     if (keywordSignal) score += SIGNAL_KEYWORD;
 
-    return { candidate: c, score, residentSignal, unitSignal };
+    return { candidate: c, score, residentSignal, unitSignal, depositMatch: m.depositMatch };
   });
 
   // Step 3: discard candidates with no supporting signals (amount + date only).
@@ -177,6 +212,39 @@ export function matchTerraceBooking(
   }
 
   const winner = best[0];
+
+  // CAL-012: the amount matches the booking's security deposit (or rental == deposit,
+  // so the two cannot be told apart). Deposits have no auto-link / engine payment path,
+  // so never mark the rental PAID off a deposit-sized payment — route to the operator.
+  if (winner.depositMatch) {
+    return {
+      matchedCalendarEventId: null,
+      residentId: null,
+      matchSource: 'AUTO_TERRACE_BOOKING',
+      confidenceScore: 0.60,
+      classificationStatus: 'NEEDS_REVIEW',
+      requiresReviewReason: 'TERRACE_DEPOSIT',
+      paymentConcept: 'AMENITY',
+      matchedAt: null,
+    };
+  }
+
+  // CAL-003: the winning booking's rental is already covered by an active payment
+  // (persisted PAID, or linked earlier in this same run). A second same-amount
+  // transaction is a duplicate, not a new payment — surface it for the operator
+  // instead of silently double-absorbing the income against the same booking.
+  if (winner.candidate.claimed) {
+    return {
+      matchedCalendarEventId: null,
+      residentId: null,
+      matchSource: 'AUTO_TERRACE_BOOKING',
+      confidenceScore: 0.60,
+      classificationStatus: 'NEEDS_REVIEW',
+      requiresReviewReason: 'TERRACE_DUPLICATE',
+      paymentConcept: 'AMENITY',
+      matchedAt: null,
+    };
+  }
 
   // Step 6: classify based on which signals fired.
   if (winner.residentSignal && winner.unitSignal) {
