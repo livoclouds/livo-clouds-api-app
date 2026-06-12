@@ -186,11 +186,53 @@ export class ReconciliationRulesService {
     });
   }
 
+  /**
+   * ENGINE-031 — tenant-scope guard for rule outcomes. A rule's
+   * expenseCategoryId/supplierId, when provided non-empty, must belong to the
+   * same condominium; otherwise a rule could stamp a foreign tenant's
+   * supplier/category onto this tenant's transactions (and that tenant's later
+   * hard-delete would 500 on the FK). 404 so a foreign id is indistinguishable
+   * from a nonexistent one.
+   */
+  private async assertOutcomeOwnership(
+    condominiumId: string,
+    dto: { expenseCategoryId?: string | null; supplierId?: string | null },
+  ): Promise<void> {
+    if (dto.expenseCategoryId) {
+      const cat = await this.prisma.expenseCategory.findFirst({
+        where: { id: dto.expenseCategoryId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!cat) {
+        throw new NotFoundException({
+          code: 'EXPENSE_CATEGORY_NOT_FOUND',
+          reason: 'Expense category does not belong to this condominium.',
+          field: 'expenseCategoryId',
+        });
+      }
+    }
+    if (dto.supplierId) {
+      const supplier = await this.prisma.supplier.findFirst({
+        where: { id: dto.supplierId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!supplier) {
+        throw new NotFoundException({
+          code: 'SUPPLIER_NOT_FOUND',
+          reason: 'Supplier does not belong to this condominium.',
+          field: 'supplierId',
+        });
+      }
+    }
+  }
+
   async create(
     condominiumId: string,
     dto: CreateReconciliationRuleDto,
     actorUserId?: string,
   ) {
+    await this.assertOutcomeOwnership(condominiumId, dto);
+
     // Priority is no longer user-editable. New rules are appended at the end
     // of the list (MAX(priority) + 1, starting from 1). Reordering happens
     // through the dedicated reorder() endpoint.
@@ -258,33 +300,40 @@ export class ReconciliationRulesService {
     ruleIds: string[],
     actorUserId?: string,
   ) {
-    const existing = await this.prisma.reconciliationRule.findMany({
-      where: { condominiumId },
-      select: { id: true },
-    });
-    const existingIds = new Set(existing.map((r) => r.id));
+    // ENGINE-047: membership is validated INSIDE the write transaction so a
+    // concurrent create/delete between validation and write cannot produce
+    // duplicate or gapped priorities from a stale snapshot.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.reconciliationRule.findMany({
+        where: { condominiumId },
+        select: { id: true },
+      });
+      const existingIds = new Set(existing.map((r) => r.id));
 
-    if (ruleIds.length !== existingIds.size) {
-      throw new ConflictException(
-        `Reorder payload must contain every rule of the condominium exactly once (expected ${existingIds.size}, received ${ruleIds.length}).`,
-      );
-    }
-    for (const id of ruleIds) {
-      if (!existingIds.has(id)) {
+      if (ruleIds.length !== existingIds.size) {
         throw new ConflictException(
-          `Rule ${id} does not belong to this condominium.`,
+          `Reorder payload must contain every rule of the condominium exactly once (expected ${existingIds.size}, received ${ruleIds.length}).`,
         );
       }
-    }
+      for (const id of ruleIds) {
+        if (!existingIds.has(id)) {
+          throw new ConflictException(
+            `Rule ${id} does not belong to this condominium.`,
+          );
+        }
+      }
 
-    const updated = await this.prisma.$transaction(
-      ruleIds.map((id, index) =>
-        this.prisma.reconciliationRule.update({
-          where: { id },
-          data: { priority: index + 1 },
-        }),
-      ),
-    );
+      const results: ReconciliationRule[] = [];
+      for (const [index, id] of ruleIds.entries()) {
+        results.push(
+          await tx.reconciliationRule.update({
+            where: { id },
+            data: { priority: index + 1 },
+          }),
+        );
+      }
+      return results;
+    });
 
     await this.recordChange(
       condominiumId,
@@ -304,6 +353,7 @@ export class ReconciliationRulesService {
     actorUserId?: string,
   ) {
     const before = await this.findOneOrFail(condominiumId, id);
+    await this.assertOutcomeOwnership(condominiumId, dto);
 
     const data: Prisma.ReconciliationRuleUncheckedUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;

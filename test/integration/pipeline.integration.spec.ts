@@ -258,6 +258,8 @@ describeIntegration('classification pipeline (integration)', () => {
       classified: 2,
       needsReview: 1,
       unmatched: 1,
+      // ENGINE-018: no concurrent edits in this run, nothing skipped.
+      skipped: 0,
     });
     // Invariant: every row is either auto or needs-review.
     expect(summary.classified + summary.needsReview).toBe(summary.total);
@@ -518,7 +520,8 @@ describeIntegration('classification pipeline (integration)', () => {
         'approve',
         fx.importerId,
       );
-      expect(result).toEqual({ affected: 2 });
+      // ENGINE-019: bulk responses now report skips alongside affected.
+      expect(result).toEqual({ affected: 2, skipped: 0, requested: 2 });
 
       const summary = await readSummary();
       expect(Number(summary.totalIncome)).toBe(2000);
@@ -638,7 +641,7 @@ describeIntegration('classification pipeline (integration)', () => {
       );
 
       // No rows match (condominiumId B + batch A) → all-zero summary.
-      expect(summary).toEqual({ total: 0, classified: 0, needsReview: 0, unmatched: 0 });
+      expect(summary).toEqual({ total: 0, classified: 0, needsReview: 0, unmatched: 0, skipped: 0 });
 
       // Condo A's rows must be untouched — still NEEDS_REVIEW, never classified
       // by the foreign-tenant call.

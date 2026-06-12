@@ -1156,6 +1156,10 @@ model Transaction {
   // All units when one payment covers several houses ("casas 307 y 43"). The
   // scalar above stays the 1:1 primary (null for multi); this array surfaces the
   // full set for the "Unidad detectada" column and drives manual allocations.
+  // ENGINE-021: the pairing is enforced structurally by the DB CHECK constraint
+  // transactions_unit_detection_sync_check (scalar NULL · array '{}' legacy ·
+  // array = ARRAY[scalar]) — Prisma does not diff CHECK constraints, so it
+  // lives only in the migration SQL.
   unitNumbersDetected    String[]              @default([])
   payerNameDetected      String?
   paymentConcept         String?

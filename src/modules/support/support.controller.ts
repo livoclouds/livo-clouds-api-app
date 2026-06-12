@@ -15,6 +15,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipCondominiumScope } from '../../common/decorators/skip-condominium-scope.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
 import { isValidSupportSlug } from './dto/article-slug.util';
@@ -27,10 +28,12 @@ import { SupportService, UploadedScreenshot } from './support.service';
 const SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024;
 const SCREENSHOT_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
-// The class-level CondominiumAccessGuard is a no-op for the global metric routes
-// (no `:condominiumSlug` param → guard returns true) and enforces tenant scope
-// for the ticket routes. No @RequirePermission anywhere: the Support Center is
-// available to every authenticated role, and any member may file a ticket.
+// The class-level CondominiumAccessGuard enforces tenant scope for the ticket
+// routes; the global metric routes opt out via @SkipCondominiumScope() — their
+// `:slug` is an ARTICLE slug, which the guard would otherwise misread as a
+// condominium slug (ENGINE-057). No @RequirePermission anywhere: the Support
+// Center is available to every authenticated role, and any member may file a
+// ticket.
 @ApiTags('Support')
 @UseGuards(CondominiumAccessGuard)
 @Controller()
@@ -40,6 +43,7 @@ export class SupportController {
   // ─── Article metrics (global) ─────────────────────────────────────────────
 
   @Post('support/articles/:slug/view')
+  @SkipCondominiumScope()
   @Throttle({ sustained: { limit: 120, ttl: 60_000 } })
   @ApiOperation({ summary: 'Increment the view counter for an article' })
   recordView(@Param('slug') slug: string) {
@@ -48,6 +52,7 @@ export class SupportController {
   }
 
   @Post('support/articles/:slug/feedback')
+  @SkipCondominiumScope()
   @ApiOperation({ summary: 'Cast, change, or retract helpful feedback' })
   submitFeedback(
     @Param('slug') slug: string,
@@ -59,6 +64,7 @@ export class SupportController {
   }
 
   @Post('support/articles/metrics')
+  @SkipCondominiumScope()
   @ApiOperation({ summary: 'Batch-fetch engagement metrics for article slugs' })
   getMetrics(@Body() dto: GetMetricsDto, @CurrentUser() user: JwtPayload) {
     return this.support.getMetrics(dto.slugs, user.sub);

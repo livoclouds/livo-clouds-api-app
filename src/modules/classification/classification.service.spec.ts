@@ -4,6 +4,7 @@ import {
   FlowType,
   MatchSource,
   ReconciliationRuleKind,
+  ReconciliationStatus,
   RequiresReviewReason,
 } from '@prisma/client';
 import {
@@ -37,7 +38,7 @@ interface PrismaMock {
     count: jest.Mock;
   };
   resident: { findFirst: jest.Mock; findMany: jest.Mock };
-  calendarEvent: { findMany: jest.Mock; findFirst: jest.Mock };
+  calendarEvent: { findMany: jest.Mock; findFirst: jest.Mock; update: jest.Mock };
   condominiumSettings: { findUnique: jest.Mock };
   financialMonthlySummary: { upsert: jest.Mock };
   auditLog: { create: jest.Mock };
@@ -74,6 +75,7 @@ function makePrismaMock(): PrismaMock {
       // ENGINE-002: revertTerraceLinksForBatch → unmarkTerraceEventPaid reads
       // the event before reverting; null exercises the skip branch safely.
       findFirst: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue(null),
     },
     // Phase 5F (KI-004): default to no tenant-level keywords so existing tests stay green.
     condominiumSettings: {
@@ -167,7 +169,14 @@ describe('ClassificationService.reclassifyBatch — KI-001 regression', () => {
 
     const firstCall = prisma.transaction.updateMany.mock.calls[0];
     expect(firstCall[0]).toEqual({
-      where: { condominiumId: CONDOMINIUM_ID, importBatchId: BATCH_ID },
+      // ENGINE-003: the reset is scoped to engine-owned rows — manual
+      // overrides and already-reconciled rows are preserved.
+      where: {
+        condominiumId: CONDOMINIUM_ID,
+        importBatchId: BATCH_ID,
+        classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+        reconciliationStatus: ReconciliationStatus.PENDING,
+      },
       data: expect.objectContaining({
         classificationStatus: ClassificationStatus.NEEDS_REVIEW,
         residentId: null,
@@ -2583,3 +2592,457 @@ function normalizeKey(text: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+// ─── Phase 5 — concurrency, state machines & tenant hardening ───────────────
+
+describe('Phase 5 — guarded approve/ignore (ENGINE-020)', () => {
+  const TX_ID = 'tx-1';
+  const UPDATED_AT = new Date('2026-06-01T00:00:00Z');
+
+  function pendingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      transactionDate: new Date('2026-06-01T00:00:00Z'),
+      reconciliationStatus: ReconciliationStatus.PENDING,
+      matchedCalendarEventId: null,
+      updatedAt: UPDATED_AT,
+      ...overrides,
+    };
+  }
+
+  it('approve asserts PENDING + updatedAt in the guarded write and audits inside the tx', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(pendingRow());
+    const service = makeService(prisma);
+
+    await service.approveTransaction(CONDOMINIUM_ID, TX_ID, 'user-1');
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: TX_ID,
+        condominiumId: CONDOMINIUM_ID,
+        updatedAt: UPDATED_AT,
+        reconciliationStatus: ReconciliationStatus.PENDING,
+      },
+      data: expect.objectContaining({
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+        reconciledById: 'user-1',
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'TRANSACTION_APPROVED' }),
+      }),
+    );
+  });
+
+  it('approve on a non-PENDING row returns 400 INVALID_STATE_TRANSITION without writing', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(
+      pendingRow({ reconciliationStatus: ReconciliationStatus.IGNORED }),
+    );
+    const service = makeService(prisma);
+
+    await expect(
+      service.approveTransaction(CONDOMINIUM_ID, TX_ID, 'user-1'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_STATE_TRANSITION' }),
+    });
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('ignore on an APPROVED row returns INVALID_STATE_TRANSITION (approve→ignore needs reopen)', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(
+      pendingRow({ reconciliationStatus: ReconciliationStatus.APPROVED }),
+    );
+    const service = makeService(prisma);
+
+    await expect(
+      service.ignoreTransaction(CONDOMINIUM_ID, TX_ID, 'user-1'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'INVALID_STATE_TRANSITION' }),
+    });
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('approve surfaces a concurrent edit as 409 STALE_OVERRIDE', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(pendingRow());
+    prisma.transaction.updateMany.mockResolvedValue({ count: 0 });
+    const service = makeService(prisma);
+
+    await expect(
+      service.approveTransaction(CONDOMINIUM_ID, TX_ID, 'user-1'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'STALE_OVERRIDE' }),
+    });
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('approve marks the linked terrace booking PAID inside the same transaction', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(
+      pendingRow({ matchedCalendarEventId: 'event-1' }),
+    );
+    prisma.calendarEvent.findFirst.mockResolvedValue({
+      metadata: { ...TERRACE_BOOKING_DEFAULTS, paymentStatus: 'PENDING' },
+    });
+    const service = makeService(prisma);
+
+    await service.approveTransaction(CONDOMINIUM_ID, TX_ID, 'user-1');
+
+    expect(prisma.calendarEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'event-1' },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({ paymentStatus: 'PAID' }),
+        }),
+      }),
+    );
+  });
+
+  it('ignore guards the write like approve and audits TRANSACTION_IGNORED', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue(pendingRow());
+    const service = makeService(prisma);
+
+    await service.ignoreTransaction(CONDOMINIUM_ID, TX_ID, 'user-1');
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        reconciliationStatus: ReconciliationStatus.PENDING,
+        updatedAt: UPDATED_AT,
+      }),
+      data: expect.objectContaining({
+        reconciliationStatus: ReconciliationStatus.IGNORED,
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'TRANSACTION_IGNORED' }),
+      }),
+    );
+  });
+});
+
+describe('Phase 5 — bulkReconcile preconditions + parity (ENGINE-019)', () => {
+  function setupBulk(
+    prisma: PrismaMock,
+    rows: Array<Record<string, unknown>>,
+    eligible: Array<Record<string, unknown>>,
+  ) {
+    // First findMany = IDOR read (no status filter); second = in-tx
+    // eligibility read (carries the status precondition).
+    prisma.transaction.findMany.mockImplementation(
+      ({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(where.reconciliationStatus !== undefined ? eligible : rows),
+    );
+  }
+
+  it('bulk approve only writes PENDING rows and reports affected/skipped/requested', async () => {
+    const prisma = makePrismaMock();
+    setupBulk(
+      prisma,
+      [
+        { id: 'tx-1', transactionDate: new Date('2026-06-01T00:00:00Z') },
+        { id: 'tx-2', transactionDate: new Date('2026-06-01T00:00:00Z') },
+      ],
+      [
+        {
+          id: 'tx-1',
+          reconciliationStatus: ReconciliationStatus.PENDING,
+          matchedCalendarEventId: null,
+        },
+      ],
+    );
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    const result = await service.bulkReconcile(
+      CONDOMINIUM_ID,
+      ['tx-1', 'tx-2'],
+      'approve',
+      'user-1',
+    );
+
+    expect(result).toEqual({ affected: 1, skipped: 1, requested: 2 });
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['tx-1'] },
+        condominiumId: CONDOMINIUM_ID,
+        reconciliationStatus: ReconciliationStatus.PENDING,
+      },
+      data: expect.objectContaining({
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'TRANSACTIONS_BULK_APPROVED',
+          afterState: expect.objectContaining({ affected: 1, skipped: 1, requested: 2 }),
+        }),
+      }),
+    );
+  });
+
+  it('bulk approve marks linked terrace bookings PAID (parity with single approve)', async () => {
+    const prisma = makePrismaMock();
+    setupBulk(
+      prisma,
+      [{ id: 'tx-1', transactionDate: new Date('2026-06-01T00:00:00Z') }],
+      [
+        {
+          id: 'tx-1',
+          reconciliationStatus: ReconciliationStatus.PENDING,
+          matchedCalendarEventId: 'event-1',
+        },
+      ],
+    );
+    prisma.calendarEvent.findFirst.mockResolvedValue({
+      metadata: { ...TERRACE_BOOKING_DEFAULTS, paymentStatus: 'PENDING' },
+    });
+    const service = makeService(prisma);
+
+    await service.bulkReconcile(CONDOMINIUM_ID, ['tx-1'], 'approve', 'user-1');
+
+    expect(prisma.calendarEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({ paymentStatus: 'PAID' }),
+        }),
+      }),
+    );
+  });
+
+  it('bulk reopen requires a settled row ({ not: PENDING }) and clears reconciliation fields', async () => {
+    const prisma = makePrismaMock();
+    setupBulk(
+      prisma,
+      [{ id: 'tx-1', transactionDate: new Date('2026-06-01T00:00:00Z') }],
+      [
+        {
+          id: 'tx-1',
+          reconciliationStatus: ReconciliationStatus.APPROVED,
+          matchedCalendarEventId: null,
+        },
+      ],
+    );
+    const service = makeService(prisma);
+
+    const result = await service.bulkReconcile(CONDOMINIUM_ID, ['tx-1'], 'reopen', 'user-1');
+
+    expect(result).toEqual({ affected: 1, skipped: 0, requested: 1 });
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        reconciliationStatus: { not: ReconciliationStatus.PENDING },
+      }),
+      data: expect.objectContaining({
+        reconciliationStatus: ReconciliationStatus.PENDING,
+        reconciledById: null,
+        reconciledAt: null,
+      }),
+    });
+  });
+
+  it('rejects the whole batch when any id is foreign (IDOR)', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', transactionDate: new Date('2026-06-01T00:00:00Z') },
+    ]);
+    const service = makeService(prisma);
+
+    await expect(
+      service.bulkReconcile(CONDOMINIUM_ID, ['tx-1', 'tx-foreign'], 'approve', 'user-1'),
+    ).rejects.toThrow('One or more transactions do not belong to this condominium');
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('Phase 5 — chunked writes re-assert status (ENGINE-018)', () => {
+  it('classifyBatch scopes every chunk write to engine-owned PENDING rows and reports skips from write counts', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description: 'pago casa 5',
+        transactionDate: new Date('2026-06-01T00:00:00Z'),
+        credits: 100,
+        charges: null,
+        flowType: 'INCOME',
+      },
+    ]);
+    // The row was manually classified mid-run: the guarded write matches 0.
+    prisma.transaction.updateMany.mockResolvedValue({ count: 0 });
+    const service = makeService(prisma);
+
+    const summary = await service.classifyBatch(CONDOMINIUM_ID, BATCH_ID);
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+          reconciliationStatus: ReconciliationStatus.PENDING,
+        }),
+      }),
+    );
+    expect(summary).toEqual({
+      total: 1,
+      classified: 0,
+      needsReview: 0,
+      unmatched: 0,
+      skipped: 1,
+    });
+  });
+
+  it('reapplyToPending re-asserts the candidate predicate and derives counters from the writes', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        description: 'pago sin señal',
+        transactionDate: new Date('2026-06-01T00:00:00Z'),
+        credits: 100,
+        charges: null,
+        flowType: 'INCOME',
+        importBatch: null,
+      },
+    ]);
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    const summary = await service.reapplyToPending(CONDOMINIUM_ID, null);
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+          reconciliationStatus: ReconciliationStatus.PENDING,
+        }),
+      }),
+    );
+    expect(summary.skipped).toBe(0);
+    expect(summary.total).toBe(1);
+  });
+});
+
+describe('Phase 5 — reclassify preserves manual work (ENGINE-003)', () => {
+  it('scopes the allocation cleanup to the reset set and returns preservedManual', async () => {
+    const prisma = makePrismaMock();
+    // totalInBatch=5, resetEligible=3 → preservedManual=2; the three
+    // post-classify batch counts come after.
+    prisma.transaction.count
+      .mockResolvedValueOnce(5)
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1);
+    const service = makeService(prisma);
+
+    const summary = await service.reclassifyBatch(CONDOMINIUM_ID, BATCH_ID, 'user-1');
+
+    expect(summary.preservedManual).toBe(2);
+    expect(prisma.paymentAllocation.deleteMany).toHaveBeenCalledWith({
+      where: {
+        condominiumId: CONDOMINIUM_ID,
+        transaction: {
+          importBatchId: BATCH_ID,
+          condominiumId: CONDOMINIUM_ID,
+          classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+          reconciliationStatus: ReconciliationStatus.PENDING,
+        },
+      },
+    });
+    // The persisted batch counts come from DB state (preserved rows keep
+    // counting as classified), not from the re-run summary.
+    expect(prisma.importBatch.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'COMPLETED',
+          classifiedCount: 4,
+          needsReviewCount: 1,
+          unmatchedCount: 1,
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'BATCH_RECLASSIFIED',
+          afterState: expect.objectContaining({ preservedManual: 2 }),
+        }),
+      }),
+    );
+  });
+});
+
+describe('Phase 5 — manualClassify unit scalar/array sync (ENGINE-021)', () => {
+  it('writes unitNumbersDetected in lockstep with the scalar on a single-unit link', async () => {
+    const prisma = makePrismaMock();
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-1', unitNumber: '5' });
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: new Date('2026-06-01T00:00:00Z'),
+      description: 'pago',
+      residentId: null,
+      unitNumberDetected: null,
+      paymentConcept: null,
+      expenseCategoryId: null,
+      supplierId: null,
+      paymentPeriodMonth: null,
+      paymentPeriodYear: null,
+      transactionDate: new Date('2026-06-01T00:00:00Z'),
+      matchSource: null,
+      matchedPatternLabel: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+      paymentAllocations: [],
+    });
+    const service = makeService(prisma);
+
+    await service.manualClassify(CONDOMINIUM_ID, 'tx-1', { unitNumber: '5' }, 'user-1');
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          unitNumberDetected: '5',
+          unitNumbersDetected: ['5'],
+        }),
+      }),
+    );
+  });
+
+  it('clears both fields when the unit is removed', async () => {
+    const prisma = makePrismaMock();
+    prisma.transaction.findFirst.mockResolvedValue({
+      updatedAt: new Date('2026-06-01T00:00:00Z'),
+      description: 'pago',
+      residentId: null,
+      unitNumberDetected: '5',
+      paymentConcept: null,
+      expenseCategoryId: null,
+      supplierId: null,
+      paymentPeriodMonth: null,
+      paymentPeriodYear: null,
+      transactionDate: new Date('2026-06-01T00:00:00Z'),
+      matchSource: null,
+      matchedPatternLabel: null,
+      classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+      requiresReviewReason: null,
+      matchedRuleId: null,
+      paymentAllocations: [],
+    });
+    const service = makeService(prisma);
+
+    await service.manualClassify(CONDOMINIUM_ID, 'tx-1', { unitNumber: '' }, 'user-1');
+
+    expect(prisma.transaction.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          unitNumberDetected: null,
+          unitNumbersDetected: [],
+        }),
+      }),
+    );
+  });
+});

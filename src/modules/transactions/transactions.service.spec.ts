@@ -225,8 +225,13 @@ describe('TransactionsService.getAuditChain', () => {
       where: { id: TRANSACTION_ID, condominiumId: CONDOMINIUM_ID },
       select: { id: true },
     });
+    // ENGINE-056: the chain read must be tenant- and entity-type-scoped.
     expect(prisma.auditLog.findMany).toHaveBeenCalledWith({
-      where: { entityId: TRANSACTION_ID },
+      where: {
+        entityId: TRANSACTION_ID,
+        condominiumId: CONDOMINIUM_ID,
+        entityType: 'Transaction',
+      },
       include: {
         user: { select: { id: true, firstName: true, lastName: true, email: true } },
       },
