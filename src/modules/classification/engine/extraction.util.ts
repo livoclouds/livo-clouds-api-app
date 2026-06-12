@@ -207,6 +207,18 @@ const MONTH_MAP: Record<string, number> = {
   jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
 };
 
+// ENGINE-012: the month-name alternation is derived from MONTH_MAP and used by
+// every row's extraction — hoisted to module constants instead of being
+// rebuilt (sort + join + new RegExp) on every call. No `g` flag, so the
+// compiled regexes are stateless and safe to share.
+const MONTH_NAMES_LONGEST_FIRST = Object.keys(MONTH_MAP)
+  .map((k) => (k === 'may_' ? 'may' : k))
+  .sort((a, b) => b.length - a.length);
+const NAMED_PERIOD_RE = new RegExp(
+  `\\b(${MONTH_NAMES_LONGEST_FIRST.join('|')})\\b[\\s/\\-]+(20\\d{2})\\b`,
+);
+const MONTH_WORD_RE = new RegExp(`\\b(${MONTH_NAMES_LONGEST_FIRST.join('|')})\\b`);
+
 export const PAYER_PATTERNS: RegExp[] = [
   /nombre:\s*([A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+?)(?:\s+ref|\s+\d|$)/i,
   /de:\s*([A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+?)(?:\s+ref|\s+\d|$)/i,
@@ -331,12 +343,7 @@ function extractConceptAndPeriod(normalized: string): {
 
   let paymentPeriodMonth: number | null = null;
   let paymentPeriodYear: number | null = null;
-  const monthNames = Object.keys(MONTH_MAP)
-    .map((k) => (k === 'may_' ? 'may' : k))
-    .sort((a, b) => b.length - a.length);
-  const namedPeriod = normalized.match(
-    new RegExp(`\\b(${monthNames.join('|')})\\b[\\s/\\-]+(20\\d{2})\\b`),
-  );
+  const namedPeriod = normalized.match(NAMED_PERIOD_RE);
   if (namedPeriod) {
     const monthKey = namedPeriod[1] === 'may' ? 'may_' : namedPeriod[1];
     paymentPeriodMonth = MONTH_MAP[monthKey] ?? MONTH_MAP[namedPeriod[1]] ?? null;
@@ -445,10 +452,7 @@ function findMultipleUnits(segment: string, totalUnits: number): string[] {
  */
 function detectMonth(segment: string): number | null {
   const normalized = normalizeText(segment);
-  const monthNames = Object.keys(MONTH_MAP)
-    .map((k) => (k === 'may_' ? 'may' : k))
-    .sort((a, b) => b.length - a.length);
-  const m = normalized.match(new RegExp(`\\b(${monthNames.join('|')})\\b`));
+  const m = normalized.match(MONTH_WORD_RE);
   if (!m) return null;
   const key = m[1] === 'may' ? 'may_' : m[1];
   return MONTH_MAP[key] ?? MONTH_MAP[m[1]] ?? null;
@@ -596,19 +600,33 @@ export function resolveNearestCycle(
 // is the runtime backstop.
 const MAX_EXTRACTION_PATTERN_LENGTH = 200;
 
+/**
+ * ENGINE-012: per-run memo for compiled rule regexes, keyed `${flags}:${pattern}`.
+ * classifyBatch / reclassifyBatch / reapplyToPending create one Map per run and
+ * thread it down, so each rule pattern is RE2-compiled once per run instead of
+ * once per transaction (O(rows × patterns) native constructor calls). Failed
+ * compiles are cached as null too — a bad pattern is also only attempted once.
+ */
+export type RegexCache = Map<string, RE2 | null>;
+
 // Compiles a user-provided regex with RE2 (Google's linear-time engine): unlike the
 // JS `RegExp` backtracker, RE2 has no catastrophic-backtracking failure mode, so an
 // adversarial or accidental ReDoS pattern can never hang a classification batch.
 // Returns null instead of throwing on an invalid / over-long / RE2-unsupported
 // pattern (RE2 rejects backreferences + lookaround), so a bad rule degrades to "did
 // not fire" rather than aborting the batch — same contract as before, now ReDoS-proof.
-export function safeCompile(pattern: string, flags: string): RE2 | null {
+export function safeCompile(pattern: string, flags: string, cache?: RegexCache): RE2 | null {
   if (!pattern || pattern.length > MAX_EXTRACTION_PATTERN_LENGTH) return null;
+  const key = `${flags}:${pattern}`;
+  if (cache?.has(key)) return cache.get(key) ?? null;
+  let re: RE2 | null;
   try {
-    return new RE2(pattern, flags);
+    re = new RE2(pattern, flags);
   } catch {
-    return null;
+    re = null;
   }
+  cache?.set(key, re);
+  return re;
 }
 
 // Resolves a UNIT rule's OUTCOME into a unit string, or null when the rule is not a
@@ -616,13 +634,17 @@ export function safeCompile(pattern: string, flags: string): RE2 | null {
 // 2 (format extraction) runs the capture-group regex against the original
 // description and reads the configured group. The returned value is later compared
 // to the padrón via `matchToResident` (which normalizes), so no casing work here.
-export function resolveRuleUnit(rule: DbRule, description: string): string | null {
+export function resolveRuleUnit(
+  rule: DbRule,
+  description: string,
+  cache?: RegexCache,
+): string | null {
   if (rule.ruleKind !== ReconciliationRuleKind.UNIT) return null;
   if (rule.assignedUnitNumber && rule.assignedUnitNumber.trim().length > 0) {
     return rule.assignedUnitNumber.trim();
   }
   if (rule.unitExtractionPattern) {
-    const re = safeCompile(rule.unitExtractionPattern, 'i');
+    const re = safeCompile(rule.unitExtractionPattern, 'i', cache);
     if (!re) return null;
     const match = re.exec(description);
     const group = rule.unitExtractionGroup ?? 1;
@@ -636,6 +658,7 @@ export function applyDbRules(
   description: string,
   rules: DbRule[],
   flowType: FlowType = FlowType.INCOME,
+  cache?: RegexCache,
 ): { matchedRule: DbRule; score: number } | null {
   const normalized = normalizeText(description);
 
@@ -655,7 +678,7 @@ export function applyDbRules(
     const patternMatch = rule.unitPatterns.length > 0 &&
       rule.unitPatterns.some((p) => {
         // RE2 (via safeCompile) keeps trigger matching linear-time + ReDoS-proof.
-        const re = safeCompile(p, 'i');
+        const re = safeCompile(p, 'i', cache);
         return re ? re.test(normalized) : false;
       });
 
@@ -665,7 +688,7 @@ export function applyDbRules(
     const extractionMatch =
       rule.ruleKind === ReconciliationRuleKind.UNIT &&
       !!rule.unitExtractionPattern &&
-      resolveRuleUnit(rule, description) !== null;
+      resolveRuleUnit(rule, description, cache) !== null;
 
     if (
       allKeywordsMatch ||

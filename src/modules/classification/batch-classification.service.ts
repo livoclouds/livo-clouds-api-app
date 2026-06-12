@@ -22,6 +22,7 @@ import {
   type ClassificationSummary,
   type CorrectionPatternData,
   type DbRule,
+  type RegexCache,
   type ResidentData,
 } from './engine/extraction.util';
 import { classifyTransaction } from './engine/transaction-classifier';
@@ -224,6 +225,10 @@ export class BatchClassificationService {
     // The whole batch shares one bank profile, so the dialect is read once.
     const dialect = batchInfo?.bankProfile?.dialect ?? BankDialect.GENERIC;
 
+    // ENGINE-012: one compile cache per run — each rule pattern is RE2-compiled
+    // once instead of once per transaction.
+    const regexCache: RegexCache = new Map();
+
     let classified = 0;
     let needsReview = 0;
     let unmatched = 0;
@@ -272,6 +277,7 @@ export class BatchClassificationService {
           maintenanceContext,
           tx.flowType,
           correctionPatterns,
+          regexCache,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
@@ -572,6 +578,10 @@ export class BatchClassificationService {
     let skipped = 0;
     let total = 0;
 
+    // ENGINE-012: one compile cache per run — each rule pattern is RE2-compiled
+    // once instead of once per transaction.
+    const regexCache: RegexCache = new Map();
+
     const affectedMonths = new Set<string>();
 
     // ENGINE-011: pending rows are loaded in id-ordered pages and classified +
@@ -644,6 +654,7 @@ export class BatchClassificationService {
           maintenanceContext,
           tx.flowType,
           correctionPatterns,
+          regexCache,
         );
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {

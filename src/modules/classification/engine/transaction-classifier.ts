@@ -19,6 +19,7 @@ import {
   type ClassificationResult,
   type CorrectionPatternData,
   type DbRule,
+  type RegexCache,
   type ResidentData,
   type TextExtraction,
 } from './extraction.util';
@@ -56,6 +57,10 @@ export function classifyTransaction(
   // normalized description, loaded once per batch/reapply run. Optional so
   // existing callers/tests stay unchanged.
   correctionPatterns?: Map<string, CorrectionPatternData>,
+  // ENGINE-012: per-run compile cache for user-rule regexes — one Map per
+  // batch/reapply run, threaded down to safeCompile. Optional so single-row
+  // callers and existing tests stay unchanged (no cache = compile per call).
+  regexCache?: RegexCache,
 ): ClassificationResult {
   const extraction =
     bankContext?.dialect === BankDialect.BANBAJIO
@@ -78,7 +83,7 @@ export function classifyTransaction(
   // receive a residentId or an income concept. The extraction's unit/payer
   // stay as display-only hints; the income-oriented paymentConcept is nulled.
   if (flowType === FlowType.EXPENSE) {
-    const expenseRuleMatch = applyDbRules(description, rules, flowType);
+    const expenseRuleMatch = applyDbRules(description, rules, flowType, regexCache);
     if (expenseRuleMatch) {
       const { matchedRule, score } = expenseRuleMatch;
       const isAuto = score >= 0.8;
@@ -183,7 +188,7 @@ export function classifyTransaction(
 
   // Pass 0: DB-driven rules (priority order, first match wins). Only
   // CONCEPT/UNIT rules can reach this point — EXPENSE flow returned above.
-  const ruleMatch = applyDbRules(description, rules, flowType);
+  const ruleMatch = applyDbRules(description, rules, flowType, regexCache);
   if (ruleMatch) {
     const { matchedRule, score } = ruleMatch;
 
@@ -194,7 +199,7 @@ export function classifyTransaction(
     // a silent mis-link). The user owns the confidence: the rule's
     // confidenceThreshold is the confidence ASSIGNED to the match (ENGINE-015);
     // the fixed 0.8 AUTO gate in matchToResident decides auto vs review.
-    const ruleUnit = resolveRuleUnit(matchedRule, description);
+    const ruleUnit = resolveRuleUnit(matchedRule, description, regexCache);
     if (ruleUnit) {
       extraction.unitNumberDetected = ruleUnit;
       extraction.unitNumbersDetected = [ruleUnit];
