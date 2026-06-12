@@ -1079,6 +1079,259 @@ describe('ImportsService.confirm — order-resilient reconciliation (ENGINE-051)
   });
 });
 
+describe('ImportsService — preview ↔ confirm validation lockstep (ENGINE-029/030/053)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+  const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+  const XLSX_MIME =
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  it('preview and confirm reject the same rows with the same counts for one parsed row set', async () => {
+    // One valid row + one both-sided row + one parser-flagged row = 2/3 invalid
+    // (66% > 30% threshold on both paths).
+    const rows = [
+      {
+        date: '2026-01-15',
+        description: 'PAGO OK',
+        charges: 0,
+        credits: 100,
+        balance: 100,
+        flowType: 'income' as const,
+      },
+      {
+        date: '2026-01-16',
+        description: 'AMBOS LADOS',
+        charges: 50,
+        credits: 75,
+        balance: 125,
+        flowType: 'income' as const,
+      },
+      {
+        date: '2026-01-17',
+        description: 'EUROPEO',
+        charges: 0,
+        credits: NaN,
+        balance: 125,
+        flowType: 'income' as const,
+        parseIssues: [
+          { field: 'credits', issue: 'ambiguousDecimal', raw: '1.234,56' },
+        ],
+      },
+    ];
+
+    // Preview path.
+    const previewDeps = makeFullDeps();
+    previewDeps.prisma.importBatch.findMany.mockResolvedValue([]);
+    previewDeps.bankProfiles.resolveFieldsForBatch.mockResolvedValue({
+      profileId: null,
+      profileName: null,
+      fields: undefined,
+    });
+    previewDeps.parser.parseBuffer.mockResolvedValue({
+      transactions: rows,
+      warnings: [],
+    });
+    const previewService = makeFullService(previewDeps);
+    const { results } = await previewService.preview(
+      CONDOMINIUM_ID,
+      [
+        {
+          buffer: XLSX_BUFFER,
+          originalname: 'estado.xlsx',
+          mimetype: XLSX_MIME,
+          size: XLSX_BUFFER.length,
+        },
+      ],
+      [],
+      ['client-1'],
+    );
+
+    // Confirm path over the SAME parsed rows.
+    const confirmDeps = makeFullDeps();
+    confirmDeps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/estado.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    confirmDeps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    confirmDeps.parser.parseBuffer.mockResolvedValue({
+      transactions: rows,
+      warnings: [],
+    });
+    const confirmService = makeFullService(confirmDeps);
+
+    let thrown: unknown;
+    try {
+      await confirmService.confirm(
+        CONDOMINIUM_ID,
+        {
+          files: [
+            {
+              fileName: 'estado.xlsx',
+              fileType: 'xlsx',
+              fileHash: R2_HASH,
+              fileSizeBytes: 2048,
+              warnings: [],
+              transactions: rows.slice(0, 1),
+            },
+          ],
+        } as never,
+        { sub: 'user-1' } as never,
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Both paths derived the same verdict from the same rows.
+    const previewValidation = results[0].validation!;
+    const confirmReport = (
+      (thrown as { getResponse(): { validationReport: { totalRows: number; validRows: number; invalidRows: number } } })
+        .getResponse()
+    ).validationReport;
+    expect((thrown as { getResponse(): { code: string } }).getResponse().code).toBe(
+      'INVALID_ROWS_EXCEEDED',
+    );
+    expect(confirmReport.totalRows).toBe(previewValidation.totalRows);
+    expect(confirmReport.validRows).toBe(previewValidation.validRows);
+    expect(confirmReport.invalidRows).toBe(previewValidation.invalidRows);
+    expect(previewValidation.invalidRows).toBe(2);
+  });
+});
+
+describe('ImportsService.confirm — balance continuity (ENGINE-027)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+
+  function setup(
+    deps: ReturnType<typeof makeFullDeps>,
+    serverRows: Array<Record<string, unknown>>,
+  ) {
+    deps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/movimientos.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    deps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    deps.parser.parseBuffer.mockResolvedValue({
+      transactions: serverRows,
+      warnings: [],
+    });
+    deps.tx.importBatch.findUniqueOrThrow.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PROCESSING',
+    });
+  }
+
+  function dtoEchoing(rows: Array<Record<string, unknown>>) {
+    return {
+      files: [
+        {
+          fileName: 'movimientos.xlsx',
+          fileType: 'xlsx',
+          fileHash: R2_HASH,
+          fileSizeBytes: 2048,
+          warnings: [],
+          transactions: rows,
+        },
+      ],
+    };
+  }
+
+  function continuousRows(count: number) {
+    let balance = 1000;
+    return Array.from({ length: count }, (_, i) => {
+      balance += 100;
+      return {
+        date: `2025-11-${String(i + 1).padStart(2, '0')}`,
+        description: `PAGO ${i + 1}`,
+        charges: 0,
+        credits: 100,
+        balance,
+        flowType: 'income' as const,
+      };
+    });
+  }
+
+  it('refuses with BALANCE_DISCONTINUITY_EXCEEDED when most rows break continuity', async () => {
+    const deps = makeFullDeps();
+    // Balances unrelated to movements → every consecutive pair breaks.
+    const rows = continuousRows(10).map((r, i) => ({
+      ...r,
+      balance: 7919 * (i + 3),
+    }));
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    await expect(
+      service.confirm(CONDOMINIUM_ID, dtoEchoing(rows) as never, {
+        sub: 'user-1',
+      } as never),
+    ).rejects.toMatchObject({
+      response: { code: 'BALANCE_DISCONTINUITY_EXCEEDED' },
+    });
+    expect(deps.tx.transaction.createMany).not.toHaveBeenCalled();
+    expect(deps.events.emit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ errorCode: 'BALANCE_DISCONTINUITY_EXCEEDED' }),
+    );
+  });
+
+  it('proceeds below the threshold and persists the breaks as a batch warning', async () => {
+    const deps = makeFullDeps();
+    // One tampered balance breaks TWO consecutive pairs: 2 of 29 ≈ 6.9% — under 10%.
+    const rows = continuousRows(30);
+    rows[10] = { ...rows[10], balance: rows[10].balance + 50 };
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      dtoEchoing(rows) as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing' });
+    const update = deps.tx.importBatch.updateMany.mock.calls[0][0];
+    expect(
+      (update.data.warnings as string[]).some((w) =>
+        w.includes('running balance'),
+      ),
+    ).toBe(true);
+  });
+
+  it('confirms cleanly when the statement is fully continuous', async () => {
+    const deps = makeFullDeps();
+    const rows = continuousRows(5);
+    setup(deps, rows);
+    const service = makeFullService(deps);
+
+    const result = await service.confirm(
+      CONDOMINIUM_ID,
+      dtoEchoing(rows) as never,
+      { sub: 'user-1' } as never,
+    );
+
+    expect(result.files[0]).toMatchObject({ status: 'processing', imported: 5 });
+    const update = deps.tx.importBatch.updateMany.mock.calls[0][0];
+    expect(
+      (update.data.warnings as string[]).some((w) => w.includes('running balance')),
+    ).toBe(false);
+  });
+});
+
 describe('ImportsService.preview — row validation parity (ENGINE-026/028)', () => {
   // Valid XLSX magic bytes so preview reaches the parser branch.
   const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
@@ -1219,6 +1472,122 @@ describe('ImportsService.preview — row validation parity (ENGINE-026/028)', ()
     expect(results[0].status).toBe('error');
     expect(results[0].statusMessage).toContain('2 of 3 rows are invalid');
     expect(results[0].validation).toMatchObject({ invalidRows: 2 });
+  });
+
+  it('rejects parser-flagged amount rows with the precise reason — no double error (ENGINE-029/030)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      validRow1,
+      {
+        ...validRow1,
+        description: 'EUROPEO',
+        credits: NaN,
+        parseIssues: [
+          { field: 'credits', issue: 'ambiguousDecimal', raw: '1.234,56' },
+        ],
+      },
+      {
+        ...validRow2,
+        description: 'BASURA',
+        charges: NaN,
+        parseIssues: [{ field: 'charges', issue: 'unparseable', raw: 'abc' }],
+      },
+      validRow3,
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 4, invalidRows: 2 });
+    const errors = results[0].validation!.sampleErrors;
+    expect(errors).toHaveLength(2); // exactly one error per flagged row
+    expect(errors[0]).toMatchObject({ rowIndex: 1, field: 'credits' });
+    expect(errors[0].message).toContain('Ambiguous decimal format');
+    expect(errors[0].message).toContain("1.234,56");
+    expect(errors[1]).toMatchObject({ rowIndex: 2, field: 'charges' });
+    expect(errors[1].message).toContain('could not be parsed');
+  });
+
+  it('rejects both-sided rows (charge AND credit) so every surface counts them the same way (ENGINE-053)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      validRow1,
+      {
+        ...validRow1,
+        description: 'AMBOS LADOS',
+        charges: 200,
+        credits: 300,
+        flowType: 'income' as const,
+      },
+      validRow2,
+      validRow3,
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 4, invalidRows: 1 });
+    expect(results[0].validation?.sampleErrors).toEqual([
+      expect.objectContaining({ rowIndex: 1, field: 'amounts' }),
+    ]);
+    // The rejected row contributes to NEITHER total.
+    expect(results[0].totalIncome).toBe(175);
+    expect(results[0].totalExpenses).toBe(0);
+  });
+
+  it('rejects rows whose balance is non-finite (would die at the Decimal cast otherwise)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [validRow1, { ...validRow2, balance: NaN }, validRow3]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 3, invalidRows: 1 });
+    expect(results[0].validation?.sampleErrors).toEqual([
+      expect.objectContaining({ rowIndex: 1, field: 'balance' }),
+    ]);
+  });
+
+  it('surfaces balance-continuity breaks in the preview payload with status warning (ENGINE-027)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      { ...validRow1, balance: 100 }, // credits 100 → 100 ✓ (seed row)
+      { ...validRow2, balance: 150 }, // +50 → 150 ✓
+      { ...validRow3, balance: 999 }, // +25 → should be 175 ✗
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].status).toBe('warning');
+    expect(results[0].continuity).toMatchObject({
+      checked: true,
+      discontinuities: 1,
+    });
+    expect(results[0].continuity?.sample[0]).toMatchObject({
+      expectedBalance: 175,
+      actualBalance: 999,
+    });
   });
 });
 

@@ -16,6 +16,8 @@ import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator'
 import { SettingsCacheService } from '../settings/settings-cache.service';
 import { isBanBajio } from '../bank-profiles/known-banks';
 import { STALE_PROCESSING_MS } from '../imports/imports.constants';
+import { round2, toCents } from '../../common/utils/money.util';
+import { summaryLockKey, upsertSummaryForMonthCore } from './monthly-summary.util';
 
 /**
  * Phase 6 (A4): page size for cursor-batched loading of classification
@@ -1325,20 +1327,32 @@ export class ClassificationService {
 
     let summary: ClassificationSummary;
     try {
-      await this.prisma.transaction.updateMany({
-        where: { condominiumId, importBatchId: batchId },
-        data: {
-          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-          residentId: null,
-          matchSource: null,
-          confidenceScore: null,
-          matchedAt: null,
-          requiresReviewReason: null,
-          matchedRuleId: null,
-          matchedCalendarEventId: null,
-          classificationVersion: { increment: 1 },
-        },
-      });
+      // The reset wipes every manual resident link, so the batch's manual
+      // splits must go with it — atomically, or a crash between the two
+      // writes leaves allocations pointing at unlinked transactions
+      // (ENGINE-006).
+      await this.prisma.$transaction([
+        this.prisma.transaction.updateMany({
+          where: { condominiumId, importBatchId: batchId },
+          data: {
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+            residentId: null,
+            matchSource: null,
+            confidenceScore: null,
+            matchedAt: null,
+            requiresReviewReason: null,
+            matchedRuleId: null,
+            matchedCalendarEventId: null,
+            classificationVersion: { increment: 1 },
+          },
+        }),
+        this.prisma.paymentAllocation.deleteMany({
+          where: {
+            condominiumId,
+            transaction: { importBatchId: batchId, condominiumId },
+          },
+        }),
+      ]);
       summary = await this.classifyBatch(condominiumId, batchId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1534,12 +1548,7 @@ export class ClassificationService {
     // Recompute monthly summaries for every period that had at least one
     // touched transaction. classifyBatch does this scoped by batchId; here
     // we span batches but the per-month aggregation is the same.
-    await Promise.all(
-      Array.from(affectedMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, affectedMonths);
 
     if (actorUserId) {
       await this.prisma.auditLog.create({
@@ -1615,6 +1624,12 @@ export class ClassificationService {
           reason: 'Transaction was modified by another user. Refresh and try again.',
         });
       }
+
+      // A single-resident link supersedes any prior multi-unit split; stale
+      // allocations would keep paying the old residents (ENGINE-006).
+      await tx.paymentAllocation.deleteMany({
+        where: { transactionId, condominiumId },
+      });
 
       await tx.auditLog.create({
         data: {
@@ -1742,6 +1757,9 @@ export class ClassificationService {
           classificationStatus: true,
           requiresReviewReason: true,
           matchedRuleId: true,
+          paymentAllocations: {
+            select: { residentId: true, unitNumber: true, allocatedAmount: true },
+          },
         },
       });
       if (!existingTx) throw new NotFoundException('Transaction not found');
@@ -1774,6 +1792,15 @@ export class ClassificationService {
         throw new ConflictException({
           code: 'STALE_OVERRIDE',
           reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      // Re-linking to a single unit supersedes any prior multi-unit split.
+      // Concept/period-only edits (unitNumber undefined) must NOT touch a
+      // valid split — only linkage rewrites clean up (ENGINE-006).
+      if (dto.unitNumber !== undefined) {
+        await tx.paymentAllocation.deleteMany({
+          where: { transactionId, condominiumId },
         });
       }
 
@@ -1827,6 +1854,15 @@ export class ClassificationService {
             classificationStatus: existingTx.classificationStatus,
             requiresReviewReason: existingTx.requiresReviewReason,
             matchedRuleId: existingTx.matchedRuleId,
+            // Splits removed by a single-unit re-link (ENGINE-006 cleanup).
+            ...(dto.unitNumber !== undefined &&
+              (existingTx.paymentAllocations?.length ?? 0) > 0 && {
+                removedAllocations: existingTx.paymentAllocations.map((a) => ({
+                  residentId: a.residentId,
+                  unitNumber: a.unitNumber,
+                  allocatedAmount: Number(a.allocatedAmount),
+                })),
+              }),
           },
           afterState: {
             residentId: residentId !== undefined ? residentId : (existingTx.residentId ?? null),
@@ -1910,9 +1946,14 @@ export class ClassificationService {
         });
       }
 
-      // Amounts must sum to the credit (cents tolerance for rounding).
-      const sum = allocations.reduce((acc, a) => acc + Number(a.allocatedAmount), 0);
-      if (Math.abs(sum - credit) > 0.01) {
+      // Amounts must sum to the credit EXACTLY, compared in integer cents
+      // (ENGINE-052: the previous ±$0.01 tolerance persisted one-cent drifts).
+      const sumCents = allocations.reduce(
+        (acc, a) => acc + toCents(Number(a.allocatedAmount)),
+        0,
+      );
+      const sum = sumCents / 100;
+      if (sumCents !== toCents(credit)) {
         throw new BadRequestException({
           code: 'ALLOCATION_SUM_MISMATCH',
           reason: `Allocations must sum to the transaction credit (${credit.toFixed(2)}); got ${sum.toFixed(2)}.`,
@@ -1990,7 +2031,7 @@ export class ClassificationService {
           unitNumber: a.unitNumber,
           paymentPeriodYear: periodYear ?? txDate.getUTCFullYear(),
           paymentPeriodMonth: periodMonth ?? txDate.getUTCMonth() + 1,
-          allocatedAmount: new Prisma.Decimal(Number(a.allocatedAmount).toFixed(2)),
+          allocatedAmount: new Prisma.Decimal(round2(Number(a.allocatedAmount)).toFixed(2)),
         })),
       });
 
@@ -2073,6 +2114,12 @@ export class ClassificationService {
         });
       }
 
+      // Unlinked means zero allocations — a surviving split would keep paying
+      // residents out of a transaction that belongs to no one (ENGINE-006).
+      await tx.paymentAllocation.deleteMany({
+        where: { transactionId, condominiumId },
+      });
+
       await tx.auditLog.create({
         data: {
           condominiumId,
@@ -2117,12 +2164,7 @@ export class ClassificationService {
       uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
     }
 
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, uniqueMonths);
   }
 
   // ENGINE-002 — public recompute for callers that delete transactions and
@@ -2133,10 +2175,9 @@ export class ClassificationService {
     condominiumId: string,
     months: Array<{ year: number; month: number }>,
   ): Promise<void> {
-    await Promise.all(
-      months.map(({ year, month }) =>
-        this.upsertSummaryForMonth(condominiumId, year, month),
-      ),
+    await this.recomputeMonths(
+      condominiumId,
+      months.map(({ year, month }) => `${year}-${month}`),
     );
   }
 
@@ -2172,100 +2213,37 @@ export class ClassificationService {
     year: number,
     month: number,
   ): Promise<void> {
-    const start = new Date(year, month - 1, 1);
-    const end = new Date(year, month, 1);
-
-    // Only APPROVED transactions affect official income/expense totals
-    const [incomeAgg, expenseAgg, classificationCounts, reconciliationCounts] = await Promise.all([
-      this.prisma.transaction.aggregate({
-        where: {
-          condominiumId,
-          flowType: 'INCOME',
-          transactionDate: { gte: start, lt: end },
-          reconciliationStatus: ReconciliationStatus.APPROVED,
-        },
-        _sum: { credits: true },
-        _count: true,
-      }),
-      this.prisma.transaction.aggregate({
-        where: {
-          condominiumId,
-          flowType: 'EXPENSE',
-          transactionDate: { gte: start, lt: end },
-          reconciliationStatus: ReconciliationStatus.APPROVED,
-        },
-        _sum: { charges: true },
-        _count: true,
-      }),
-      this.prisma.transaction.groupBy({
-        by: ['classificationStatus'],
-        where: { condominiumId, transactionDate: { gte: start, lt: end } },
-        _count: true,
-      }),
-      this.prisma.transaction.groupBy({
-        by: ['reconciliationStatus'],
-        where: { condominiumId, transactionDate: { gte: start, lt: end } },
-        _count: true,
-      }),
-    ]);
-
-    const totalIncome = Number(incomeAgg._sum.credits ?? 0);
-    const totalExpenses = Number(expenseAgg._sum.charges ?? 0);
-    const approvedCount = incomeAgg._count + expenseAgg._count;
-
-    const totalAll = await this.prisma.transaction.count({
-      where: { condominiumId, transactionDate: { gte: start, lt: end } },
+    // ENGINE-022 — the six reads + upsert run inside one transaction,
+    // serialized per (tenant, month) by a Postgres advisory xact-lock
+    // (first advisory-lock use in this codebase). $transaction alone is
+    // READ COMMITTED — each statement takes its own snapshot — so without
+    // the lock two concurrent recomputes could persist internally
+    // inconsistent counts (pending+approved+ignored ≠ transactionCount).
+    // pg_advisory_xact_lock(int4, int4): key1 = hashtext(condominiumId),
+    // key2 = year*100+month; auto-released at commit/rollback.
+    await this.prisma.$transaction(async (tx) => {
+      // ::int4 cast — Prisma binds JS numbers as bigint and the two-arg lock
+      // only exists as (int4, int4). $executeRaw, not $queryRaw: the lock
+      // returns void, which Prisma's result deserializer rejects.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${condominiumId}), ${summaryLockKey(year, month)}::int4)`;
+      await upsertSummaryForMonthCore(tx, condominiumId, year, month);
     });
+  }
 
-    const classifiedCount =
-      classificationCounts.find((s) => s.classificationStatus === 'AUTO')?._count ?? 0;
-    const needsReviewCount =
-      classificationCounts.find((s) => s.classificationStatus === 'NEEDS_REVIEW')?._count ?? 0;
-
-    const pendingCount =
-      reconciliationCounts.find((s) => s.reconciliationStatus === 'PENDING')?._count ?? 0;
-    const ignoredCount =
-      reconciliationCounts.find((s) => s.reconciliationStatus === 'IGNORED')?._count ?? 0;
-
-    const unmatchedRows = await this.prisma.transaction.count({
-      where: {
-        condominiumId,
-        transactionDate: { gte: start, lt: end },
-        classificationStatus: 'NEEDS_REVIEW',
-        residentId: null,
-      },
-    });
-
-    await this.prisma.financialMonthlySummary.upsert({
-      where: { condominiumId_year_month: { condominiumId, year, month } },
-      create: {
-        condominiumId,
-        year,
-        month,
-        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-        transactionCount: totalAll,
-        classifiedCount,
-        needsReviewCount,
-        unmatchedCount: unmatchedRows,
-        approvedCount,
-        pendingCount,
-        ignoredCount,
-      },
-      update: {
-        totalIncome: new Prisma.Decimal(totalIncome.toFixed(2)),
-        totalExpenses: new Prisma.Decimal(totalExpenses.toFixed(2)),
-        netBalance: new Prisma.Decimal((totalIncome - totalExpenses).toFixed(2)),
-        transactionCount: totalAll,
-        classifiedCount,
-        needsReviewCount,
-        unmatchedCount: unmatchedRows,
-        approvedCount,
-        pendingCount,
-        ignoredCount,
-      },
-    });
+  /**
+   * Coalesced month recompute (ENGINE-039): dedupes the month keys and runs
+   * the recomputes SEQUENTIALLY — a request touches 1-13 months at most, and
+   * a parallel fan-out would only queue on the advisory lock while exhausting
+   * the connection pool.
+   */
+  private async recomputeMonths(
+    condominiumId: string,
+    monthKeys: Iterable<string>,
+  ): Promise<void> {
+    for (const key of new Set(monthKeys)) {
+      const [year, month] = key.split('-').map(Number);
+      await this.upsertSummaryForMonth(condominiumId, year, month);
+    }
   }
 
   async approveTransaction(
@@ -2527,15 +2505,10 @@ export class ClassificationService {
       });
     });
 
-    const uniqueMonths = new Set<string>();
     const d = new Date(capturedDate!);
-    uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
-      }),
-    );
+    await this.recomputeMonths(condominiumId, [
+      `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
+    ]);
 
     if (capturedCalendarEventId) {
       await this.unmarkTerraceEventPaid(capturedCalendarEventId, transactionId, condominiumId, userId);
@@ -2577,16 +2550,12 @@ export class ClassificationService {
       }),
     ]);
 
-    // Recalculate summaries for all affected months
-    const uniqueMonths = new Set<string>();
-    for (const tx of existing) {
-      const d = new Date(tx.transactionDate);
-      uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
-    }
-    await Promise.all(
-      Array.from(uniqueMonths).map((key) => {
-        const [year, month] = key.split('-').map(Number);
-        return this.upsertSummaryForMonth(condominiumId, year, month);
+    // Recalculate summaries for all affected months (deduped, sequential)
+    await this.recomputeMonths(
+      condominiumId,
+      existing.map((tx) => {
+        const d = new Date(tx.transactionDate);
+        return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
       }),
     );
 

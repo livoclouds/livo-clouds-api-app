@@ -49,6 +49,7 @@ interface PrismaMock {
     findFirst: jest.Mock;
   };
   $transaction: jest.Mock;
+  $executeRaw: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
@@ -103,6 +104,8 @@ function makePrismaMock(): PrismaMock {
     // REV-003 / REV-017: support both forms — array (chunk classifyBatch) and
     // callback (single-row overrides). The callback receives the same mock as `tx`.
     $transaction: jest.fn(),
+    // ENGINE-022: the summary recompute takes a pg_advisory_xact_lock first.
+    $executeRaw: jest.fn().mockResolvedValue([]),
   };
   mock.$transaction.mockImplementation(async (arg: unknown) => {
     if (typeof arg === 'function') {
@@ -1585,6 +1588,52 @@ describe('ClassificationService.manualClassify — multi-unit allocations', () =
     expect(prisma.paymentAllocation.createMany).not.toHaveBeenCalled();
   });
 
+  it('rejects a one-cent drift — the sum must equal the credit exactly (ENGINE-052)', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    prisma.transaction.findFirst.mockResolvedValue(baseTx);
+    prisma.resident.findFirst.mockResolvedValue({ id: 'res-307' });
+    const service = makeService(prisma);
+
+    let caught: unknown;
+    try {
+      await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+        allocations: [
+          { unitNumber: '307', residentId: 'res-307', allocatedAmount: 500 },
+          { unitNumber: '43', residentId: 'res-43', allocatedAmount: 499.99 }, // 999.99 ≠ 1000.00
+        ],
+      }, USER_ID);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { getStatus(): number }).getStatus()).toBe(400);
+    expect((caught as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'ALLOCATION_SUM_MISMATCH',
+    });
+    expect(prisma.paymentAllocation.createMany).not.toHaveBeenCalled();
+  });
+
+  it('accepts an exact split whose float sum carries binary noise', async () => {
+    const prisma = makePrismaMock();
+    primeSettings(prisma);
+    // 0.1 + 0.2 !== 0.3 in floats; cent-space comparison must still accept.
+    prisma.transaction.findFirst.mockResolvedValue({ ...baseTx, credits: 0.3 });
+    prisma.resident.findFirst.mockImplementation(({ where }: { where: { id: string } }) =>
+      Promise.resolve({ id: where.id }),
+    );
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    await service.manualClassify(CONDOMINIUM_ID, ALLOC_TX, {
+      allocations: [
+        { unitNumber: '307', residentId: 'res-307', allocatedAmount: 0.1 },
+        { unitNumber: '43', residentId: 'res-43', allocatedAmount: 0.2 },
+      ],
+    }, USER_ID);
+
+    expect(prisma.paymentAllocation.createMany).toHaveBeenCalled();
+  });
+
   it('rejects when a resident does not live in the allocated unit', async () => {
     const prisma = makePrismaMock();
     primeSettings(prisma);
@@ -2034,6 +2083,47 @@ describe('ClassificationService — ENGINE-002 delete collaborators', () => {
         { condominiumId: CONDOMINIUM_ID, year: 2026, month: 4 },
       ]),
     );
+  });
+
+  it('takes the per-(tenant,month) advisory lock BEFORE any read, inside the $transaction (ENGINE-022)', async () => {
+    const prisma = makePrismaMock();
+    const order: string[] = [];
+    prisma.$executeRaw.mockImplementation(() => {
+      order.push('lock');
+      return Promise.resolve([]);
+    });
+    prisma.transaction.aggregate.mockImplementation(() => {
+      order.push('read');
+      return Promise.resolve({ _sum: { credits: null, charges: null }, _count: 0 });
+    });
+    prisma.financialMonthlySummary.upsert.mockImplementation(() => {
+      order.push('upsert');
+      return Promise.resolve(null);
+    });
+    const service = makeService(prisma);
+
+    await service.recomputeSummariesForMonths(CONDOMINIUM_ID, [{ year: 2026, month: 3 }]);
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(order[0]).toBe('lock');
+    expect(order.indexOf('upsert')).toBeGreaterThan(order.lastIndexOf('read'));
+    // The raw SQL is the advisory xact-lock keyed on (hashtext(tenant), yyyymm).
+    const [strings, ...params] = prisma.$executeRaw.mock.calls[0];
+    expect(strings.join('?')).toContain('pg_advisory_xact_lock');
+    expect(params).toEqual([CONDOMINIUM_ID, 202603]);
+  });
+
+  it('recomputeSummariesForMonths dedupes repeated months (ENGINE-039 coalescing)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma);
+
+    await service.recomputeSummariesForMonths(CONDOMINIUM_ID, [
+      { year: 2026, month: 3 },
+      { year: 2026, month: 3 },
+      { year: 2026, month: 4 },
+    ]);
+
+    expect(prisma.financialMonthlySummary.upsert).toHaveBeenCalledTimes(2);
   });
 
   it('revertTerraceLinksForBatch visits every linked transaction of the batch', async () => {

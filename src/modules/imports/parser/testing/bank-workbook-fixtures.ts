@@ -364,7 +364,9 @@ export const EXPECTED_ENGLISH_LAYOUT: ParsedRow[] = [
  *    - A row whose date cell is 'N/A' → dropped SILENTLY (no warning).
  *    - A row with a valid date but empty description and zero amounts →
  *      dropped silently even though balance is non-zero.
- *    - A non-numeric amount 'abc' → parsed as 0.
+ *    - A non-numeric amount 'abc' → NaN + parseIssues 'unparseable'
+ *      (ENGINE-030: the row is flagged, validateRows rejects it; the old
+ *      parser silently coerced it to $0.00).
  *    - An Excel serial-number date (45968 → 2025-11-07).
  *    - A Spanish long date '8 de noviembre de 2025'.
  *    Warnings stay EMPTY: the parser only warns when zero transactions
@@ -415,10 +417,11 @@ export const EXPECTED_HOSTILE_CELLS: ParsedRow[] = [
   {
     date: '2025-11-07', // serial 45968
     description: 'CUOTA EXTRAORDINARIA CASA 21',
-    charges: 0, // 'abc' is not numeric → 0
+    charges: NaN, // 'abc' refuses to parse (ENGINE-030) — row carries the issue
     credits: 2000,
     balance: 152884.56,
     flowType: 'income',
+    parseIssues: [{ field: 'charges', issue: 'unparseable', raw: 'abc' }],
   },
   {
     date: '2025-11-08', // '8 de noviembre de 2025'

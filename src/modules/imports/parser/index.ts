@@ -2,10 +2,18 @@ import { Injectable, Logger } from '@nestjs/common';
 import { parseExcelBuffer } from './excel.parser';
 import { parsePdfBuffer } from './pdf.parser';
 import type { ParsedRow, DetectedPeriod } from './types';
+import type { BalanceContinuityReport } from './balance-continuity';
 import type { FieldDefinition } from './default-aliases';
 
 export type { ParsedRow, DetectedPeriod };
+export type { AmountIssue, AmountParseIssue } from './types';
 export { buildPeriods, computeFinalBalance } from './types';
+export {
+  BALANCE_DISCONTINUITY_THRESHOLD,
+  validateBalanceContinuity,
+  type BalanceContinuityReport,
+  type BalanceDiscontinuity,
+} from './balance-continuity';
 export {
   DEFAULT_FIELD_DEFINITIONS,
   SYSTEM_FIELD_KEYS,
@@ -52,6 +60,8 @@ export interface PreviewFileResult {
   transactions: ParsedRow[];
   warnings: string[];
   validation?: PreviewValidationSummary;
+  // ENGINE-027 — running-balance continuity over the full parsed set.
+  continuity?: BalanceContinuityReport;
   processedAt: string;
 }
 

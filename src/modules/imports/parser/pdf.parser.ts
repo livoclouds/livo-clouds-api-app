@@ -1,5 +1,6 @@
 import pdfParse from 'pdf-parse';
 import type { ParsedRow } from './types';
+import { round2 } from '../../../common/utils/money.util';
 import {
   buildAliasIndex,
   DEFAULT_FIELD_DEFINITIONS,
@@ -30,6 +31,11 @@ const DATE_SLASH_RE = /(\d{1,2})\/(\d{2})\/(\d{4})/;
 const DATE_ISO_RE = /(\d{4})-(\d{2})-(\d{2})/;
 const TIME_RE = /\b(\d{2}:\d{2}(?::\d{2})?)\b/;
 const AMOUNT_RE = /\b(\d{1,3}(?:,\d{3})*(?:\.\d{2}))\b/g;
+// European-format amount ("1.234,56") — AMOUNT_RE only matches US format, so
+// these silently vanished from line parsing. Positional attribution is
+// impossible in line-based PDF extraction, so a matching row is flagged and
+// rejected instead of guessed at (ENGINE-029).
+const EURO_AMOUNT_LINE_RE = /\b\d{1,3}(?:\.\d{3})+,\d{2}\b/;
 
 function parseDate(line: string): string | null {
   const m1 = line.match(DATE_SPANISH_RE);
@@ -61,7 +67,7 @@ function extractAmounts(line: string): number[] {
   const cleaned = line.replace(DATE_SPANISH_RE, '').replace(DATE_SLASH_RE, '');
   const matches = cleaned.matchAll(AMOUNT_RE);
   return Array.from(matches).map((m) =>
-    parseFloat(m[1].replace(/,/g, '')),
+    round2(parseFloat(m[1].replace(/,/g, ''))),
   );
 }
 
@@ -207,6 +213,15 @@ export async function parsePdfBuffer(
         credits,
         balance,
         flowType: credits > 0 ? 'income' : 'expense',
+        ...(EURO_AMOUNT_LINE_RE.test(line) && {
+          parseIssues: [
+            {
+              field: 'charges' as const,
+              issue: 'ambiguousDecimal' as const,
+              raw: line.match(EURO_AMOUNT_LINE_RE)![0],
+            },
+          ],
+        }),
       };
     } else if (currentTx && !isHeaderLine(line, aliasIndex).isHeader) {
       const amounts = extractAmounts(line);
