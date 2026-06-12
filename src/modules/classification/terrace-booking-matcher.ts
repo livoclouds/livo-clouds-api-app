@@ -54,6 +54,12 @@ export interface TerraceMatchResult {
     | null;
   paymentConcept: 'AMENITY';
   matchedAt: Date | null;
+  /**
+   * CAL-037: the tied candidate event ids when the result is TERRACE_AMBIGUOUS.
+   * Empty for every other outcome. Persisted so the review UI can surface which
+   * bookings competed instead of forcing the operator to hunt the calendar.
+   */
+  candidateEventIds: string[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -208,6 +214,7 @@ export function matchTerraceBooking(
       requiresReviewReason: 'TERRACE_AMBIGUOUS',
       paymentConcept: 'AMENITY',
       matchedAt: null,
+      candidateEventIds: best.map((s) => s.candidate.id),
     };
   }
 
@@ -226,6 +233,7 @@ export function matchTerraceBooking(
       requiresReviewReason: 'TERRACE_DEPOSIT',
       paymentConcept: 'AMENITY',
       matchedAt: null,
+      candidateEventIds: [],
     };
   }
 
@@ -243,6 +251,7 @@ export function matchTerraceBooking(
       requiresReviewReason: 'TERRACE_DUPLICATE',
       paymentConcept: 'AMENITY',
       matchedAt: null,
+      candidateEventIds: [],
     };
   }
 
@@ -258,6 +267,7 @@ export function matchTerraceBooking(
       requiresReviewReason: null,
       paymentConcept: 'AMENITY',
       matchedAt: new Date(),
+      candidateEventIds: [],
     };
   }
 
@@ -272,6 +282,7 @@ export function matchTerraceBooking(
       requiresReviewReason: null,
       paymentConcept: 'AMENITY',
       matchedAt: new Date(),
+      candidateEventIds: [],
     };
   }
 
@@ -286,6 +297,7 @@ export function matchTerraceBooking(
       requiresReviewReason: null,
       paymentConcept: 'AMENITY',
       matchedAt: new Date(),
+      candidateEventIds: [],
     };
   }
 
@@ -299,5 +311,6 @@ export function matchTerraceBooking(
     requiresReviewReason: 'LOW_CONFIDENCE',
     paymentConcept: 'AMENITY',
     matchedAt: null,
+    candidateEventIds: [],
   };
 }

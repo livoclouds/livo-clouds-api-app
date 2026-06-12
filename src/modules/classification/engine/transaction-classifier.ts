@@ -182,6 +182,7 @@ export function classifyTransaction(
         matchedRuleId: null,
         matchedCalendarEventId: terraceResult.matchedCalendarEventId,
         matchedAt: terraceResult.matchedAt,
+        terraceCandidateEventIds: terraceResult.candidateEventIds,
       };
     }
   }

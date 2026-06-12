@@ -99,6 +99,21 @@ export interface ExpandedOccurrence<T extends ExpandableEvent> {
   occurrenceEnd: Date;
 }
 
+/**
+ * Expand a recurring event into the occurrences that intersect [fromDate, toDate].
+ *
+ * Contract — recurrence is anchored at **fixed UTC instants** (CAL-042). The
+ * rrule engine expands from `event.startDate` as an absolute UTC timestamp and
+ * applies no wall-clock/DST correction: a series at 18:00 in a DST-observing
+ * zone shifts to 17:00 or 19:00 local after a transition. This is intentional
+ * for the primary market (no DST); timezone-aware expansion is deferred.
+ *
+ * Window semantics — occurrences are kept when they **overlap** the window
+ * (`occurrenceStart < toDate && occurrenceEnd > fromDate`), matching the
+ * single-event filter in `calendar.service.ts` (CAL-041). The rrule scan starts
+ * `duration` before `fromDate` so a multi-day occurrence that began before the
+ * window but still overlaps it is not dropped.
+ */
 export function expandRecurrence<T extends ExpandableEvent>(
   event: T,
   fromDate: Date,
@@ -110,15 +125,25 @@ export function expandRecurrence<T extends ExpandableEvent>(
 
   const duration = event.endDate.getTime() - event.startDate.getTime();
   const rule = buildRule(event.recurrenceRule, event.startDate);
-  const occurrences = rule.between(fromDate, toDate, true);
+  // CAL-041: widen the scan start by the event duration so an occurrence whose
+  // start precedes the window but whose end falls inside it is captured, then
+  // post-filter by true overlap (rule.between is start-in-range only).
+  const scanFrom = new Date(fromDate.getTime() - Math.max(duration, 0));
+  const occurrences = rule.between(scanFrom, toDate, true);
 
-  return occurrences.map((occurrenceStart) => {
-    const occurrenceEnd = new Date(occurrenceStart.getTime() + duration);
-    return {
-      source: event,
-      occurrenceId: `${event.id}::${occurrenceStart.toISOString()}`,
-      occurrenceStart,
-      occurrenceEnd,
-    };
-  });
+  return occurrences
+    .map((occurrenceStart) => {
+      const occurrenceEnd = new Date(occurrenceStart.getTime() + duration);
+      return {
+        source: event,
+        occurrenceId: `${event.id}::${occurrenceStart.toISOString()}`,
+        occurrenceStart,
+        occurrenceEnd,
+      };
+    })
+    .filter(
+      (o) =>
+        o.occurrenceStart.getTime() < toDate.getTime() &&
+        o.occurrenceEnd.getTime() > fromDate.getTime(),
+    );
 }

@@ -4,6 +4,16 @@ import { Readable } from 'node:stream';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ListTransactionsDto } from './dto/list-transactions.dto';
 
+// CAL-037: minimal shape of a tied terrace booking surfaced on an ambiguous
+// review row so the operator can see which bookings competed.
+interface TerraceCandidateSummary {
+  id: string;
+  title: string;
+  startDate: Date;
+  unitNumber: string | null;
+  resident: { firstName: string; lastName: string } | null;
+}
+
 const EXPORT_COLUMN_IDS = [
   'rowNumber',
   'date',
@@ -265,7 +275,7 @@ export class TransactionsService {
     ]);
 
     return {
-      data,
+      data: await this.attachTerraceCandidates(data),
       meta: {
         total,
         page,
@@ -273,6 +283,38 @@ export class TransactionsService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * CAL-037: resolve the tied candidate event ids on TERRACE_AMBIGUOUS rows into
+   * minimal `{id, title, startDate, unitNumber, resident}` records so the review
+   * UI can list the competing bookings read-only. Display-only — no link/unlink
+   * write path; the operator resolves via the existing manual match/unmatch flow.
+   */
+  private async attachTerraceCandidates<
+    T extends { terraceCandidateEventIds: string[] },
+  >(rows: T[]): Promise<(T & { terraceCandidates: TerraceCandidateSummary[] })[]> {
+    const ids = [...new Set(rows.flatMap((r) => r.terraceCandidateEventIds))];
+    if (ids.length === 0) {
+      return rows.map((r) => ({ ...r, terraceCandidates: [] }));
+    }
+    const events = await this.prisma.calendarEvent.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        title: true,
+        startDate: true,
+        unitNumber: true,
+        resident: { select: { firstName: true, lastName: true } },
+      },
+    });
+    const byId = new Map(events.map((e) => [e.id, e]));
+    return rows.map((r) => ({
+      ...r,
+      terraceCandidates: r.terraceCandidateEventIds
+        .map((id) => byId.get(id))
+        .filter((e): e is TerraceCandidateSummary => e != null),
+    }));
   }
 
   /**
