@@ -57,6 +57,41 @@ describe('validateRecurrenceRule', () => {
     }
   });
 
+  it('rejects an RRULE whose UNTIL span exceeds MAX_OCCURRENCES_PER_EVENT', () => {
+    try {
+      // ~2 years of daily occurrences (~730) — well over the 366 cap.
+      validateRecurrenceRule('FREQ=DAILY;UNTIL=20280601T235959Z', START);
+      throw new Error('did not throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(RecurrenceValidationError);
+      expect((err as RecurrenceValidationError).code).toBe('recurrenceTooMany');
+    }
+  });
+
+  it('rejects an adversarial far-future UNTIL in under 50ms (CAL-013, no full-span materialization)', () => {
+    // FREQ=DAILY;UNTIL=99991231T235959Z fits the 500-char cap but would allocate
+    // ~2.9M Date objects under the old rule.between() path, blocking the event loop.
+    // The early-exit iterator must reject it near-instantly.
+    const startedAt = performance.now();
+    try {
+      validateRecurrenceRule('FREQ=DAILY;UNTIL=99991231T235959Z', START);
+      throw new Error('did not throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(RecurrenceValidationError);
+      expect((err as RecurrenceValidationError).code).toBe('recurrenceTooMany');
+    }
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(50);
+  });
+
+  it('accepts a daily UNTIL rule exactly at the per-event cap', () => {
+    // 366 daily occurrences starting 2026-06-01 → last day 2027-06-01 (inclusive),
+    // 2026 being a non-leap year. Stays within MAX_OCCURRENCES_PER_EVENT.
+    expect(() =>
+      validateRecurrenceRule('FREQ=DAILY;UNTIL=20270601T235959Z', START),
+    ).not.toThrow();
+  });
+
   it('rejects an unparseable RRULE with code recurrenceInvalid', () => {
     try {
       validateRecurrenceRule('this-is-not-an-rrule', START);

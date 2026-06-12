@@ -30,11 +30,13 @@ export class CreateCalendarEventDto {
   @ApiProperty({ example: 'Reservación Terraza - Familia García' })
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   title: string;
 
   @ApiPropertyOptional({ example: 'Cumpleaños 15 años' })
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   description?: string;
 
   @ApiProperty({ enum: EventTypeDto, default: EventTypeDto.GENERAL })
@@ -57,11 +59,13 @@ export class CreateCalendarEventDto {
   @ApiPropertyOptional({ example: 'Terraza A' })
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   location?: string;
 
   @ApiPropertyOptional({ example: 'A-12' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   unitNumber?: string;
 
   @ApiPropertyOptional()
@@ -72,6 +76,7 @@ export class CreateCalendarEventDto {
   @ApiPropertyOptional({ example: 'Confirmar con seguridad el acceso de proveedores' })
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   notes?: string;
 
   @ApiPropertyOptional({ description: 'Event-type-specific metadata (e.g. TerraceBookingMetadata)' })
