@@ -72,6 +72,31 @@ describe('permission-catalog', () => {
       expect(admin).not.toContain('files.delete');
     });
 
+    it('calendar visibility tiers (Phase 4): auditor sees council, resident/guard do not — CAL-001', () => {
+      const auditor = presetForRole('READ_ONLY');
+      const admin = presetForRole('TENANT_ADMIN');
+      const resident = presetForRole('RESIDENT');
+      const guard = presetForRole('GUARD');
+      const supervisor = presetForRole('SUPERVISOR');
+
+      // Auditor/council read-only: council tier, never private.
+      expect(auditor).toContain('calendar.viewCouncil');
+      expect(auditor).not.toContain('calendar.viewPrivate');
+      // Administrator: full visibility (inherits both tiers from ALL_TENANT).
+      expect(admin).toContain('calendar.viewCouncil');
+      expect(admin).toContain('calendar.viewPrivate');
+      // Resident / guard / supervisor: PUBLIC only — no view tiers granted.
+      for (const preset of [resident, guard, supervisor]) {
+        expect(preset).not.toContain('calendar.viewCouncil');
+        expect(preset).not.toContain('calendar.viewPrivate');
+      }
+    });
+
+    it('calendar.bookings.manage is removed from the catalog (CAL-031)', () => {
+      expect(isValidPermission('calendar.bookings.manage')).toBe(false);
+      expect(ALL_PERMISSION_KEYS).not.toContain('calendar.bookings.manage');
+    });
+
     it('Resident/Condomino is read-only', () => {
       const condo = presetForRole('READ_ONLY');
       expect(condo).toContain('dashboard.read');

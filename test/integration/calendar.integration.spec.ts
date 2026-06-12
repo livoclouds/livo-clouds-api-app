@@ -10,7 +10,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { EventStatus, EventType, FlowType, type Prisma } from '@prisma/client';
 
-import { UserRole } from '../../src/common/types';
 import {
   CreateCalendarEventDto,
   EventTypeDto,
@@ -429,11 +428,15 @@ describeIntegration('calendar service (integration)', () => {
         }),
       )) as { id: string };
 
-      // Admin sees both.
+      // Phase 4: visibility derives from effective permissions, not the role.
+      const managePerms: ReadonlySet<string> = new Set(['calendar.read', 'calendar.manage']);
+      const residentPerms: ReadonlySet<string> = new Set(['calendar.read']);
+
+      // A manager sees both.
       const adminList = await ctx.calendar.findAll(
         tenant.condominiumId,
         listQuery(),
-        UserRole.TENANT_ADMIN,
+        managePerms,
       );
       expect(adminList.meta.total).toBe(2);
 
@@ -441,7 +444,7 @@ describeIntegration('calendar service (integration)', () => {
       const residentList = await ctx.calendar.findAll(
         tenant.condominiumId,
         listQuery(),
-        UserRole.RESIDENT,
+        residentPerms,
       );
       expect(residentList.meta.total).toBe(1);
       expect((residentList.data as Array<{ id: string; visibility: string }>)[0].id).toBe(
@@ -450,12 +453,12 @@ describeIntegration('calendar service (integration)', () => {
 
       // findOne mirrors the filter: PRIVATE reads as not-found for a resident.
       await expect(
-        ctx.calendar.findOne(tenant.condominiumId, privateEvent.id, UserRole.RESIDENT),
+        ctx.calendar.findOne(tenant.condominiumId, privateEvent.id, residentPerms),
       ).rejects.toThrow(NotFoundException);
       const visible = (await ctx.calendar.findOne(
         tenant.condominiumId,
         publicEvent.id,
-        UserRole.RESIDENT,
+        residentPerms,
       )) as { id: string };
       expect(visible.id).toBe(publicEvent.id);
     });

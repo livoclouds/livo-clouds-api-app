@@ -13,6 +13,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { RbacService } from '../../common/rbac/rbac.service';
 import { JwtPayload } from '../../common/types';
 import { CalendarService } from './calendar.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
@@ -23,24 +24,35 @@ import { PaidLinkActionDto, UpdateCalendarEventDto } from './dto/update-calendar
 @Controller('condominiums/:condominiumSlug/calendar/events')
 @UseGuards(CondominiumAccessGuard)
 export class CalendarController {
-  constructor(private readonly calendarService: CalendarService) {}
+  constructor(
+    private readonly calendarService: CalendarService,
+    private readonly rbac: RbacService,
+  ) {}
 
+  // CAL-009: gate the reads on calendar.read (any-of with calendar.manage) so that
+  // revoking the key actually blocks access — PermissionsGuard is a no-op otherwise.
+  // CAL-032: resolve the visibility tier from LIVE effective permissions per request
+  // (via RbacService), not the stale JWT role claim, so a role change applies at once.
   @Get()
+  @RequirePermission('calendar.read', 'calendar.manage')
   @ApiOperation({ summary: 'List calendar events' })
-  findAll(
+  async findAll(
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Query() query: ListCalendarEventsDto,
   ) {
-    return this.calendarService.findAll(req.condominiumId, query, req.user.role);
+    const perms = await this.rbac.getEffectivePermissions(req.user.sub);
+    return this.calendarService.findAll(req.condominiumId, query, perms);
   }
 
   @Get(':id')
+  @RequirePermission('calendar.read', 'calendar.manage')
   @ApiOperation({ summary: 'Get calendar event detail' })
-  findOne(
+  async findOne(
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Param('id') id: string,
   ) {
-    return this.calendarService.findOne(req.condominiumId, id, req.user.role);
+    const perms = await this.rbac.getEffectivePermissions(req.user.sub);
+    return this.calendarService.findOne(req.condominiumId, id, perms);
   }
 
   @Post()
