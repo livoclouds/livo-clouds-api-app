@@ -402,7 +402,7 @@ describeIntegration('calendar service (integration)', () => {
         ctx.calendar.update(tenant.condominiumId, tenant.userId, created.id, {
           endDate: '2026-06-15T09:00:00.000Z', // before the existing 10:00 start
         } as UpdateCalendarEventDto),
-      ).rejects.toThrow('endDate must be after startDate');
+      ).rejects.toThrow('endDateAfterStart');
     });
 
     it('clears terrace metadata when the eventType flips away from TERRACE_BOOKING', async () => {

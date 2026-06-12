@@ -306,6 +306,79 @@ describe('CalendarService — Phase 5A recurrence', () => {
     expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
   });
 
+  // CAL-044: business 400s carry stable reason codes, not English prose, so the
+  // web can map them without string-matching API copy.
+  it('rejects create with a stable terraceDisabled reason when terrace bookings are off (CAL-044)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    prisma.condominiumSettings.findUnique.mockResolvedValueOnce({
+      terraceBookingEnabled: false,
+      terraceRentalAmount: 1500,
+      terraceSecurityDepositAmount: 500,
+    });
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Booking',
+        eventType: EventType.TERRACE_BOOKING,
+        startDate: PARENT_START.toISOString(),
+        endDate: PARENT_END.toISOString(),
+      } as never),
+    ).rejects.toThrow('terraceDisabled');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects create with a stable endDateAfterStart reason when end <= start (CAL-044)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Backwards',
+        eventType: EventType.GENERAL,
+        startDate: PARENT_END.toISOString(),
+        endDate: PARENT_START.toISOString(),
+      } as never),
+    ).rejects.toThrow('endDateAfterStart');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
+  // CAL-046: a terrace double-booking 409 carries a machine code so the web does
+  // not have to assume every 409 is a slot conflict.
+  it('rejects a terrace create on a slot conflict with a TERRACE_SLOT_CONFLICT code (CAL-046)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    prisma.condominiumSettings.findUnique.mockResolvedValueOnce({
+      terraceBookingEnabled: true,
+      terraceRentalAmount: 1500,
+      terraceSecurityDepositAmount: 500,
+    });
+    // The conflict-detection findFirst returns an overlapping booking.
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce({ id: 'existing-booking' });
+
+    await service
+      .create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Overlapping booking',
+        eventType: EventType.TERRACE_BOOKING,
+        startDate: PARENT_START.toISOString(),
+        endDate: PARENT_END.toISOString(),
+      } as never)
+      .then(
+        () => {
+          throw new Error('expected the create to reject');
+        },
+        (err: { getResponse?: () => unknown }) => {
+          expect(err.getResponse?.()).toMatchObject({
+            code: 'TERRACE_SLOT_CONFLICT',
+          });
+        },
+      );
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+  });
+
   it('throws when expanded occurrences exceed MAX_TOTAL_OCCURRENCES', async () => {
     const prisma = makePrismaMock();
     const audit = makeAuditMock();
