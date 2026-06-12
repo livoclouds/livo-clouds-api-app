@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { BankDialect, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtPayload } from '../../common/types';
 import {
@@ -12,6 +12,7 @@ import {
   type FieldDefinition,
   SYSTEM_FIELD_KEYS,
 } from '../imports/parser';
+import { isBanBajio } from './known-banks';
 import { CreateBankProfileDto } from './dto/create-bank-profile.dto';
 import { UpdateBankProfileDto } from './dto/update-bank-profile.dto';
 import { FieldDefinitionDto } from './dto/field-definition.dto';
@@ -20,6 +21,7 @@ import { FieldDefinitionDto } from './dto/field-definition.dto';
 const AUDITED_BANK_PROFILE_FIELDS = [
   'name',
   'bankName',
+  'dialect',
   'isDefault',
   'isActive',
   'useSameForPdf',
@@ -30,11 +32,22 @@ const AUDITED_BANK_PROFILE_FIELDS = [
 interface BankProfileLike {
   name: string;
   bankName: string | null;
+  dialect: BankDialect;
   isDefault: boolean;
   isActive: boolean;
   useSameForPdf: boolean;
   excelAliases: unknown;
   pdfAliases: unknown;
+}
+
+/**
+ * ENGINE-009: the bankName substring heuristic survives ONLY here, as the
+ * default for profiles that do not state a dialect explicitly — preserving the
+ * "typing BanBajío activates the dialect" UX at create/rename time. The
+ * classification engine itself reads exclusively the persisted dialect field.
+ */
+function deriveDialectFromBankName(bankName: string | null | undefined): BankDialect {
+  return isBanBajio(bankName) ? BankDialect.BANBAJIO : BankDialect.GENERIC;
 }
 
 export interface BankProfileFieldChange {
@@ -48,6 +61,7 @@ function bankProfileAuditSnapshot(p: BankProfileLike): Record<string, unknown> {
   return {
     name: p.name,
     bankName: p.bankName ?? null,
+    dialect: p.dialect,
     isDefault: p.isDefault,
     isActive: p.isActive,
     useSameForPdf: p.useSameForPdf,
@@ -131,6 +145,7 @@ export class BankProfilesService {
           condominiumId,
           name: dto.name,
           bankName: dto.bankName ?? null,
+          dialect: dto.dialect ?? deriveDialectFromBankName(dto.bankName),
           isDefault: dto.isDefault ?? false,
           useSameForPdf: dto.useSameForPdf ?? true,
           excelAliases: dto.excelAliases as unknown as Prisma.InputJsonValue,
@@ -190,6 +205,13 @@ export class BankProfilesService {
     const data: Prisma.BankProfileUpdateInput = { updatedBy: user.sub };
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.bankName !== undefined) data.bankName = dto.bankName;
+    // An explicit dialect always wins; otherwise a bankName change re-derives it
+    // (the historical "renaming to BanBajío activates the dialect" behavior).
+    if (dto.dialect !== undefined) {
+      data.dialect = dto.dialect;
+    } else if (dto.bankName !== undefined) {
+      data.dialect = deriveDialectFromBankName(dto.bankName);
+    }
     if (dto.useSameForPdf !== undefined) data.useSameForPdf = dto.useSameForPdf;
     if (dto.excelAliases !== undefined) {
       data.excelAliases = dto.excelAliases as unknown as Prisma.InputJsonValue;

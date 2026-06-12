@@ -182,6 +182,9 @@ enum MatchSource {
   MANUAL
   RULE
   AUTO_TERRACE_BOOKING
+  // ENGINE-043: re-applied from a recurring manual correction
+  // (ReconciliationCorrectionPattern with occurrenceCount >= 2).
+  CORRECTION_PATTERN
 }
 
 enum ImportStatus {
@@ -276,6 +279,19 @@ enum RequiresReviewReason {
   NO_MATCH
   TERRACE_AMBIGUOUS
   MANUAL_UNMATCHED
+  // ENGINE-045: one payment names >= 2 units ("casas 307 y 43") — the detection
+  // is high-confidence but how the amount splits across units is the operator's
+  // call, so the row must always land in review with a dedicated, triageable reason.
+  MULTI_UNIT_SPLIT_REQUIRED
+}
+
+// ENGINE-009: which bank-specific extraction strategy the classification engine
+// applies to a batch. Promoted to a validated field so the dialect no longer
+// depends on a free-text bankName substring ("bajio") that silently degrades
+// when the profile is renamed.
+enum BankDialect {
+  GENERIC
+  BANBAJIO
 }
 
 enum ReconciliationStatus {
@@ -1098,6 +1114,10 @@ model BankProfile {
   condominiumId String
   name          String
   bankName      String?
+  // ENGINE-009: bank-specific extraction strategy applied by the classification
+  // engine. Defaulted from the bankName at create time; renaming the profile
+  // never silently changes the engine behavior — only this field does.
+  dialect       BankDialect @default(GENERIC)
   isDefault     Boolean  @default(false)
   isActive      Boolean  @default(true)
   useSameForPdf Boolean  @default(true)
@@ -1146,6 +1166,12 @@ model Transaction {
   paymentPeriodYear      Int?
   paymentPeriodMonth     Int?
   matchSource            MatchSource?
+  // ENGINE-042: which hardcoded extraction pattern produced the unit link
+  // (UNIT_PATTERNS label like "casa"/"#", or "banbajio:segment"/
+  // "banbajio:amount-gate"). Null for rule/correction matches — matchedRuleId
+  // and matchSource attribute those. Feeds the per-pattern override-rate
+  // buckets in ClassificationMetricsService.
+  matchedPatternLabel    String?
   confidenceScore        Decimal?              @db.Decimal(5, 4)
   matchedAt              DateTime?
   classificationVersion  Int                   @default(1)
@@ -1404,6 +1430,10 @@ model ReconciliationRule {
   // EXPENSE rule; both ignored for CONCEPT/UNIT rules.
   expenseCategoryId     String?
   supplierId            String?
+  // ENGINE-015: the confidence ASSIGNED to this rule's matches (stamped as the
+  // transaction's confidenceScore). The engine's fixed 0.8 AUTO gate then decides
+  // auto-classify vs manual review — the field name is historical; it is not a
+  // per-rule gate the score is compared against.
   confidenceThreshold   Decimal                @default(0.80) @db.Decimal(3, 2)
   isActive              Boolean                @default(true)
   priority              Int                    @default(0)

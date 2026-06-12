@@ -2,6 +2,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEnum,
   IsOptional,
   IsString,
   MinLength,
@@ -9,6 +10,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { BankDialect } from '@prisma/client';
 import { FieldDefinitionDto } from './field-definition.dto';
 
 export class CreateBankProfileDto {
@@ -21,6 +23,17 @@ export class CreateBankProfileDto {
   @IsOptional()
   @IsString()
   bankName?: string;
+
+  @ApiPropertyOptional({
+    enum: BankDialect,
+    description:
+      'Bank-specific extraction strategy the classification engine applies to ' +
+      'batches imported with this profile (ENGINE-009). Defaults from bankName ' +
+      'at create time; explicit values always win.',
+  })
+  @IsOptional()
+  @IsEnum(BankDialect)
+  dialect?: BankDialect;
 
   @ApiPropertyOptional({ default: false })
   @IsOptional()

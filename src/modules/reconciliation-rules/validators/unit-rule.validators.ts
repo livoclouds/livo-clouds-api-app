@@ -75,6 +75,37 @@ export class SafeRegexConstraint implements ValidatorConstraintInterface {
 }
 
 /**
+ * ENGINE-041: validates each `unitPatterns` TRIGGER entry. Same defenses as
+ * SafeRegexConstraint (length cap, catastrophic-backtracking blocklist, RE2
+ * compile-check so an accepted pattern is guaranteed to run at classify time —
+ * RE2 rejects backreferences/lookaround that would otherwise save fine and then
+ * silently never fire: a dead rule that looks active). Unlike the extraction
+ * variant it does NOT require a capture group — triggers only test, never extract.
+ */
+@ValidatorConstraint({ name: 'safeTriggerPattern', async: false })
+export class SafeTriggerPatternConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    if (typeof value !== 'string' || value.length === 0) return false;
+    if (value.length > MAX_EXTRACTION_PATTERN_LENGTH) return false;
+    if (DANGEROUS_PATTERNS.some((d) => d.test(value))) return false;
+    try {
+      new RE2(value, 'i');
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  defaultMessage(args: ValidationArguments): string {
+    const value = args.value as unknown;
+    if (typeof value === 'string' && value.length > MAX_EXTRACTION_PATTERN_LENGTH) {
+      return `each unitPatterns entry must be at most ${MAX_EXTRACTION_PATTERN_LENGTH} characters`;
+    }
+    return 'each unitPatterns entry must be a safe, RE2-compilable regular expression (no backreferences or lookaround)';
+  }
+}
+
+/**
  * Object-level shape check, by rule kind:
  *  - UNIT    → exactly one unit outcome (assignedUnitNumber XOR unitExtractionPattern),
  *              no expense outcome.
