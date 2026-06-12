@@ -6,13 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { CalendarEventVisibility, EventType, EventStatus } from '@prisma/client';
+import { CalendarEventVisibility, EventType, EventStatus, ReconciliationStatus } from '@prisma/client';
 import { PaginatedResult, UserRole } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
 import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
-import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
+import { PaidLinkActionDto, UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 import {
   validateTerraceMetadata,
   TERRACE_BOOKING_DEFAULTS,
@@ -73,6 +74,7 @@ export class CalendarService {
     private prisma: PrismaService,
     private audit: AuditService,
     private events: EventEmitter2,
+    private reconciliationLifecycle: ReconciliationLifecycleService,
   ) {}
 
   private readonly logger = new Logger(CalendarService.name);
@@ -93,6 +95,54 @@ export class CalendarService {
     } catch (err) {
       this.logger.warn(`emitNotification(${event}) failed: ${String(err)}`);
     }
+  }
+
+  /**
+   * CAL-011: cancelling or deleting a terrace booking that still has APPROVED
+   * linked transactions would orphan attributed income (the booking disappears
+   * from the calendar while the rental stays counted). Force an explicit operator
+   * decision instead of silently keeping or dropping the money:
+   *   - no action  → 409 PAID_BOOKING_LINKED (the caller must choose)
+   *   - KEEP       → leave the approved payment as-is (income retained)
+   *   - REOPEN     → reopen each payment back to reconciliation review (the
+   *                  guarded reopen also reverts the booking's paymentStatus)
+   * Returns the affected transaction ids so the caller can annotate the audit log.
+   * A no-op (empty list) when nothing approved is linked.
+   */
+  private async resolveLinkedApprovedPayments(
+    condominiumId: string,
+    eventId: string,
+    userId: string,
+    paidLinkAction: PaidLinkActionDto | undefined,
+  ): Promise<string[]> {
+    const linked = await this.prisma.transaction.findMany({
+      where: {
+        condominiumId,
+        matchedCalendarEventId: eventId,
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+      },
+      select: { id: true },
+    });
+    if (linked.length === 0) return [];
+
+    if (!paidLinkAction) {
+      throw new ConflictException({
+        code: 'PAID_BOOKING_LINKED',
+        reason:
+          'This terrace booking has an approved payment linked. Choose whether to keep the recorded income or reopen the payment before cancelling.',
+        linkedTransactionIds: linked.map((t) => t.id),
+      });
+    }
+
+    if (paidLinkAction === PaidLinkActionDto.REOPEN) {
+      // Reuse the guarded reopen: it asserts state, reverts the booking
+      // paymentStatus (other-payer aware), audits, and recomputes summaries.
+      for (const t of linked) {
+        await this.reconciliationLifecycle.reopenTransaction(condominiumId, t.id, userId);
+      }
+    }
+
+    return linked.map((t) => t.id);
   }
 
   async findAll(
@@ -428,6 +478,24 @@ export class CalendarService {
       }
     }
 
+    // CAL-011: cancelling a terrace booking that still has an approved payment
+    // linked needs an explicit keep/reopen decision before any state is written.
+    // Runs only on the PENDING/CONFIRMED → CANCELLED edge so an ordinary edit of
+    // an already-cancelled (or never-paid) booking is unaffected.
+    let reopenedPaymentIds: string[] = [];
+    const cancellingTerrace =
+      existing.eventType === EventType.TERRACE_BOOKING &&
+      effectiveStatus === EventStatus.CANCELLED &&
+      existing.status !== EventStatus.CANCELLED;
+    if (cancellingTerrace) {
+      reopenedPaymentIds = await this.resolveLinkedApprovedPayments(
+        condominiumId,
+        id,
+        userId,
+        dto.paidLinkAction,
+      );
+    }
+
     const data: Record<string, unknown> = {};
     if (dto.title !== undefined) data.title = dto.title;
     if (dto.description !== undefined) data.description = dto.description;
@@ -506,10 +574,29 @@ export class CalendarService {
       }
     }
 
-    await this.prisma.calendarEvent.updateMany({
-      where: { id, condominiumId, deletedAt: null },
+    // CAL-006: when the client sends the version it edited against, gate the write
+    // on the event's updatedAt. A zero-row update then means the event changed
+    // under the open modal (e.g. a reconciliation flipped the booking PAID) — a
+    // blind save would silently revert paymentStatus, so reject with the same
+    // STALE_OVERRIDE contract transactions already use. Without expectedUpdatedAt
+    // the behavior is unchanged (last-write-wins, the pre-Phase-3 default).
+    const updateResult = await this.prisma.calendarEvent.updateMany({
+      where: {
+        id,
+        condominiumId,
+        deletedAt: null,
+        ...(dto.expectedUpdatedAt
+          ? { updatedAt: new Date(dto.expectedUpdatedAt) }
+          : {}),
+      },
       data,
     });
+    if (dto.expectedUpdatedAt && updateResult.count === 0) {
+      throw new ConflictException({
+        code: 'STALE_OVERRIDE',
+        reason: 'Calendar event was modified by another user. Refresh and try again.',
+      });
+    }
 
     const updated = await this.findOne(condominiumId, id, UserRole.ROOT);
 
@@ -522,7 +609,15 @@ export class CalendarService {
       entityType: 'CalendarEvent',
       entityId: id,
       beforeState: existing,
-      afterState: updated,
+      // CAL-011: record the operator's keep/reopen decision on the audited cancel
+      // so the income disposition is traceable.
+      afterState: cancellingTerrace
+        ? {
+            ...updated,
+            paidLinkAction: dto.paidLinkAction ?? null,
+            reopenedPaymentIds,
+          }
+        : updated,
     });
 
     this.emitTerraceChange(
@@ -555,8 +650,26 @@ export class CalendarService {
     return updated;
   }
 
-  async remove(condominiumId: string, userId: string, id: string) {
+  async remove(
+    condominiumId: string,
+    userId: string,
+    id: string,
+    paidLinkAction?: PaidLinkActionDto,
+  ) {
     const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
+
+    // CAL-011: deleting a terrace booking with an approved payment still linked
+    // needs an explicit keep/reopen decision (same contract as cancel) before the
+    // row is soft-deleted and the income would silently orphan.
+    let reopenedPaymentIds: string[] = [];
+    if (existing.eventType === EventType.TERRACE_BOOKING) {
+      reopenedPaymentIds = await this.resolveLinkedApprovedPayments(
+        condominiumId,
+        id,
+        userId,
+        paidLinkAction,
+      );
+    }
 
     await this.prisma.calendarEvent.updateMany({
       where: { id, condominiumId, deletedAt: null },
@@ -572,6 +685,10 @@ export class CalendarService {
       entityType: 'CalendarEvent',
       entityId: id,
       beforeState: existing,
+      // CAL-011: trace the operator's keep/reopen decision on a paid-linked delete.
+      ...(existing.eventType === EventType.TERRACE_BOOKING
+        ? { afterState: { paidLinkAction: paidLinkAction ?? null, reopenedPaymentIds } }
+        : {}),
     });
 
     this.emitTerraceChange(

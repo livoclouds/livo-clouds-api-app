@@ -17,7 +17,7 @@ import { JwtPayload } from '../../common/types';
 import { CalendarService } from './calendar.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
 import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
-import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
+import { PaidLinkActionDto, UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 
 @ApiTags('Calendar')
 @Controller('condominiums/:condominiumSlug/calendar/events')
@@ -70,7 +70,11 @@ export class CalendarController {
   remove(
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Param('id') id: string,
+    // CAL-011: keep/reopen decision for a paid-linked terrace booking. Passed as a
+    // query param since DELETE carries no body; omitting it on such a booking
+    // returns 409 PAID_BOOKING_LINKED so the client can prompt the operator.
+    @Query('paidLinkAction') paidLinkAction?: PaidLinkActionDto,
   ) {
-    return this.calendarService.remove(req.condominiumId, req.user.sub, id);
+    return this.calendarService.remove(req.condominiumId, req.user.sub, id, paidLinkAction);
   }
 }

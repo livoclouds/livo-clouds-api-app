@@ -22,6 +22,12 @@ function candidate(overrides: Partial<TerraceCandidate> = {}): TerraceCandidate 
     unitNumber: '5',
     startDate: EVENT_DATE,
     terraceRentalAmount: 1500,
+    // Phase 3: deposit distinct from rental (and from the 1000 used by the
+    // "amount does not match" test) and not yet received; booking unclaimed by
+    // default so existing rental-match tests keep their AUTO outcome.
+    securityDepositAmount: 750,
+    securityDepositStatus: 'PENDING',
+    claimed: false,
     customKeywords: [],
     ...overrides,
   };
@@ -380,6 +386,60 @@ describe('matchTerraceBooking', () => {
       expect(onlyGlobal).not.toBeNull();
       expect(both!.confidenceScore).toBe(onlyGlobal!.confidenceScore);
       expect(both!.classificationStatus).toBe(onlyGlobal!.classificationStatus);
+    });
+  });
+
+  // ── CAL-003: duplicate (claimed booking) ─────────────────────────────────────
+
+  describe('claimed bookings (CAL-003)', () => {
+    it('flags a payment for an already-claimed booking as TERRACE_DUPLICATE instead of linking', () => {
+      const result = matchTerraceBooking(input(), [candidate({ claimed: true })]);
+      expect(result).not.toBeNull();
+      expect(result!.matchedCalendarEventId).toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+      expect(result!.requiresReviewReason).toBe('TERRACE_DUPLICATE');
+      expect(result!.confidenceScore).toBe(0.6);
+    });
+
+    it('still AUTO-links the same payment when the booking is unclaimed', () => {
+      const result = matchTerraceBooking(input(), [candidate({ claimed: false })]);
+      expect(result!.matchedCalendarEventId).toBe('event-001');
+      expect(result!.classificationStatus).toBe('AUTO');
+    });
+  });
+
+  // ── CAL-012: deposit awareness ───────────────────────────────────────────────
+
+  describe('security deposit (CAL-012)', () => {
+    it('flags a deposit-amount payment as TERRACE_DEPOSIT and never links it as rental', () => {
+      const result = matchTerraceBooking(
+        input({ amount: 900 }), // matches securityDepositAmount (900), not rental (1500)
+        [candidate({ securityDepositAmount: 900 })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.matchedCalendarEventId).toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+      expect(result!.requiresReviewReason).toBe('TERRACE_DEPOSIT');
+    });
+
+    it('ignores the deposit amount once the deposit has been received', () => {
+      const result = matchTerraceBooking(
+        input({ amount: 900 }),
+        [candidate({ securityDepositAmount: 900, securityDepositStatus: 'RECEIVED' })],
+      );
+      // Deposit already settled → 900 matches neither rental nor an active deposit.
+      expect(result).toBeNull();
+    });
+
+    it('forces TERRACE_DEPOSIT review when rental == deposit (amount is indistinguishable)', () => {
+      const result = matchTerraceBooking(
+        input({ amount: 1500 }),
+        [candidate({ securityDepositAmount: 1500 })], // rental 1500 == deposit 1500
+      );
+      expect(result).not.toBeNull();
+      expect(result!.matchedCalendarEventId).toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+      expect(result!.requiresReviewReason).toBe('TERRACE_DEPOSIT');
     });
   });
 });

@@ -283,6 +283,14 @@ enum RequiresReviewReason {
   // is high-confidence but how the amount splits across units is the operator's
   // call, so the row must always land in review with a dedicated, triageable reason.
   MULTI_UNIT_SPLIT_REQUIRED
+  // CAL-003 (calendar Phase 3): a second same-amount transaction tried to link a
+  // terrace booking already claimed by an active (non-IGNORED) payment in the
+  // same run — flagged for the operator instead of silently double-absorbed.
+  TERRACE_DUPLICATE
+  // CAL-012 (calendar Phase 3): the amount matches the booking's security deposit
+  // rather than its rental (or rental == deposit, so the two are indistinguishable).
+  // Deposits have no auto-link path, so the row lands in review for a manual call.
+  TERRACE_DEPOSIT
 }
 
 // ENGINE-009: which bank-specific extraction strategy the classification engine

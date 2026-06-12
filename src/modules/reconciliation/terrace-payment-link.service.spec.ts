@@ -16,7 +16,7 @@ interface PrismaMock {
     update: jest.Mock;
   };
   auditLog: { create: jest.Mock };
-  transaction: { findMany: jest.Mock };
+  transaction: { findMany: jest.Mock; findFirst: jest.Mock };
 }
 
 function makePrismaMock(): PrismaMock {
@@ -26,7 +26,11 @@ function makePrismaMock(): PrismaMock {
       update: jest.fn().mockResolvedValue({}),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
-    transaction: { findMany: jest.fn().mockResolvedValue([]) },
+    // CAL-005: findFirst backs the other-payer guard; no other approved payer by default.
+    transaction: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
   };
 }
 
@@ -152,10 +156,12 @@ describe('TerracePaymentLinkService.markTerraceEventPaid', () => {
     expect(prisma.calendarEvent.update).not.toHaveBeenCalled();
   });
 
-  it('silently skips an event that is already PAID (no write, no audit)', async () => {
-    // CAL-003: duplicate absorption is silent today — Phase 3 will surface it.
-    // A second matching transaction approving against an already-PAID booking
-    // leaves no trace: no metadata write, no audit row, no error.
+  it('skips an event that is already PAID without a second write or audit row', async () => {
+    // CAL-003 (Phase 3): the engine now claims a booking on first link and flags
+    // any second same-amount transaction as TERRACE_DUPLICATE, so a second approval
+    // landing on an already-PAID booking is an anomaly. The link service still
+    // makes no second write/audit (idempotent), but now logs at warn rather than
+    // silently absorbing it — the duplicate income no longer compounds.
     const prisma = makePrismaMock();
     prisma.calendarEvent.findFirst.mockResolvedValueOnce({
       metadata: validMetadata({ paymentStatus: 'PAID' }),
@@ -261,37 +267,90 @@ describe('TerracePaymentLinkService.unmarkTerraceEventPaid', () => {
     expect(prisma.calendarEvent.update).not.toHaveBeenCalled();
   });
 
-  it('reverts regardless of WHICH transaction originally paid the booking', async () => {
-    // CAL-005: no APPROVED-guard / other-payer check — Phase 3.
-    // The service only reads `metadata`; it never verifies that the reopening
-    // transaction is the one whose approval marked the booking PAID, nor that
-    // another APPROVED transaction still covers it. Any caller-supplied
-    // transactionId reverts the booking to PENDING.
+  it('reverts when no OTHER approved transaction still covers the booking (CAL-005)', async () => {
+    // CAL-005 (Phase 3): the revert is now guarded by an other-payer check. With
+    // no other APPROVED transaction linked (findFirst → null), the booking reverts.
     const prisma = makePrismaMock();
     prisma.calendarEvent.findFirst.mockResolvedValueOnce({
       metadata: validMetadata({ paymentStatus: 'PAID' }),
     });
+    prisma.transaction.findFirst.mockResolvedValueOnce(null);
     const service = makeService(prisma);
 
     await service.unmarkTerraceEventPaid(
       EVENT_ID,
-      'tx-unrelated-payer',
+      'tx-payer',
       CONDOMINIUM_ID,
       USER_ID,
     );
 
-    // The lookup selects metadata only — no transaction table consultation.
-    expect(prisma.calendarEvent.findFirst).toHaveBeenCalledWith({
-      where: { id: EVENT_ID, condominiumId: CONDOMINIUM_ID, deletedAt: null },
-      select: { metadata: true },
+    // The guard queries for another approved payer, excluding this transaction.
+    expect(prisma.transaction.findFirst).toHaveBeenCalledWith({
+      where: {
+        condominiumId: CONDOMINIUM_ID,
+        matchedCalendarEventId: EVENT_ID,
+        reconciliationStatus: 'APPROVED',
+        id: { notIn: ['tx-payer'] },
+      },
+      select: { id: true },
     });
-    expect(prisma.transaction.findMany).not.toHaveBeenCalled();
-    // The revert still happens, attributed to the unrelated transaction.
     expect(prisma.calendarEvent.update).toHaveBeenCalledTimes(1);
     const { data } = prisma.auditLog.create.mock.calls[0][0] as {
       data: { afterState: Record<string, unknown> };
     };
-    expect(data.afterState.linkedTransactionId).toBe('tx-unrelated-payer');
+    expect(data.afterState.linkedTransactionId).toBe('tx-payer');
+  });
+
+  it('keeps the booking PAID when another approved transaction still covers it (CAL-005)', async () => {
+    // CAL-005 (Phase 3): two payers (or a duplicate). Reopening one must NOT flip
+    // a booking the other approved payment still covers — no metadata write/audit.
+    const prisma = makePrismaMock();
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce({
+      metadata: validMetadata({ paymentStatus: 'PAID' }),
+    });
+    prisma.transaction.findFirst.mockResolvedValueOnce({ id: 'tx-other-approved' });
+    const service = makeService(prisma);
+
+    await service.unmarkTerraceEventPaid(
+      EVENT_ID,
+      'tx-reopened',
+      CONDOMINIUM_ID,
+      USER_ID,
+    );
+
+    expect(prisma.calendarEvent.update).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('excludes sibling ids from the other-payer guard (CAL-005 batch delete)', async () => {
+    // CAL-005: a batch delete settles several rows together — siblings must not
+    // count as "still covering" the booking, so they are passed as exclusions.
+    const prisma = makePrismaMock();
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce({
+      metadata: validMetadata({ paymentStatus: 'PAID' }),
+    });
+    prisma.transaction.findFirst.mockResolvedValueOnce(null);
+    const service = makeService(prisma);
+
+    await service.unmarkTerraceEventPaid(
+      EVENT_ID,
+      'tx-a',
+      CONDOMINIUM_ID,
+      USER_ID,
+      prisma as never,
+      ['tx-a', 'tx-b'],
+    );
+
+    expect(prisma.transaction.findFirst).toHaveBeenCalledWith({
+      where: {
+        condominiumId: CONDOMINIUM_ID,
+        matchedCalendarEventId: EVENT_ID,
+        reconciliationStatus: 'APPROVED',
+        id: { notIn: ['tx-a', 'tx-a', 'tx-b'] },
+      },
+      select: { id: true },
+    });
+    expect(prisma.calendarEvent.update).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -318,8 +377,14 @@ describe('TerracePaymentLinkService.revertTerraceLinksForBatch', () => {
       select: { id: true, matchedCalendarEventId: true },
     });
     expect(unmarkSpy).toHaveBeenCalledTimes(2);
-    expect(unmarkSpy).toHaveBeenNthCalledWith(1, 'evt-a', 'tx-a', CONDOMINIUM_ID, USER_ID);
-    expect(unmarkSpy).toHaveBeenNthCalledWith(2, 'evt-b', 'tx-b', CONDOMINIUM_ID, USER_ID);
+    // CAL-005: the whole batch is passed as the exclusion set so siblings don't
+    // block each other's revert (all rows are being deleted together).
+    expect(unmarkSpy).toHaveBeenNthCalledWith(
+      1, 'evt-a', 'tx-a', CONDOMINIUM_ID, USER_ID, prisma, ['tx-a', 'tx-b'],
+    );
+    expect(unmarkSpy).toHaveBeenNthCalledWith(
+      2, 'evt-b', 'tx-b', CONDOMINIUM_ID, USER_ID, prisma, ['tx-a', 'tx-b'],
+    );
   });
 
   it('does nothing when the batch has no linked transactions', async () => {
@@ -347,6 +412,8 @@ describe('TerracePaymentLinkService.revertTerraceLinksForBatch', () => {
     await service.revertTerraceLinksForBatch(CONDOMINIUM_ID, BATCH_ID, USER_ID);
 
     expect(unmarkSpy).toHaveBeenCalledTimes(1);
-    expect(unmarkSpy).toHaveBeenCalledWith('evt-b', 'tx-b', CONDOMINIUM_ID, USER_ID);
+    expect(unmarkSpy).toHaveBeenCalledWith(
+      'evt-b', 'tx-b', CONDOMINIUM_ID, USER_ID, prisma, ['tx-a', 'tx-b'],
+    );
   });
 });

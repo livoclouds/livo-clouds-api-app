@@ -4,7 +4,7 @@
 // ClassificationService. URL surface and response shapes are unchanged; the
 // routes now live on ReconciliationController.
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { ReconciliationStatus } from '@prisma/client';
+import { MatchSource, ReconciliationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SummaryRecomputeService } from './summary-recompute.service';
 import { TerracePaymentLinkService } from './terrace-payment-link.service';
@@ -36,6 +36,7 @@ export class ReconciliationLifecycleService {
           transactionDate: true,
           reconciliationStatus: true,
           matchedCalendarEventId: true,
+          matchSource: true,
           updatedAt: true,
         },
       });
@@ -72,8 +73,15 @@ export class ReconciliationLifecycleService {
         });
       }
 
-      // When a terrace booking was linked, mark it as PAID on approval.
-      if (tx.matchedCalendarEventId) {
+      // When an AUTO terrace-booking match was linked, mark it PAID on approval.
+      // CAL-004: only an AUTO_TERRACE_BOOKING link should flip a booking PAID — a
+      // row manually reclassified away from terrace (matchSource MANUAL) may carry
+      // a stale matchedCalendarEventId from before Phase 3 cleared it, and must not
+      // resurrect the payment.
+      if (
+        tx.matchedCalendarEventId &&
+        tx.matchSource === MatchSource.AUTO_TERRACE_BOOKING
+      ) {
         await this.terraceLinks.markTerraceEventPaid(
           tx.matchedCalendarEventId,
           transactionId,
@@ -182,6 +190,7 @@ export class ReconciliationLifecycleService {
   ): Promise<void> {
     let capturedDate: Date | undefined;
     let capturedCalendarEventId: string | null | undefined;
+    let capturedPriorStatus: ReconciliationStatus | undefined;
 
     await this.prisma.$transaction(async (prisma) => {
       const tx = await prisma.transaction.findFirst({
@@ -198,6 +207,7 @@ export class ReconciliationLifecycleService {
 
       capturedDate = tx.transactionDate;
       capturedCalendarEventId = tx.matchedCalendarEventId;
+      capturedPriorStatus = tx.reconciliationStatus;
       const before = { reconciliationStatus: tx.reconciliationStatus };
 
       const result = await prisma.transaction.updateMany({
@@ -237,7 +247,12 @@ export class ReconciliationLifecycleService {
       `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
     ]);
 
-    if (capturedCalendarEventId) {
+    // CAL-005: only an APPROVED→PENDING reopen could have set the booking PAID, so
+    // only that transition may revert it. Reopening an IGNORED (or otherwise
+    // non-APPROVED) row must not flip a booking another approved payment covers —
+    // mirrors the bulk path's APPROVED precondition. The unmark helper additionally
+    // skips the revert if another approved transaction still links the booking.
+    if (capturedCalendarEventId && capturedPriorStatus === ReconciliationStatus.APPROVED) {
       await this.terraceLinks.unmarkTerraceEventPaid(capturedCalendarEventId, transactionId, condominiumId, userId);
     }
   }
@@ -291,7 +306,7 @@ export class ReconciliationLifecycleService {
       // effects below act on the same row set the guarded write touches.
       const eligible = await prisma.transaction.findMany({
         where: { id: { in: ids }, condominiumId, reconciliationStatus: statusPrecondition },
-        select: { id: true, reconciliationStatus: true, matchedCalendarEventId: true },
+        select: { id: true, reconciliationStatus: true, matchedCalendarEventId: true, matchSource: true },
       });
 
       const result = await prisma.transaction.updateMany({
@@ -310,9 +325,11 @@ export class ReconciliationLifecycleService {
 
       if (action === 'approve') {
         // Terrace parity with single approve (ENGINE-019): linked bookings
-        // are marked PAID in the same transaction as the approval.
+        // are marked PAID in the same transaction as the approval. CAL-004: only
+        // AUTO_TERRACE_BOOKING links flip a booking PAID — a stale link on a
+        // manually-reclassified row must not resurrect the payment.
         for (const t of eligible) {
-          if (t.matchedCalendarEventId) {
+          if (t.matchedCalendarEventId && t.matchSource === MatchSource.AUTO_TERRACE_BOOKING) {
             await this.terraceLinks.markTerraceEventPaid(
               t.matchedCalendarEventId,
               t.id,

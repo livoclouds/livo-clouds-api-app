@@ -122,17 +122,45 @@ export class BatchClassificationService {
     const ordinaryFeeAmount = Number(settings?.ordinaryFeeAmount ?? 0);
     const lateFeeAmount = Number(settings?.lateFeeAmount ?? 0);
 
-    // Parse terrace metadata and filter to events with PENDING payment.
+    // CAL-003: bookings already covered by an active (non-IGNORED) linked
+    // transaction are "claimed" — a further same-amount payment in a fresh run
+    // is a duplicate, not a new payment, and must not auto-link to them again.
+    // Skip the lookup entirely when the tenant has no terrace bookings at all.
+    const claimedEventIds = new Set<string>();
+    if (rawTerraceEvents.length > 0) {
+      const linkedRows = await this.prisma.transaction.findMany({
+        where: {
+          condominiumId,
+          matchedCalendarEventId: { not: null },
+          reconciliationStatus: { not: ReconciliationStatus.IGNORED },
+        },
+        select: { matchedCalendarEventId: true },
+        distinct: ['matchedCalendarEventId'],
+      });
+      for (const r of linkedRows) {
+        if (r.matchedCalendarEventId) claimedEventIds.add(r.matchedCalendarEventId);
+      }
+    }
+
+    // CAL-003 + CAL-012: parse metadata and keep ALL valid bookings (not just
+    // PENDING-payment ones). PAID or actively-linked bookings ride along flagged
+    // `claimed` so a duplicate payment is surfaced instead of silently absorbed;
+    // the deposit amount/status travel with each candidate so a deposit-sized
+    // payment can be told apart from a rental payment by the matcher.
     const terraceEvents: TerraceCandidate[] = rawTerraceEvents.flatMap((ev) => {
       const validation = validateTerraceMetadata(ev.metadata);
-      if (!validation.valid || validation.data.paymentStatus !== 'PENDING') return [];
+      if (!validation.valid) return [];
       return [{
         id: ev.id,
         residentId: ev.residentId,
         unitNumber: ev.unitNumber,
         startDate: new Date(ev.startDate),
         terraceRentalAmount: validation.data.terraceRentalAmount,
+        securityDepositAmount: validation.data.securityDepositAmount,
+        securityDepositStatus: validation.data.securityDepositStatus,
         customKeywords: validation.data.customKeywords,
+        claimed:
+          validation.data.paymentStatus === 'PAID' || claimedEventIds.has(ev.id),
       }];
     });
 
@@ -279,6 +307,15 @@ export class BatchClassificationService {
           correctionPatterns,
           regexCache,
         );
+
+        // CAL-003: claim the booking the instant the engine links it, so a second
+        // same-amount transaction later in this run is flagged TERRACE_DUPLICATE
+        // instead of grouping into the same link. terraceEvents is shared by
+        // reference with the matcher, so the mutation is visible on the next tx.
+        if (result.matchedCalendarEventId) {
+          const claimed = terraceEvents.find((e) => e.id === result.matchedCalendarEventId);
+          if (claimed) claimed.claimed = true;
+        }
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
           unitNumberDetected: result.unitNumberDetected,
@@ -656,6 +693,13 @@ export class BatchClassificationService {
           correctionPatterns,
           regexCache,
         );
+
+        // CAL-003: claim the booking the instant the engine links it (see
+        // classifyBatch) so a duplicate same-amount row in this run is flagged.
+        if (result.matchedCalendarEventId) {
+          const claimed = terraceEvents.find((e) => e.id === result.matchedCalendarEventId);
+          if (claimed) claimed.claimed = true;
+        }
 
         const data: Prisma.TransactionUncheckedUpdateManyInput = {
           unitNumberDetected: result.unitNumberDetected,

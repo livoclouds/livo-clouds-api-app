@@ -2,7 +2,7 @@
 // linked TERRACE_BOOKING event PAID on approval and reverts it on reopen /
 // batch delete. Extracted verbatim from ClassificationService.
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, ReconciliationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator';
 
@@ -28,6 +28,10 @@ export class TerracePaymentLinkService {
       },
       select: { id: true, matchedCalendarEventId: true },
     });
+    // CAL-005: all rows of this batch are about to be hard-deleted together, so a
+    // sibling row must not count as "still covering" a booking when deciding
+    // whether to revert it — pass the whole batch as the exclusion set.
+    const batchTransactionIds = linked.map((tx) => tx.id);
     for (const tx of linked) {
       if (!tx.matchedCalendarEventId) continue;
       await this.unmarkTerraceEventPaid(
@@ -35,6 +39,8 @@ export class TerracePaymentLinkService {
         tx.id,
         condominiumId,
         userId,
+        this.prisma,
+        batchTransactionIds,
       );
     }
   }
@@ -67,8 +73,12 @@ export class TerracePaymentLinkService {
       return;
     }
     if (validation.data.paymentStatus === 'PAID') {
-      this.logger.debug(
-        `markTerraceEventPaid: event ${calendarEventId} already PAID — skipping`,
+      // CAL-003: with in-run claiming + the TERRACE_DUPLICATE invariant, a second
+      // approval landing on an already-PAID booking is now an anomaly (a stale
+      // pre-Phase-3 duplicate link), not a routine no-op — log it at warn so it
+      // is visible rather than silently swallowed.
+      this.logger.warn(
+        `markTerraceEventPaid: event ${calendarEventId} already PAID — skipping (transaction ${transactionId}; possible duplicate link)`,
       );
       return;
     }
@@ -97,12 +107,16 @@ export class TerracePaymentLinkService {
     });
   }
 
+  // CAL-005: `excludeTransactionIds` lets a caller that is about to settle/remove
+  // several sibling rows at once (e.g. a batch delete) ignore them when checking
+  // whether another approved payment still covers the booking.
   async unmarkTerraceEventPaid(
     calendarEventId: string,
     transactionId: string,
     condominiumId: string,
     userId: string,
     client: Prisma.TransactionClient = this.prisma,
+    excludeTransactionIds: string[] = [],
   ): Promise<void> {
     const ev = await client.calendarEvent.findFirst({
       where: { id: calendarEventId, condominiumId, deletedAt: null },
@@ -125,6 +139,27 @@ export class TerracePaymentLinkService {
     if (validation.data.paymentStatus === 'PENDING') {
       this.logger.debug(
         `unmarkTerraceEventPaid: event ${calendarEventId} already PENDING — skipping`,
+      );
+      return;
+    }
+
+    // CAL-005: another APPROVED transaction may still cover this booking (a
+    // duplicate payment, or two payers). Reopening/removing THIS payment must not
+    // flip a still-paid booking back to PENDING — only revert when no other
+    // approved payment remains linked. Excluded ids are siblings the caller is
+    // settling together and should not count as "still covering it".
+    const stillCovered = await client.transaction.findFirst({
+      where: {
+        condominiumId,
+        matchedCalendarEventId: calendarEventId,
+        reconciliationStatus: ReconciliationStatus.APPROVED,
+        id: { notIn: [transactionId, ...excludeTransactionIds] },
+      },
+      select: { id: true },
+    });
+    if (stillCovered) {
+      this.logger.debug(
+        `unmarkTerraceEventPaid: event ${calendarEventId} still covered by approved transaction ${stillCovered.id} — keeping PAID`,
       );
       return;
     }

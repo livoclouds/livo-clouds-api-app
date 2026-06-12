@@ -2276,7 +2276,9 @@ describe('Phase 4 — bank-agnostic multi-unit short-circuit (ENGINE-014/045)', 
       {
         events: [{
           id: 'event-1', residentId: 'res-307', unitNumber: '307',
-          startDate: TX_DATE, terraceRentalAmount: 1500, customKeywords: [],
+          startDate: TX_DATE, terraceRentalAmount: 1500,
+          securityDepositAmount: 1000, securityDepositStatus: 'PENDING',
+          claimed: false, customKeywords: [],
         }],
         amount: 1500,
         transactionDate: TX_DATE,
@@ -2349,7 +2351,9 @@ describe('Phase 4 — terrace runs before the editable rules (ENGINE-016/046)', 
   const bookingFor = (amount: number) => ({
     events: [{
       id: 'event-terr', residentId: 'res-5', unitNumber: '5',
-      startDate: TX_DATE, terraceRentalAmount: amount, customKeywords: [],
+      startDate: TX_DATE, terraceRentalAmount: amount,
+      securityDepositAmount: amount > 1 ? amount - 1 : 0, securityDepositStatus: 'PENDING' as const,
+      claimed: false, customKeywords: [],
     }],
     amount,
     transactionDate: TX_DATE,
@@ -2700,8 +2704,9 @@ describe('Phase 5 — guarded approve/ignore (ENGINE-020)', () => {
 
   it('approve marks the linked terrace booking PAID inside the same transaction', async () => {
     const prisma = makePrismaMock();
+    // CAL-004: only an AUTO_TERRACE_BOOKING link flips a booking PAID on approval.
     prisma.transaction.findFirst.mockResolvedValue(
-      pendingRow({ matchedCalendarEventId: 'event-1' }),
+      pendingRow({ matchedCalendarEventId: 'event-1', matchSource: 'AUTO_TERRACE_BOOKING' }),
     );
     prisma.calendarEvent.findFirst.mockResolvedValue({
       metadata: { ...TERRACE_BOOKING_DEFAULTS, paymentStatus: 'PENDING' },
@@ -2815,6 +2820,8 @@ describe('Phase 5 — bulkReconcile preconditions + parity (ENGINE-019)', () => 
           id: 'tx-1',
           reconciliationStatus: ReconciliationStatus.PENDING,
           matchedCalendarEventId: 'event-1',
+          // CAL-004: only an AUTO_TERRACE_BOOKING link flips a booking PAID.
+          matchSource: 'AUTO_TERRACE_BOOKING',
         },
       ],
     );

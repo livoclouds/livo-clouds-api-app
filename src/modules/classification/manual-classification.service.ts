@@ -58,6 +58,10 @@ export class ManualClassificationService {
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
           requiresReviewReason: null,
           matchedRuleId: null,
+          // CAL-004: a manual resident match overrides any prior auto terrace link.
+          // Leaving matchedCalendarEventId set would mark that booking PAID on
+          // approval even though this row no longer represents its rental payment.
+          matchedCalendarEventId: null,
         },
       });
       if (result.count === 0) {
@@ -239,6 +243,10 @@ export class ManualClassificationService {
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
           requiresReviewReason: null,
           matchedRuleId: null,
+          // CAL-004: a manual reclassification overrides any prior auto terrace
+          // link — clear it so approval can no longer mark the booking PAID off a
+          // row the operator has reclassified away from terrace.
+          matchedCalendarEventId: null,
         },
       });
       if (result.count === 0) {
@@ -478,6 +486,10 @@ export class ManualClassificationService {
           classificationStatus: ClassificationStatus.MANUAL_OVERRIDE,
           requiresReviewReason: null,
           matchedRuleId: null,
+          // CAL-004: a manual multi-unit split overrides any prior auto terrace
+          // link — clear it so approval cannot mark the booking PAID off a row the
+          // operator has reclassified into a split across other units.
+          matchedCalendarEventId: null,
         },
       });
       if (result.count === 0) {
@@ -573,6 +585,9 @@ export class ManualClassificationService {
           classificationStatus: ClassificationStatus.NEEDS_REVIEW,
           requiresReviewReason: RequiresReviewReason.MANUAL_UNMATCHED,
           matchedRuleId: null,
+          // CAL-004: unmatching strips the row's classification entirely — a stale
+          // auto terrace link must go too, or approval would still mark the booking PAID.
+          matchedCalendarEventId: null,
         },
       });
       if (result.count === 0) {
