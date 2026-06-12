@@ -14,22 +14,6 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 const SUPPLIERS_MODULE = 'suppliers';
 
-// Representative legacy `SupplierType` for each coarse directory `category`.
-// Used only when a caller (the Proveedores wizard) provides `category` but no
-// `type`, so the dashboard + reconciliation always see a populated `type`.
-const CATEGORY_TO_TYPE: Record<
-  Prisma.SupplierCreateInput['category'] & string,
-  Prisma.SupplierCreateInput['type'] & string
-> = {
-  ADMINISTRATION: 'ADMINISTRATION',
-  SURVEILLANCE: 'SECURITY',
-  GARDENING: 'LANDSCAPING',
-  CLEANING: 'CLEANING',
-  MAINTENANCE: 'MAINTENANCE',
-  SERVICES: 'TECHNOLOGY',
-  OTHER: 'MAINTENANCE',
-};
-
 const AUDIT_ACTION = {
   SUPPLIER_CREATED: 'SUPPLIER_CREATED',
   SUPPLIER_UPDATED: 'SUPPLIER_UPDATED',
@@ -67,7 +51,7 @@ export class SuppliersService {
     return {
       supplierName: dto.supplierName,
       type: dto.type,
-      category: dto.category,
+      categoryId: dto.categoryId ?? null,
       engagementType: dto.engagementType,
       contactName: dto.contactName,
       email: dto.email,
@@ -126,7 +110,7 @@ export class SuppliersService {
     const orderBy = buildSupplierOrderBy(query);
 
     const [rows, total] = await Promise.all([
-      this.prisma.supplier.findMany({ where, orderBy, skip, take: limit }),
+      this.prisma.supplier.findMany({ where, orderBy, skip, take: limit, include: { category: true } }),
       this.prisma.supplier.count({ where }),
     ]);
     const data = await this.attachAggregates(rows);
@@ -147,6 +131,7 @@ export class SuppliersService {
     // tab), so this read intentionally does NOT filter `deletedAt`.
     const supplier = await this.prisma.supplier.findFirst({
       where: { id, condominiumId },
+      include: { category: true },
     });
     if (!supplier) throw new NotFoundException('Supplier not found');
     const [withAggregates] = await this.attachAggregates([supplier]);
@@ -159,27 +144,15 @@ export class SuppliersService {
     dto: CreateSupplierDto,
   ) {
     return this.prisma.$transaction(async (tx) => {
-      // The Proveedores wizard sends `category` only; derive a representative
-      // `type` when the caller omits it so the dashboard + reconciliation always
-      // see a populated value. Defaults the category to OTHER when neither is set.
-      const category = dto.category ?? 'OTHER';
-      const type = dto.type ?? CATEGORY_TO_TYPE[category];
-
       const created = await tx.supplier.create({
-        // `supplierName`/`type`/`category` are re-read after the spread so their
-        // required types narrow correctly. `condominiumId` comes from the
-        // guard-derived session value so a request body can never override
-        // tenant scope. `createdBy`/`updatedBy` carry the JWT `sub` — API-owned,
-        // never from the request body.
         data: {
           ...this.toSupplierData(dto),
           supplierName: dto.supplierName,
-          type,
-          category,
           condominiumId,
           createdBy: userId,
           updatedBy: userId,
         },
+        include: { category: true },
       });
 
       await this.audit.log(
@@ -225,6 +198,7 @@ export class SuppliersService {
 
       const updated = await tx.supplier.findFirst({
         where: { id, condominiumId, deletedAt: null },
+        include: { category: true },
       });
 
       await this.audit.log(
@@ -299,6 +273,7 @@ export class SuppliersService {
 
       const restored = await tx.supplier.findFirst({
         where: { id, condominiumId },
+        include: { category: true },
       });
 
       await this.audit.log(
@@ -458,8 +433,8 @@ function buildSupplierWhere(
   if (dto.type) {
     and.push({ type: dto.type });
   }
-  if (dto.category) {
-    and.push({ category: dto.category });
+  if (dto.categoryId) {
+    and.push({ categoryId: dto.categoryId });
   }
   if (dto.engagementType) {
     and.push({ engagementType: dto.engagementType });

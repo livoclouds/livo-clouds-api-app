@@ -218,18 +218,18 @@ describe('SuppliersService', () => {
       expect(where.deletedAt).toEqual({ not: null });
     });
 
-    it('filters by category and engagementType', async () => {
+    it('filters by categoryId and engagementType', async () => {
       const prisma = makePrismaMock();
       const service = makeService(prisma, makeAuditMock());
 
       await service.findAll(CONDOMINIUM_ID, {
-        category: 'GARDENING',
+        categoryId: 'cat-abc123',
         engagementType: 'FIXED',
       } as never);
 
       const where = prisma.supplier.findMany.mock.calls[0][0].where;
       expect(where.AND).toEqual([
-        { category: 'GARDENING' },
+        { categoryId: 'cat-abc123' },
         { engagementType: 'FIXED' },
       ]);
     });

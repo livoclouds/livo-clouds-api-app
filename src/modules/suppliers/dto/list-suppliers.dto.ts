@@ -12,7 +12,6 @@ import {
   Min,
 } from 'class-validator';
 import {
-  SupplierCategoryDto,
   SupplierEngagementDto,
   SupplierStatusDto,
   SupplierTypeDto,
@@ -81,13 +80,10 @@ export class ListSuppliersDto {
   @IsEnum(SupplierStatusDto)
   status?: SupplierStatusDto;
 
-  @ApiPropertyOptional({
-    enum: SupplierCategoryDto,
-    description: 'Exact match on the coarse directory category.',
-  })
+  @ApiPropertyOptional({ description: 'Filter by supplier category ID.' })
   @IsOptional()
-  @IsEnum(SupplierCategoryDto)
-  category?: SupplierCategoryDto;
+  @IsString()
+  categoryId?: string;
 
   @ApiPropertyOptional({
     enum: SupplierEngagementDto,

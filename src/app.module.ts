@@ -31,6 +31,7 @@ import { ClassificationModule } from './modules/classification/classification.mo
 import { ImportsModule } from './modules/imports/imports.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
+import { SupplierCategoriesModule } from './modules/supplier-categories/supplier-categories.module';
 import { SecurityModule } from './modules/security/security.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -96,6 +97,7 @@ import { SupportModule } from './modules/support/support.module';
     TransactionsModule,
     InventoryModule,
     SuppliersModule,
+    SupplierCategoriesModule,
     SecurityModule,
     NotificationsModule,
     PettyCashModule,

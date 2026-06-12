@@ -117,19 +117,6 @@ enum SupplierStatus {
   PENDING
 }
 
-/// Coarse directory bucket shown in the Proveedores UI (filter chips + card
-/// icon). Distinct from the finer-grained `SupplierType`, which is kept for
-/// back-compat with the dashboard activity table and expense reconciliation.
-enum SupplierCategory {
-  ADMINISTRATION
-  SURVEILLANCE
-  GARDENING
-  CLEANING
-  MAINTENANCE
-  SERVICES
-  OTHER
-}
-
 /// Whether the condominium contracts this supplier on a recurring basis
 /// (FIXED → "Proveedor fijo") or ad-hoc per job (OCCASIONAL → "Eventual").
 enum SupplierEngagement {
@@ -362,6 +349,7 @@ model Condominium {
   inventoryItems                   InventoryItem[]
   suppliers                        Supplier[]
   supplierRatings                  SupplierRating[]
+  supplierCategories               SupplierCategory[]
   expenseCategories                ExpenseCategory[]
   importBatches                    ImportBatch[]
   transactions                     Transaction[]
@@ -822,10 +810,9 @@ model Supplier {
   id                       String             @id @default(uuid())
   condominiumId            String
   supplierName             String
-  type                     SupplierType
-  // Coarse directory bucket driving the Proveedores filter chips. Backfilled
-  // from `type` for legacy rows; defaults to OTHER for new ones that omit it.
-  category                 SupplierCategory   @default(OTHER)
+  type                     SupplierType        @default(MAINTENANCE)
+  // User-defined directory category (null until the tenant creates at least one).
+  categoryId               String?
   // FIXED → recurring "Proveedor fijo"; OCCASIONAL → ad-hoc "Eventual".
   engagementType           SupplierEngagement @default(OCCASIONAL)
   contactName              String?
@@ -857,6 +844,7 @@ model Supplier {
   updatedBy                String?
 
   condominium            Condominium          @relation(fields: [condominiumId], references: [id])
+  category               SupplierCategory?    @relation(fields: [categoryId], references: [id])
   defaultExpenseCategory ExpenseCategory?     @relation(fields: [defaultExpenseCategoryId], references: [id])
   transactions           Transaction[]
   reconciliationRules    ReconciliationRule[]
@@ -865,7 +853,7 @@ model Supplier {
   @@index([condominiumId])
   @@index([condominiumId, status])
   @@index([condominiumId, type])
-  @@index([condominiumId, category])
+  @@index([condominiumId, categoryId])
   @@index([condominiumId, engagementType])
   @@index([condominiumId, defaultExpenseCategoryId])
   @@index([deletedAt])
@@ -891,6 +879,33 @@ model SupplierRating {
   @@index([supplierId])
   @@index([condominiumId, supplierId])
   @@map("supplier_ratings")
+}
+
+
+/// Tenant-managed directory category for suppliers. Replaces the former
+/// hardcoded SupplierCategory enum so each condominium can define its own
+/// service buckets (e.g. "Jardinería", "Vigilancia", "Otros").
+model SupplierCategory {
+  id            String    @id @default(cuid())
+  condominiumId String
+  name          String
+  color         String    @default("#6366f1")
+  icon          String    @default("briefcase")
+  sortOrder     Int       @default(0)
+  isActive      Boolean   @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  condominium Condominium @relation(fields: [condominiumId], references: [id])
+  suppliers   Supplier[]
+
+  @@index([condominiumId])
+  @@index([condominiumId, isActive])
+  @@index([condominiumId, deletedAt])
+  @@map("supplier_categories")
 }
 
 /// Condo-editable catalog that classifies EXPENSE transactions (e.g.
