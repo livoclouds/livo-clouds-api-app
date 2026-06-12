@@ -2945,6 +2945,45 @@ describe('Phase 5 — chunked writes re-assert status (ENGINE-018)', () => {
   });
 });
 
+describe('Phase 6 — reapplyToPending pages the pending backlog (ENGINE-011)', () => {
+  it('walks id-ordered pages with an id > cursor bound and terminates on the short page', async () => {
+    const prisma = makePrismaMock();
+    const mkTx = (n: number) => ({
+      id: `tx-${String(n).padStart(4, '0')}`,
+      description: 'pago sin señal',
+      transactionDate: new Date('2026-06-01T00:00:00Z'),
+      credits: 100,
+      charges: null,
+      flowType: 'INCOME',
+      importBatch: null,
+    });
+    const fullPage = Array.from({ length: 200 }, (_, i) => mkTx(i + 1));
+    const shortPage = [mkTx(201)];
+    prisma.transaction.findMany
+      .mockResolvedValueOnce(fullPage)
+      .mockResolvedValueOnce(shortPage);
+    prisma.transaction.updateMany.mockResolvedValue({ count: 1 });
+    const service = makeService(prisma);
+
+    const summary = await service.reapplyToPending(CONDOMINIUM_ID, null);
+
+    // Exactly two round trips: a full page, then the short terminal page —
+    // the whole backlog is never loaded in one query.
+    expect(prisma.transaction.findMany).toHaveBeenCalledTimes(2);
+    const firstCall = prisma.transaction.findMany.mock.calls[0][0];
+    const secondCall = prisma.transaction.findMany.mock.calls[1][0];
+    expect(firstCall.where.id).toBeUndefined();
+    expect(firstCall).toEqual(
+      expect.objectContaining({ orderBy: { id: 'asc' }, take: 200 }),
+    );
+    // The bound is an explicit id > lastId predicate (immune to rows leaving
+    // the status predicate mid-run), not Prisma cursor+skip.
+    expect(secondCall.where.id).toEqual({ gt: 'tx-0200' });
+    expect(secondCall.cursor).toBeUndefined();
+    expect(summary.total).toBe(201);
+  });
+});
+
 describe('Phase 5 — reclassify preserves manual work (ENGINE-003)', () => {
   it('scopes the allocation cleanup to the reset set and returns preservedManual', async () => {
     const prisma = makePrismaMock();

@@ -560,29 +560,9 @@ export class BatchClassificationService {
     // to this re-apply path.
     const [
       { residents, activeRules, terraceEvents, terraceGlobalKeywords, totalUnits, ordinaryFeeAmount, lateFeeAmount },
-      transactions,
       correctionPatterns,
     ] = await Promise.all([
         this.loadCandidates(condominiumId),
-        this.prisma.transaction.findMany({
-          where: {
-            condominiumId,
-            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
-            reconciliationStatus: ReconciliationStatus.PENDING,
-          },
-          select: {
-            id: true,
-            description: true,
-            transactionDate: true,
-            credits: true,
-            charges: true,
-            flowType: true,
-            // Pending rows span multiple batches/banks, so the dialect is read
-            // per transaction (not once like classifyBatch). ENGINE-009: the
-            // validated field, never the free-text bankName.
-            importBatch: { select: { bankProfile: { select: { dialect: true } } } },
-          },
-        }),
         this.loadCorrectionPatterns(condominiumId),
       ]);
 
@@ -590,12 +570,46 @@ export class BatchClassificationService {
     let needsReview = 0;
     let unmatched = 0;
     let skipped = 0;
+    let total = 0;
 
     const affectedMonths = new Set<string>();
 
-    const CHUNK = 200;
-    for (let i = 0; i < transactions.length; i += CHUNK) {
-      const chunk = transactions.slice(i, i + CHUNK);
+    // ENGINE-011: pending rows are loaded in id-ordered pages and classified +
+    // persisted per page, so a tenant's full NEEDS_REVIEW backlog never
+    // materializes in memory. Pagination uses an explicit `id > cursor`
+    // predicate (NOT Prisma cursor mode): rows this run flips to AUTO drop out
+    // of the status predicate, and Prisma's cursor+skip semantics would then
+    // skip the first still-pending row after a flipped cursor row. The
+    // strictly-increasing id bound is immune to predicate churn — no row is
+    // skipped or processed twice.
+    const PAGE = 200;
+    let cursor: string | undefined;
+    for (;;) {
+      const chunk = await this.prisma.transaction.findMany({
+        where: {
+          condominiumId,
+          classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+          reconciliationStatus: ReconciliationStatus.PENDING,
+          ...(cursor ? { id: { gt: cursor } } : {}),
+        },
+        select: {
+          id: true,
+          description: true,
+          transactionDate: true,
+          credits: true,
+          charges: true,
+          flowType: true,
+          // Pending rows span multiple batches/banks, so the dialect is read
+          // per transaction (not once like classifyBatch). ENGINE-009: the
+          // validated field, never the free-text bankName.
+          importBatch: { select: { bankProfile: { select: { dialect: true } } } },
+        },
+        orderBy: { id: 'asc' },
+        take: PAGE,
+      });
+      if (chunk.length === 0) break;
+      cursor = chunk[chunk.length - 1].id;
+      total += chunk.length;
       const nowForChunk = new Date();
 
       const groups = new Map<
@@ -697,6 +711,9 @@ export class BatchClassificationService {
         }
         skipped += ids.length - count;
       });
+
+      // A short page means the backlog is exhausted — no extra round trip.
+      if (chunk.length < PAGE) break;
     }
 
     // Recompute monthly summaries for every period that had at least one
@@ -715,18 +732,18 @@ export class BatchClassificationService {
           entityType: 'Condominium',
           entityId: condominiumId,
           afterState: {
-            total: transactions.length,
+            total,
             classified,
             needsReview,
             unmatched,
             skipped,
           },
           result: 'SUCCESS',
-          description: `Reapplied rules to ${transactions.length} pending transactions: ${classified} classified, ${needsReview} still need review, ${skipped} skipped (concurrent edits)`,
+          description: `Reapplied rules to ${total} pending transactions: ${classified} classified, ${needsReview} still need review, ${skipped} skipped (concurrent edits)`,
         },
       });
     }
 
-    return { total: transactions.length, classified, needsReview, unmatched, skipped };
+    return { total, classified, needsReview, unmatched, skipped };
   }
 }
