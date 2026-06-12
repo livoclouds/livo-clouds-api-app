@@ -609,6 +609,94 @@ describe('CalendarService — Phase 5A recurrence', () => {
   });
 });
 
+describe('CalendarService — Phase 5 input-validation hardening', () => {
+  const FROM = '2026-06-01T00:00:00.000Z';
+  const TO = '2026-06-30T23:59:59.999Z';
+  const PARENT_UUID = '11111111-1111-1111-1111-111111111111';
+
+  // CAL-023 — parentEventId must be tenant-scoped (mirrors the residentId guard).
+  it('rejects create when parentEventId does not resolve in the tenant', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    // findFirst (parent lookup) resolves undefined by default → not found.
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Child event',
+        eventType: EventType.GENERAL,
+        startDate: '2026-06-15T14:00:00.000Z',
+        endDate: '2026-06-15T15:00:00.000Z',
+        parentEventId: PARENT_UUID,
+      } as never),
+    ).rejects.toThrow('Parent calendar event not found');
+
+    expect(prisma.calendarEvent.create).not.toHaveBeenCalled();
+    const parentLookup = prisma.calendarEvent.findFirst.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(parentLookup.where).toMatchObject({
+      id: PARENT_UUID,
+      condominiumId: CONDOMINIUM_ID,
+      deletedAt: null,
+    });
+  });
+
+  it('accepts create when parentEventId resolves in the tenant', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    prisma.calendarEvent.findFirst.mockResolvedValueOnce({ id: PARENT_UUID });
+    prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent({ parentEventId: PARENT_UUID }));
+
+    await expect(
+      service.create(CONDOMINIUM_ID, USER_ID, {
+        title: 'Child event',
+        eventType: EventType.GENERAL,
+        startDate: '2026-06-15T14:00:00.000Z',
+        endDate: '2026-06-15T15:00:00.000Z',
+        parentEventId: PARENT_UUID,
+      } as never),
+    ).resolves.toBeDefined();
+
+    expect(prisma.calendarEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects update when a changed parentEventId does not resolve in the tenant', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent()) // findOne → existing (parentEventId: null)
+      .mockResolvedValueOnce(null); // parent lookup → not found
+
+    await expect(
+      service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+        parentEventId: PARENT_UUID,
+      } as never),
+    ).rejects.toThrow('Parent calendar event not found');
+
+    expect(prisma.calendarEvent.updateMany).not.toHaveBeenCalled();
+  });
+
+  // CAL-028 — invalid enum errors must enumerate allowed values without echoing input.
+  it('does not reflect the raw invalid enum value back in the error message', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+    const evil = '<script>alert(1)</script>';
+
+    await expect(
+      service.findAll(CONDOMINIUM_ID, { from: FROM, to: TO, type: evil } as never),
+    ).rejects.toThrow('Invalid eventType. Valid values:');
+
+    let captured: Error | undefined;
+    try {
+      await service.findAll(CONDOMINIUM_ID, { from: FROM, to: TO, status: evil } as never);
+    } catch (err) {
+      captured = err as Error;
+    }
+    expect(captured?.message).toContain('Invalid status. Valid values:');
+    expect(captured?.message).not.toContain(evil);
+  });
+});
+
 describe('CalendarService — Phase 5C visibility', () => {
   const FROM = '2026-06-01T00:00:00.000Z';
   const TO = '2026-06-30T23:59:59.999Z';

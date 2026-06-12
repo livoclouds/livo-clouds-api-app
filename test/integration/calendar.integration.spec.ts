@@ -229,6 +229,26 @@ describeIntegration('calendar service (integration)', () => {
       const list = await ctx.calendar.findAll(tenant.condominiumId, listQuery());
       expect(list.meta.total).toBe(0);
     });
+
+    it("create in tenant A rejects a parentEventId belonging to tenant B (CAL-023)", async () => {
+      const foreign = (await ctx.calendar.create(
+        other.condominiumId,
+        other.userId,
+        eventDto({ title: 'Foreign parent' }),
+      )) as { id: string };
+
+      await expect(
+        ctx.calendar.create(
+          tenant.condominiumId,
+          tenant.userId,
+          eventDto({ parentEventId: foreign.id }),
+        ),
+      ).rejects.toThrow('Parent calendar event not found');
+
+      // Nothing was written in tenant A.
+      const list = await ctx.calendar.findAll(tenant.condominiumId, listQuery());
+      expect(list.meta.total).toBe(0);
+    });
   });
 
   // ── Terrace double-booking ─────────────────────────────────────────────────

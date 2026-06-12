@@ -9,6 +9,7 @@ import {
   Query,
   Request,
   UseGuards,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -19,6 +20,18 @@ import { CalendarService } from './calendar.service';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
 import { ListCalendarEventsDto } from './dto/list-calendar-events.dto';
 import { PaidLinkActionDto, UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
+
+// CAL-027: the global ValidationPipe runs with whitelist:true but NOT
+// forbidNonWhitelisted, so unknown fields are silently stripped. Several other
+// modules deliberately rely on that silent stripping for mass-assignment defense,
+// so flipping it globally is unsafe — instead scope a stricter pipe to the calendar
+// write endpoints, mirroring imports.controller.ts. Unknown fields now 400 here.
+const calendarWriteValidationPipe = new ValidationPipe({
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  transform: true,
+  transformOptions: { enableImplicitConversion: true },
+});
 
 @ApiTags('Calendar')
 @Controller('condominiums/:condominiumSlug/calendar/events')
@@ -60,7 +73,7 @@ export class CalendarController {
   @ApiOperation({ summary: 'Create calendar event' })
   create(
     @Request() req: { condominiumId: string; user: JwtPayload },
-    @Body() dto: CreateCalendarEventDto,
+    @Body(calendarWriteValidationPipe) dto: CreateCalendarEventDto,
   ) {
     return this.calendarService.create(req.condominiumId, req.user.sub, dto);
   }
@@ -71,7 +84,7 @@ export class CalendarController {
   update(
     @Request() req: { condominiumId: string; user: JwtPayload },
     @Param('id') id: string,
-    @Body() dto: UpdateCalendarEventDto,
+    @Body(calendarWriteValidationPipe) dto: UpdateCalendarEventDto,
   ) {
     return this.calendarService.update(req.condominiumId, req.user.sub, id, dto);
   }

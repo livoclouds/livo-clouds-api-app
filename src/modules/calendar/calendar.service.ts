@@ -197,14 +197,17 @@ export class CalendarService {
     query: ListCalendarEventsDto,
     perms: ReadonlySet<string> = INTERNAL_FULL_ACCESS,
   ): Promise<PaginatedResult<unknown>> {
+    // CAL-028: never reflect the raw user-supplied value back in the error message —
+    // only enumerate the allowed values. The reflected input is an information-leak /
+    // log-injection vector with no diagnostic benefit over the allowed-values list.
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
-        `Invalid eventType: "${query.type}". Valid values: ${Object.values(EventType).join(', ')}`,
+        `Invalid eventType. Valid values: ${Object.values(EventType).join(', ')}`,
       );
     }
     if (query.status && !Object.values(EventStatus).includes(query.status as EventStatus)) {
       throw new BadRequestException(
-        `Invalid status: "${query.status}". Valid values: ${Object.values(EventStatus).join(', ')}`,
+        `Invalid status. Valid values: ${Object.values(EventStatus).join(', ')}`,
       );
     }
 
@@ -402,6 +405,17 @@ export class CalendarService {
       if (!resident) throw new NotFoundException('Resident not found');
     }
 
+    // CAL-023: parentEventId is persisted with a global Cascade FK, so an unvalidated
+    // id allows cross-tenant linkage and a nonexistent id surfaces as an unhandled
+    // P2003 (500). Scope it to the tenant exactly like residentId before persisting.
+    if (dto.parentEventId) {
+      const parent = await this.prisma.calendarEvent.findFirst({
+        where: { id: dto.parentEventId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!parent) throw new NotFoundException('Parent calendar event not found');
+    }
+
     assertRecurrenceAllowed(dto.eventType, dto.recurrenceRule, start);
     assertValidTimezone(dto.timezone);
 
@@ -495,6 +509,16 @@ export class CalendarService {
         where: { id: dto.residentId, condominiumId, deletedAt: null },
       });
       if (!resident) throw new NotFoundException('Resident not found');
+    }
+
+    // CAL-023: tenant-scope parentEventId on update too (see create) so a changed
+    // value can never link to another tenant's event or a nonexistent row.
+    if (dto.parentEventId && dto.parentEventId !== existing.parentEventId) {
+      const parent = await this.prisma.calendarEvent.findFirst({
+        where: { id: dto.parentEventId, condominiumId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!parent) throw new NotFoundException('Parent calendar event not found');
     }
 
     const effectiveType = dto.eventType ?? existing.eventType;
