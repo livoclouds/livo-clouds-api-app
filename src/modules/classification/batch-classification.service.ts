@@ -3,7 +3,7 @@
 // loops (classifyBatch, reclassifyBatch, reapplyToPending) and the batch
 // status lifecycle around them. Extracted verbatim from ClassificationService;
 // the facade delegates here.
-import { ConflictException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ClassificationStatus, ReconciliationStatus, BankDialect, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -41,7 +41,6 @@ export class BatchClassificationService {
 
   constructor(
     private readonly prisma: PrismaService,
-    @Inject(forwardRef(() => ReconciliationRulesService))
     private readonly rulesService: ReconciliationRulesService,
     private readonly events: EventEmitter2,
     private readonly settingsCache: SettingsCacheService,

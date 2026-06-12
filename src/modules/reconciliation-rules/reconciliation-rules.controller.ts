@@ -2,9 +2,7 @@ import {
   Body,
   Controller,
   Delete,
-  forwardRef,
   Get,
-  Inject,
   Param,
   Patch,
   Post,
@@ -17,7 +15,6 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
 import { JwtPayload } from '../../common/types';
-import { ClassificationService } from '../classification/classification.service';
 import { ReconciliationRulesService } from './reconciliation-rules.service';
 import { CreateReconciliationRuleDto } from './dto/create-reconciliation-rule.dto';
 import { UpdateReconciliationRuleDto } from './dto/update-reconciliation-rule.dto';
@@ -28,11 +25,7 @@ import { ReorderReconciliationRulesDto } from './dto/reorder-reconciliation-rule
 @Controller('condominiums/:condominiumSlug/settings/reconciliation-rules')
 @UseGuards(CondominiumAccessGuard)
 export class ReconciliationRulesController {
-  constructor(
-    private readonly service: ReconciliationRulesService,
-    @Inject(forwardRef(() => ClassificationService))
-    private readonly classification: ClassificationService,
-  ) {}
+  constructor(private readonly service: ReconciliationRulesService) {}
 
   @Get()
   @ApiOperation({ summary: 'List reconciliation rules for a condominium' })
@@ -50,36 +43,6 @@ export class ReconciliationRulesController {
   })
   async pendingChanges(@Request() req: { condominiumId: string }) {
     return this.service.getPendingChanges(req.condominiumId);
-  }
-
-  @Get('system')
-  @ApiOperation({
-    summary:
-      "Read-only catalog of the classification engine's built-in (hardcoded) rules — concept keywords, unit prefixes, recognized months and behavioral passes. Lets the UI surface the engine's 'system rules' next to the editable Pass-0 rules. Informational; no manage permission required.",
-  })
-  getSystemRules() {
-    return this.classification.getSystemRulesCatalog();
-  }
-
-  @Post('apply-pending')
-  @RequirePermission('paymentRules.manage')
-  @ApiOperation({
-    summary:
-      'Reapply the current active rules to every NEEDS_REVIEW + PENDING transaction in the tenant and mark every queued rule change as applied.',
-  })
-  async applyPending(
-    @Request() req: { condominiumId: string },
-    @CurrentUser() user: JwtPayload,
-  ) {
-    const summary = await this.classification.reapplyToPending(
-      req.condominiumId,
-      user.sub,
-    );
-    const appliedChanges = await this.service.markAllChangesApplied(
-      req.condominiumId,
-      user.sub,
-    );
-    return { ...summary, appliedChanges };
   }
 
   @Post('discard-pending')
