@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ClassificationService } from '../../classification/classification.service';
 import {
@@ -28,6 +29,16 @@ export class CalendarReclassifyService {
           `Auto-reclassify failed for event ${payload.triggeringEventId}`,
           err instanceof Error ? err.stack : String(err),
         );
+        // ENGINE-033: event-handler context — outside any HTTP request, so the
+        // Sentry exception filter never sees it. No-op until SENTRY_DSN is set.
+        Sentry.captureException(err, {
+          tags: { condominiumId: payload.condominiumId },
+          extra: {
+            stage: 'calendar-auto-reclassify',
+            triggeringEventId: payload.triggeringEventId,
+            action: payload.action,
+          },
+        });
       });
     });
   }
@@ -63,6 +74,15 @@ export class CalendarReclassifyService {
           `Auto-reclassify batch ${batchId} failed`,
           err instanceof Error ? err.stack : String(err),
         );
+        // ENGINE-033: per-batch failures are swallowed by design (the loop
+        // continues with the remaining batches) — capture each one for triage.
+        Sentry.captureException(err, {
+          tags: { batchId, condominiumId: payload.condominiumId },
+          extra: {
+            stage: 'calendar-auto-reclassify',
+            triggeringEventId: payload.triggeringEventId,
+          },
+        });
       } finally {
         this.inFlight.delete(key);
       }
