@@ -337,6 +337,9 @@ describeIntegration('classification precision harness (integration)', () => {
       classified: 2,
       needsReview: 1,
       unmatched: 1,
+      // ENGINE-018/003: re-run with no concurrent edits and no manual rows.
+      skipped: 0,
+      preservedManual: 0,
     });
 
     const after = await ctx.prisma.importBatch.findUniqueOrThrow({
