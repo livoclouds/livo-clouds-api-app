@@ -1079,6 +1079,131 @@ describe('ImportsService.confirm — order-resilient reconciliation (ENGINE-051)
   });
 });
 
+describe('ImportsService — preview ↔ confirm validation lockstep (ENGINE-029/030/053)', () => {
+  const R2_BUFFER = Buffer.from('canonical r2 content');
+  const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
+  const XLSX_BUFFER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+  const XLSX_MIME =
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  it('preview and confirm reject the same rows with the same counts for one parsed row set', async () => {
+    // One valid row + one both-sided row + one parser-flagged row = 2/3 invalid
+    // (66% > 30% threshold on both paths).
+    const rows = [
+      {
+        date: '2026-01-15',
+        description: 'PAGO OK',
+        charges: 0,
+        credits: 100,
+        balance: 100,
+        flowType: 'income' as const,
+      },
+      {
+        date: '2026-01-16',
+        description: 'AMBOS LADOS',
+        charges: 50,
+        credits: 75,
+        balance: 125,
+        flowType: 'income' as const,
+      },
+      {
+        date: '2026-01-17',
+        description: 'EUROPEO',
+        charges: 0,
+        credits: NaN,
+        balance: 125,
+        flowType: 'income' as const,
+        parseIssues: [
+          { field: 'credits', issue: 'ambiguousDecimal', raw: '1.234,56' },
+        ],
+      },
+    ];
+
+    // Preview path.
+    const previewDeps = makeFullDeps();
+    previewDeps.prisma.importBatch.findMany.mockResolvedValue([]);
+    previewDeps.bankProfiles.resolveFieldsForBatch.mockResolvedValue({
+      profileId: null,
+      profileName: null,
+      fields: undefined,
+    });
+    previewDeps.parser.parseBuffer.mockResolvedValue({
+      transactions: rows,
+      warnings: [],
+    });
+    const previewService = makeFullService(previewDeps);
+    const { results } = await previewService.preview(
+      CONDOMINIUM_ID,
+      [
+        {
+          buffer: XLSX_BUFFER,
+          originalname: 'estado.xlsx',
+          mimetype: XLSX_MIME,
+          size: XLSX_BUFFER.length,
+        },
+      ],
+      [],
+      ['client-1'],
+    );
+
+    // Confirm path over the SAME parsed rows.
+    const confirmDeps = makeFullDeps();
+    confirmDeps.prisma.importBatch.findFirst.mockResolvedValue({
+      id: 'batch-1',
+      condominiumId: CONDOMINIUM_ID,
+      status: 'PENDING',
+      fileType: 'xlsx',
+      fileHash: R2_HASH,
+      storageKey: 'condominiums/cond-1/imports/batch-1/estado.xlsx',
+      storageProvider: 'r2',
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+      _count: { transactions: 0 },
+    });
+    confirmDeps.storage.downloadFile.mockResolvedValue(R2_BUFFER);
+    confirmDeps.parser.parseBuffer.mockResolvedValue({
+      transactions: rows,
+      warnings: [],
+    });
+    const confirmService = makeFullService(confirmDeps);
+
+    let thrown: unknown;
+    try {
+      await confirmService.confirm(
+        CONDOMINIUM_ID,
+        {
+          files: [
+            {
+              fileName: 'estado.xlsx',
+              fileType: 'xlsx',
+              fileHash: R2_HASH,
+              fileSizeBytes: 2048,
+              warnings: [],
+              transactions: rows.slice(0, 1),
+            },
+          ],
+        } as never,
+        { sub: 'user-1' } as never,
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Both paths derived the same verdict from the same rows.
+    const previewValidation = results[0].validation!;
+    const confirmReport = (
+      (thrown as { getResponse(): { validationReport: { totalRows: number; validRows: number; invalidRows: number } } })
+        .getResponse()
+    ).validationReport;
+    expect((thrown as { getResponse(): { code: string } }).getResponse().code).toBe(
+      'INVALID_ROWS_EXCEEDED',
+    );
+    expect(confirmReport.totalRows).toBe(previewValidation.totalRows);
+    expect(confirmReport.validRows).toBe(previewValidation.validRows);
+    expect(confirmReport.invalidRows).toBe(previewValidation.invalidRows);
+    expect(previewValidation.invalidRows).toBe(2);
+  });
+});
+
 describe('ImportsService.confirm — balance continuity (ENGINE-027)', () => {
   const R2_BUFFER = Buffer.from('canonical r2 content');
   const R2_HASH = crypto.createHash('sha256').update(R2_BUFFER).digest('hex');
