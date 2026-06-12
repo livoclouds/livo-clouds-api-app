@@ -39,14 +39,20 @@ export class TransactionsController {
     @Query() query: ListTransactionsDto,
     @Res({ passthrough: false }) reply: FastifyReply,
   ) {
-    const stream = this.transactionsService.exportClassifiedCsv(req.condominiumId, query);
+    const { stream, truncated } = await this.transactionsService.prepareClassifiedExport(
+      req.condominiumId,
+      query,
+    );
     const filenameDate = new Date().toISOString().slice(0, 10);
     const filename = `classified-transactions_${condominiumSlug}_${filenameDate}.csv`;
 
     reply
       .header('Content-Type', 'text/csv; charset=utf-8')
       .header('Content-Disposition', `attachment; filename="${filename}"`)
-      .header('Cache-Control', 'no-store');
+      .header('Cache-Control', 'no-store')
+      // ENGINE-037: machine-readable truncation signal (the body is capped at
+      // EXPORT_HARD_CAP rows). Headers must precede the stream on Fastify.
+      .header('X-Export-Truncated', String(truncated));
 
     return reply.send(stream);
   }
@@ -69,14 +75,20 @@ export class TransactionsController {
     @Query() query: ListTransactionsDto,
     @Res({ passthrough: false }) reply: FastifyReply,
   ) {
-    const stream = this.transactionsService.exportReconciledCsv(req.condominiumId, query);
+    const { stream, truncated } = await this.transactionsService.prepareReconciledExport(
+      req.condominiumId,
+      query,
+    );
     const filenameDate = new Date().toISOString().slice(0, 10);
     const filename = `reconciliation-history_${condominiumSlug}_${filenameDate}.csv`;
 
     reply
       .header('Content-Type', 'text/csv; charset=utf-8')
       .header('Content-Disposition', `attachment; filename="${filename}"`)
-      .header('Cache-Control', 'no-store');
+      .header('Cache-Control', 'no-store')
+      // ENGINE-037: machine-readable truncation signal (the body is capped at
+      // EXPORT_HARD_CAP rows). Headers must precede the stream on Fastify.
+      .header('X-Export-Truncated', String(truncated));
 
     return reply.send(stream);
   }

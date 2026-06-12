@@ -514,11 +514,27 @@ export class TransactionsService {
     };
   }
 
-  exportClassifiedCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
+  /**
+   * ENGINE-037: the export stays streamed, but truncation is now an
+   * out-of-band, machine-readable signal — a pre-stream count against the
+   * shared where (so list/export/count can never diverge) that the controller
+   * surfaces as the X-Export-Truncated response header. The old `# TRUNCATED`
+   * pseudo-row is gone: Excel parsed it as data and programmatic consumers
+   * never saw it.
+   */
+  async prepareClassifiedExport(
+    condominiumId: string,
+    dto: ListTransactionsDto,
+  ): Promise<{ stream: Readable; truncated: boolean }> {
     const where = this.buildClassifiedWhere(condominiumId, dto);
     const resolvedColumns = this.resolveExportColumns(dto.columns);
+    const truncated =
+      (await this.prisma.transaction.count({ where })) > EXPORT_HARD_CAP;
 
-    return Readable.from(this.streamClassifiedRows(where, resolvedColumns));
+    return {
+      stream: Readable.from(this.streamClassifiedRows(where, resolvedColumns)),
+      truncated,
+    };
   }
 
   private resolveExportColumns(raw: string | undefined): ExportColumnId[] {
@@ -548,7 +564,6 @@ export class TransactionsService {
 
     let cursor: string | undefined;
     let exported = 0;
-    let truncated = false;
 
     while (exported < EXPORT_HARD_CAP) {
       const chunk = await this.prisma.transaction.findMany({
@@ -565,20 +580,15 @@ export class TransactionsService {
       if (chunk.length === 0) break;
 
       for (const tx of chunk) {
-        if (exported >= EXPORT_HARD_CAP) {
-          truncated = true;
-          break;
-        }
+        // ENGINE-037: the hard cap still bounds the body; truncation is
+        // signaled via the X-Export-Truncated header, not a pseudo-row.
+        if (exported >= EXPORT_HARD_CAP) break;
         exported += 1;
         yield this.buildExportRow(tx, columns, exported) + '\r\n';
       }
 
       cursor = chunk[chunk.length - 1].id;
       if (chunk.length < EXPORT_CHUNK_SIZE) break;
-    }
-
-    if (truncated) {
-      yield `# TRUNCATED: results exceeded ${EXPORT_HARD_CAP} rows; refine filters\r\n`;
     }
   }
 
@@ -654,10 +664,19 @@ export class TransactionsService {
       .join(',');
   }
 
-  exportReconciledCsv(condominiumId: string, dto: ListTransactionsDto): Readable {
+  /** ENGINE-037: same truncation contract as prepareClassifiedExport. */
+  async prepareReconciledExport(
+    condominiumId: string,
+    dto: ListTransactionsDto,
+  ): Promise<{ stream: Readable; truncated: boolean }> {
     const where = this.buildReconciledWhere(condominiumId, dto);
+    const truncated =
+      (await this.prisma.transaction.count({ where })) > EXPORT_HARD_CAP;
 
-    return Readable.from(this.streamReconciledRows(where));
+    return {
+      stream: Readable.from(this.streamReconciledRows(where)),
+      truncated,
+    };
   }
 
   private async *streamReconciledRows(
@@ -670,7 +689,6 @@ export class TransactionsService {
 
     let cursor: string | undefined;
     let exported = 0;
-    let truncated = false;
 
     while (exported < EXPORT_HARD_CAP) {
       const chunk = await this.prisma.transaction.findMany({
@@ -688,20 +706,15 @@ export class TransactionsService {
       if (chunk.length === 0) break;
 
       for (const tx of chunk) {
-        if (exported >= EXPORT_HARD_CAP) {
-          truncated = true;
-          break;
-        }
+        // ENGINE-037: the hard cap still bounds the body; truncation is
+        // signaled via the X-Export-Truncated header, not a pseudo-row.
+        if (exported >= EXPORT_HARD_CAP) break;
         exported += 1;
         yield this.buildReconciledExportRow(tx) + '\r\n';
       }
 
       cursor = chunk[chunk.length - 1].id;
       if (chunk.length < EXPORT_CHUNK_SIZE) break;
-    }
-
-    if (truncated) {
-      yield `# TRUNCATED: results exceeded ${EXPORT_HARD_CAP} rows; refine filters\r\n`;
     }
   }
 
