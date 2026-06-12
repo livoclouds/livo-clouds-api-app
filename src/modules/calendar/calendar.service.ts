@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CalendarEventVisibility, EventType, EventStatus, ReconciliationStatus } from '@prisma/client';
-import { PaginatedResult, UserRole } from '../../common/types';
+import { PaginatedResult } from '../../common/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
@@ -26,7 +26,7 @@ import {
   validateRecurrenceRule,
 } from './recurrence';
 import { assertValidTimezone } from './timezone.util';
-import { buildVisibilityFilter, canSeeVisibility } from './visibility.util';
+import { CALENDAR_PERM, buildVisibilityFilter, canSeeVisibility } from './visibility.util';
 import {
   CALENDAR_TERRACE_CHANGED,
   type CalendarTerraceChangedPayload,
@@ -48,6 +48,53 @@ import {
 } from './reclassify/should-trigger-reclassify';
 
 const MAX_CALENDAR_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
+
+// Internal manager context for service-to-service reads (update/delete logic that
+// needs the real, unredacted event regardless of the caller's permissions).
+const INTERNAL_FULL_ACCESS: ReadonlySet<string> = new Set([CALENDAR_PERM.manage]);
+
+// CAL-002: terrace financial / review metadata fields that must be redacted from
+// any caller WITHOUT calendar.manage. Pre-event logistics (contractSigned,
+// guestParkingRequested, setupNotes) are left intact as non-sensitive.
+const REDACTED_TERRACE_FIELDS: ReadonlySet<string> = new Set([
+  'terraceRentalAmount',
+  'securityDepositAmount',
+  'paymentStatus',
+  'securityDepositStatus',
+  'depositDeductionAmount',
+  'depositDeductionReason',
+  'postEventReviewed',
+  'damagesReported',
+  'cleaningIssueReported',
+  'postEventReviewNotes',
+  'customKeywords',
+]);
+
+/**
+ * Strip sensitive terrace metadata for callers without calendar.manage (CAL-002).
+ * Returns the event unchanged for managers, non-terrace events, or absent/invalid
+ * metadata. Applies to both single events and expanded recurrence occurrences.
+ */
+function redactTerraceFinancials<T extends { eventType?: unknown; metadata?: unknown }>(
+  event: T,
+  canManage: boolean,
+): T {
+  if (canManage) return event;
+  const md = event.metadata;
+  if (
+    event.eventType !== EventType.TERRACE_BOOKING ||
+    md == null ||
+    typeof md !== 'object' ||
+    Array.isArray(md)
+  ) {
+    return event;
+  }
+  const safe: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(md as Record<string, unknown>)) {
+    if (!REDACTED_TERRACE_FIELDS.has(k)) safe[k] = v;
+  }
+  return { ...event, metadata: safe };
+}
 
 function assertRecurrenceAllowed(
   eventType: EventType,
@@ -148,7 +195,7 @@ export class CalendarService {
   async findAll(
     condominiumId: string,
     query: ListCalendarEventsDto,
-    role: UserRole = UserRole.ROOT,
+    perms: ReadonlySet<string> = INTERNAL_FULL_ACCESS,
   ): Promise<PaginatedResult<unknown>> {
     if (query.type && !Object.values(EventType).includes(query.type as EventType)) {
       throw new BadRequestException(
@@ -179,7 +226,7 @@ export class CalendarService {
     const baseFilter: Record<string, unknown> = { condominiumId, deletedAt: null };
     if (query.type) baseFilter.eventType = query.type;
     if (query.status) baseFilter.status = query.status;
-    const visibilityFilter = buildVisibilityFilter(role);
+    const visibilityFilter = buildVisibilityFilter(perms);
     if (visibilityFilter.visibility) baseFilter.visibility = visibilityFilter.visibility;
 
     const singleWhere: Record<string, unknown> = {
@@ -276,7 +323,10 @@ export class CalendarService {
     });
 
     const total = merged.length;
-    const data = merged.slice(skip, skip + limit);
+    const canManage = perms.has(CALENDAR_PERM.manage);
+    const data = merged
+      .slice(skip, skip + limit)
+      .map((e) => redactTerraceFinancials(e, canManage));
 
     return {
       data,
@@ -289,7 +339,11 @@ export class CalendarService {
     };
   }
 
-  async findOne(condominiumId: string, id: string, role: UserRole = UserRole.ROOT) {
+  async findOne(
+    condominiumId: string,
+    id: string,
+    perms: ReadonlySet<string> = INTERNAL_FULL_ACCESS,
+  ) {
     const event = await this.prisma.calendarEvent.findFirst({
       where: { id, condominiumId, deletedAt: null },
       include: {
@@ -303,11 +357,11 @@ export class CalendarService {
       throw new NotFoundException('Calendar event not found');
     }
 
-    if (!canSeeVisibility(role, event.visibility)) {
+    if (!canSeeVisibility(perms, event.visibility)) {
       throw new NotFoundException('Calendar event not found');
     }
 
-    return event;
+    return redactTerraceFinancials(event, perms.has(CALENDAR_PERM.manage));
   }
 
   async create(condominiumId: string, userId: string, dto: CreateCalendarEventDto) {
@@ -427,7 +481,7 @@ export class CalendarService {
     // Update is gated to ROOT/TENANT_ADMIN at the controller, so passing ROOT here
     // is correct: the existence/visibility check should never hide a row from an
     // admin during a write operation.
-    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
+    const existing = await this.findOne(condominiumId, id);
 
     const start = new Date(dto.startDate ?? existing.startDate);
     const end = new Date(dto.endDate ?? existing.endDate);
@@ -598,7 +652,7 @@ export class CalendarService {
       });
     }
 
-    const updated = await this.findOne(condominiumId, id, UserRole.ROOT);
+    const updated = await this.findOne(condominiumId, id);
 
     await this.audit.log({
       condominiumId,
@@ -656,7 +710,7 @@ export class CalendarService {
     id: string,
     paidLinkAction?: PaidLinkActionDto,
   ) {
-    const existing = await this.findOne(condominiumId, id, UserRole.ROOT);
+    const existing = await this.findOne(condominiumId, id);
 
     // CAL-011: deleting a terrace booking with an approved payment still linked
     // needs an explicit keep/reopen decision (same contract as cancel) before the
