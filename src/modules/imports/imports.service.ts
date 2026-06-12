@@ -11,6 +11,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { JwtPayload } from '../../common/types';
+import { sumAmounts } from '../../common/utils/money.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ClassificationService } from '../classification/classification.service';
@@ -76,6 +77,8 @@ export type RowErrorField =
   | 'date'
   | 'charges'
   | 'credits'
+  | 'balance'
+  | 'amounts'
   | 'description'
   | 'flowType';
 
@@ -103,7 +106,20 @@ interface ParsedRow {
   transactionNumber?: string;
   time?: string;
   receipt?: string;
+  // ENGINE-029/030 — money cells the parser refused to guess about; each one
+  // becomes a precise row error below (mirrors parser/types.ts AmountParseIssue).
+  parseIssues?: Array<{
+    field: 'charges' | 'credits' | 'balance';
+    issue: 'ambiguousDecimal' | 'unparseable';
+    raw: string;
+  }>;
 }
+
+const PARSE_ISSUE_MESSAGES: Record<'ambiguousDecimal' | 'unparseable', string> = {
+  ambiguousDecimal:
+    "Ambiguous decimal format (e.g. '1.234,56') — amounts must use the 1,234.56 convention",
+  unparseable: 'Amount could not be parsed',
+};
 
 function validateRows<T extends ParsedRow>(
   rows: T[],
@@ -128,11 +144,45 @@ function validateRows<T extends ParsedRow>(
       }
     }
 
-    if (!Number.isFinite(row.charges) || row.charges < 0) {
+    // ENGINE-029/030 — parser-flagged money cells get a precise reason and
+    // suppress the generic finite checks for those fields (no double count).
+    const flaggedFields = new Set<string>();
+    for (const issue of row.parseIssues ?? []) {
+      flaggedFields.add(issue.field);
+      rowErrors.push({
+        rowIndex,
+        field: issue.field,
+        message: `${PARSE_ISSUE_MESSAGES[issue.issue]} (got '${issue.raw}')`,
+      });
+    }
+
+    if (!flaggedFields.has('charges') && (!Number.isFinite(row.charges) || row.charges < 0)) {
       rowErrors.push({ rowIndex, field: 'charges', message: 'Charges must be a finite, non-negative number' });
     }
-    if (!Number.isFinite(row.credits) || row.credits < 0) {
+    if (!flaggedFields.has('credits') && (!Number.isFinite(row.credits) || row.credits < 0)) {
       rowErrors.push({ rowIndex, field: 'credits', message: 'Credits must be a finite, non-negative number' });
+    }
+    // ENGINE-027 groundwork — a NaN balance would otherwise die at the
+    // Postgres Decimal cast during confirm.
+    if (!flaggedFields.has('balance') && !Number.isFinite(row.balance)) {
+      rowErrors.push({ rowIndex, field: 'balance', message: 'Balance must be a finite number' });
+    }
+
+    // ENGINE-053 — a row carrying BOTH a charge and a credit is counted
+    // differently by batch totals, monthly summaries, and CSV export; the
+    // source file must split it into two single-sided rows.
+    if (
+      Number.isFinite(row.charges) &&
+      Number.isFinite(row.credits) &&
+      row.charges > 0 &&
+      row.credits > 0
+    ) {
+      rowErrors.push({
+        rowIndex,
+        field: 'amounts',
+        message:
+          'Row has both a charge and a credit; split it into two single-sided rows in the source file',
+      });
     }
 
     if (!row.description || row.description.trim().length === 0) {
@@ -982,8 +1032,9 @@ export class ImportsService {
           continue;
         }
 
-        const totalIncome = valid.reduce((sum, tx) => sum + tx.credits, 0);
-        const totalExpenses = valid.reduce((sum, tx) => sum + tx.charges, 0);
+        // ENGINE-054 — totals accumulate in integer-cent space.
+        const totalIncome = sumAmounts(valid.map((tx) => tx.credits));
+        const totalExpenses = sumAmounts(valid.map((tx) => tx.charges));
         // ENGINE-026 — same finalBalance authority as confirm.
         const finalBalance = computeFinalBalance(valid);
         const periods = buildPeriods(valid);
@@ -1311,14 +1362,9 @@ export class ImportsService {
         });
       }
 
-      const totalIncome = validTransactions.reduce(
-        (sum, t) => sum + (t.credits ?? 0),
-        0,
-      );
-      const totalExpenses = validTransactions.reduce(
-        (sum, t) => sum + (t.charges ?? 0),
-        0,
-      );
+      // ENGINE-054 — totals accumulate in integer-cent space.
+      const totalIncome = sumAmounts(validTransactions.map((t) => t.credits));
+      const totalExpenses = sumAmounts(validTransactions.map((t) => t.charges));
       // ENGINE-026 — same finalBalance authority as preview.
       const finalBalance = computeFinalBalance(validTransactions);
 

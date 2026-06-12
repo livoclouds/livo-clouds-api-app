@@ -1,5 +1,6 @@
 import * as ExcelJS from 'exceljs';
-import type { ParsedRow } from './types';
+import type { AmountIssue, AmountParseIssue, ParsedRow } from './types';
+import { round2 } from '../../../common/utils/money.util';
 import {
   buildAliasIndex,
   DEFAULT_FIELD_DEFINITIONS,
@@ -91,17 +92,43 @@ function parseTimeCell(cell: ExcelJS.Cell): string | undefined {
   return text || undefined;
 }
 
-function parseAmount(raw: string): number {
-  if (!raw) return 0;
-  const cleaned = raw.replace(/\$\s*/g, '').replace(/,/g, '').trim();
-  const isNegative = cleaned.startsWith('(') && cleaned.endsWith(')');
-  const numeric = parseFloat(cleaned.replace(/[()]/g, ''));
-  if (isNaN(numeric)) return 0;
-  return isNegative ? -numeric : numeric;
+// US/MX convention: optional thousands commas, dot decimals ("1,234.56", "1234.5").
+const US_AMOUNT_RE = /^(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?$/;
+// European convention: dot thousands and/or comma decimals ("1.234,56", "1234,56").
+// Ambiguous with the US format at parse time — never guess (ENGINE-029).
+const EURO_AMOUNT_RE = /^(?:\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+,\d{1,2})$/;
+
+interface AmountParseResult {
+  value: number;
+  issue?: AmountIssue;
 }
 
-function parseAmountCell(cell: ExcelJS.Cell): number {
-  if (typeof cell.value === 'number') return cell.value;
+/**
+ * ENGINE-029/030 — parse a text amount or refuse loudly.
+ * The old implementation stripped ALL commas then parseFloat'ed, silently
+ * turning `1.234,56` into 1.23, and coerced unparseable text to $0.00.
+ * Refusals return NaN + an issue marker; validateRows rejects the row.
+ */
+function parseAmount(raw: string): AmountParseResult {
+  if (!raw) return { value: 0 };
+  const stripped = raw.replace(/\$\s*/g, '').trim();
+  const isNegative = stripped.startsWith('(') && stripped.endsWith(')');
+  const bare = stripped.replace(/[()]/g, '').replace(/^-/, '').trim();
+  const sign = isNegative || stripped.startsWith('-') ? -1 : 1;
+
+  if (!bare) return { value: 0 };
+
+  if (US_AMOUNT_RE.test(bare)) {
+    return { value: sign * parseFloat(bare.replace(/,/g, '')) };
+  }
+  if (EURO_AMOUNT_RE.test(bare)) {
+    return { value: NaN, issue: 'ambiguousDecimal' };
+  }
+  return { value: NaN, issue: 'unparseable' };
+}
+
+function parseAmountCell(cell: ExcelJS.Cell): AmountParseResult {
+  if (typeof cell.value === 'number') return { value: cell.value };
   return parseAmount(cellText(cell));
 }
 
@@ -190,15 +217,37 @@ export async function parseExcelBuffer(
     const parsedDate = parseDateCell(dateCell);
     if (!parsedDate) return;
 
-    const charges = columnMap['charges']
+    const chargesResult = columnMap['charges']
       ? parseAmountCell(row.getCell(columnMap['charges']))
-      : 0;
-    const credits = columnMap['credits']
+      : { value: 0 };
+    const creditsResult = columnMap['credits']
       ? parseAmountCell(row.getCell(columnMap['credits']))
-      : 0;
-    const balance = columnMap['balance']
+      : { value: 0 };
+    const balanceResult = columnMap['balance']
       ? parseAmountCell(row.getCell(columnMap['balance']))
-      : 0;
+      : { value: 0 };
+    const charges = chargesResult.value;
+    const credits = creditsResult.value;
+    const balance = balanceResult.value;
+
+    const parseIssues: AmountParseIssue[] = [];
+    const collectIssue = (
+      field: AmountParseIssue['field'],
+      result: AmountParseResult,
+      column: string | undefined,
+    ): void => {
+      if (result.issue && column) {
+        parseIssues.push({
+          field,
+          issue: result.issue,
+          raw: cellText(row.getCell(columnMap[column])),
+        });
+      }
+    };
+    collectIssue('charges', chargesResult, 'charges');
+    collectIssue('credits', creditsResult, 'credits');
+    collectIssue('balance', balanceResult, 'balance');
+
     const description = columnMap['description']
       ? cellText(row.getCell(columnMap['description']))
       : '';
@@ -212,10 +261,19 @@ export async function parseExcelBuffer(
       ? cellText(row.getCell(columnMap['transactionNumber']))
       : undefined;
 
-    if (!description && charges === 0 && credits === 0) return;
+    if (
+      !description &&
+      charges === 0 &&
+      credits === 0 &&
+      parseIssues.length === 0
+    ) {
+      return;
+    }
 
-    const absCharges = Math.abs(charges);
-    const absCredits = Math.abs(credits);
+    // NaN flows through Math.abs and round2 untouched — the row carries its
+    // parseIssues and validateRows rejects it with a precise reason.
+    const absCharges = round2(Math.abs(charges));
+    const absCredits = round2(Math.abs(credits));
 
     transactions.push({
       transactionNumber: transactionNumber || undefined,
@@ -225,8 +283,9 @@ export async function parseExcelBuffer(
       description,
       charges: absCharges,
       credits: absCredits,
-      balance,
+      balance: round2(balance),
       flowType: absCredits > 0 ? 'income' : 'expense',
+      ...(parseIssues.length > 0 && { parseIssues }),
     });
   });
 

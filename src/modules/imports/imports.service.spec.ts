@@ -1220,6 +1220,95 @@ describe('ImportsService.preview — row validation parity (ENGINE-026/028)', ()
     expect(results[0].statusMessage).toContain('2 of 3 rows are invalid');
     expect(results[0].validation).toMatchObject({ invalidRows: 2 });
   });
+
+  it('rejects parser-flagged amount rows with the precise reason — no double error (ENGINE-029/030)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      validRow1,
+      {
+        ...validRow1,
+        description: 'EUROPEO',
+        credits: NaN,
+        parseIssues: [
+          { field: 'credits', issue: 'ambiguousDecimal', raw: '1.234,56' },
+        ],
+      },
+      {
+        ...validRow2,
+        description: 'BASURA',
+        charges: NaN,
+        parseIssues: [{ field: 'charges', issue: 'unparseable', raw: 'abc' }],
+      },
+      validRow3,
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 4, invalidRows: 2 });
+    const errors = results[0].validation!.sampleErrors;
+    expect(errors).toHaveLength(2); // exactly one error per flagged row
+    expect(errors[0]).toMatchObject({ rowIndex: 1, field: 'credits' });
+    expect(errors[0].message).toContain('Ambiguous decimal format');
+    expect(errors[0].message).toContain("1.234,56");
+    expect(errors[1]).toMatchObject({ rowIndex: 2, field: 'charges' });
+    expect(errors[1].message).toContain('could not be parsed');
+  });
+
+  it('rejects both-sided rows (charge AND credit) so every surface counts them the same way (ENGINE-053)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [
+      validRow1,
+      {
+        ...validRow1,
+        description: 'AMBOS LADOS',
+        charges: 200,
+        credits: 300,
+        flowType: 'income' as const,
+      },
+      validRow2,
+      validRow3,
+    ]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 4, invalidRows: 1 });
+    expect(results[0].validation?.sampleErrors).toEqual([
+      expect.objectContaining({ rowIndex: 1, field: 'amounts' }),
+    ]);
+    // The rejected row contributes to NEITHER total.
+    expect(results[0].totalIncome).toBe(175);
+    expect(results[0].totalExpenses).toBe(0);
+  });
+
+  it('rejects rows whose balance is non-finite (would die at the Decimal cast otherwise)', async () => {
+    const deps = makeFullDeps();
+    setup(deps, [validRow1, { ...validRow2, balance: NaN }, validRow3]);
+    const service = makeFullService(deps);
+
+    const { results } = await service.preview(
+      CONDOMINIUM_ID,
+      [makePreviewFile()],
+      [],
+      ['client-1'],
+    );
+
+    expect(results[0].validation).toMatchObject({ totalRows: 3, invalidRows: 1 });
+    expect(results[0].validation?.sampleErrors).toEqual([
+      expect.objectContaining({ rowIndex: 1, field: 'balance' }),
+    ]);
+  });
 });
 
 describe('ImportsService.upload — concurrent duplicate (ENGINE-017)', () => {

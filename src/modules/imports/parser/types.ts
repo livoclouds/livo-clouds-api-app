@@ -1,3 +1,15 @@
+// ENGINE-029/030 — a money cell the parser refused to guess about. The value
+// stays NaN (never silently 0) and validateRows turns the issue into a row
+// error, so the row is rejected with a visible reason instead of importing
+// corrupted amounts.
+export type AmountIssue = 'ambiguousDecimal' | 'unparseable';
+
+export interface AmountParseIssue {
+  field: 'charges' | 'credits' | 'balance';
+  issue: AmountIssue;
+  raw: string;
+}
+
 export interface ParsedRow {
   date: string;
   description: string;
@@ -8,6 +20,7 @@ export interface ParsedRow {
   transactionNumber?: string;
   time?: string;
   receipt?: string;
+  parseIssues?: AmountParseIssue[];
 }
 
 export interface DetectedPeriod {
