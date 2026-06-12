@@ -74,6 +74,10 @@ export interface MatchResult {
   matchedRuleId: string | null;
   matchedCalendarEventId: string | null;
   matchedAt: Date | null;
+  // CAL-037: the tied candidate event ids when the terrace matcher returns
+  // TERRACE_AMBIGUOUS. Optional so the non-terrace return paths stay valid;
+  // defaults to [] at persistence. Lets the review UI list the competing bookings.
+  terraceCandidateEventIds?: string[];
 }
 
 export interface ClassificationResult extends TextExtraction, MatchResult {

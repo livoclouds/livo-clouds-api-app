@@ -1205,6 +1205,9 @@ model Transaction {
   requiresReviewReason   RequiresReviewReason?
   matchedRuleId          String?
   matchedCalendarEventId String?
+  // CAL-037: tied candidate event ids when the terrace matcher returns
+  // TERRACE_AMBIGUOUS — surfaced read-only in the review UI. Empty otherwise.
+  terraceCandidateEventIds String[]            @default([])
   reconciliationStatus   ReconciliationStatus  @default(PENDING)
   reconciledById         String?
   reconciledAt           DateTime?

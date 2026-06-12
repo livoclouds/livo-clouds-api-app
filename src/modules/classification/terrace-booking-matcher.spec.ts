@@ -221,6 +221,8 @@ describe('matchTerraceBooking', () => {
     expect(result!.requiresReviewReason).toBe('TERRACE_AMBIGUOUS');
     expect(result!.matchedCalendarEventId).toBeNull();
     expect(result!.confidenceScore).toBe(0.60);
+    // CAL-037: the tied candidate ids are surfaced for the review UI.
+    expect(result!.candidateEventIds.sort()).toEqual(['event-001', 'event-002']);
   });
 
   it('does not produce TERRACE_AMBIGUOUS when candidates are separated by signal score', () => {

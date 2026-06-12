@@ -193,4 +193,42 @@ describe('expandRecurrence', () => {
     );
     expect(result).toEqual([]);
   });
+
+  it('keeps a multi-day occurrence that starts before the window but overlaps it (CAL-041)', () => {
+    // 3-day occurrences, weekly. The first occurrence runs 06-01 → 06-04.
+    const event = {
+      id: 'evt-multiday',
+      startDate: new Date('2026-06-01T10:00:00.000Z'),
+      endDate: new Date('2026-06-04T10:00:00.000Z'), // 3-day duration
+      recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+    };
+    // Window starts AFTER the occurrence start but BEFORE its end → overlap only.
+    const result = expandRecurrence(
+      event,
+      new Date('2026-06-02T00:00:00.000Z'),
+      new Date('2026-06-03T00:00:00.000Z'),
+    );
+    // Start-in-range semantics would drop it; overlap semantics keep it.
+    expect(result).toHaveLength(1);
+    expect(result[0].occurrenceStart.toISOString()).toBe('2026-06-01T10:00:00.000Z');
+  });
+
+  it('excludes an occurrence that ends exactly at or before the window start (CAL-041)', () => {
+    const event = {
+      id: 'evt-edge',
+      startDate: new Date('2026-06-01T10:00:00.000Z'),
+      endDate: new Date('2026-06-01T12:00:00.000Z'), // 2-hour duration
+      recurrenceRule: 'FREQ=DAILY;COUNT=10',
+    };
+    // Window opens at 13:00 on 06-01 (after the 06-01 occurrence ends at 12:00)
+    // and closes at 11:00 on 06-02 (the 06-02 occurrence runs 10:00–12:00).
+    const result = expandRecurrence(
+      event,
+      new Date('2026-06-01T13:00:00.000Z'),
+      new Date('2026-06-02T11:00:00.000Z'),
+    );
+    // The ended 06-01 occurrence is excluded; only the overlapping 06-02 one remains.
+    expect(result).toHaveLength(1);
+    expect(result[0].occurrenceStart.toISOString()).toBe('2026-06-02T10:00:00.000Z');
+  });
 });

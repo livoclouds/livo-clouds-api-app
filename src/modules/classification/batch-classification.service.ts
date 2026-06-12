@@ -337,6 +337,9 @@ export class BatchClassificationService {
           requiresReviewReason: result.requiresReviewReason ?? null,
           matchedRuleId: result.matchedRuleId ?? null,
           matchedCalendarEventId: result.matchedCalendarEventId ?? null,
+          // CAL-037: persist the tied candidate ids so the review UI can list
+          // the competing bookings on a TERRACE_AMBIGUOUS row.
+          terraceCandidateEventIds: result.terraceCandidateEventIds ?? [],
         };
 
         const key = JSON.stringify(data, (_k, v) =>

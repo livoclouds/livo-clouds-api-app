@@ -86,7 +86,7 @@ export class CreateCalendarEventDto {
 
   @ApiPropertyOptional({
     description:
-      'RFC 5545 RRULE string defining a recurring series. Must include UNTIL or COUNT. Sub-daily frequencies and TERRACE_BOOKING events are rejected. Omit or send null for a single-occurrence event.',
+      'RFC 5545 RRULE string defining a recurring series. Must include UNTIL or COUNT. Sub-daily frequencies and TERRACE_BOOKING events are rejected. Omit or send null for a single-occurrence event. Occurrences expand at fixed UTC instants (no DST wall-clock adjustment — CAL-042).',
     example: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T235959Z',
   })
   @IsOptional()
