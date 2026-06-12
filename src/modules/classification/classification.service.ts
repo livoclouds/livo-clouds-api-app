@@ -2222,7 +2222,10 @@ export class ClassificationService {
     // pg_advisory_xact_lock(int4, int4): key1 = hashtext(condominiumId),
     // key2 = year*100+month; auto-released at commit/rollback.
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${condominiumId}), ${summaryLockKey(year, month)})`;
+      // ::int4 cast — Prisma binds JS numbers as bigint and the two-arg lock
+      // only exists as (int4, int4). $executeRaw, not $queryRaw: the lock
+      // returns void, which Prisma's result deserializer rejects.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${condominiumId}), ${summaryLockKey(year, month)}::int4)`;
       await upsertSummaryForMonthCore(tx, condominiumId, year, month);
     });
   }

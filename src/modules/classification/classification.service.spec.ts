@@ -49,7 +49,7 @@ interface PrismaMock {
     findFirst: jest.Mock;
   };
   $transaction: jest.Mock;
-  $queryRaw: jest.Mock;
+  $executeRaw: jest.Mock;
 }
 
 function makePrismaMock(): PrismaMock {
@@ -105,7 +105,7 @@ function makePrismaMock(): PrismaMock {
     // callback (single-row overrides). The callback receives the same mock as `tx`.
     $transaction: jest.fn(),
     // ENGINE-022: the summary recompute takes a pg_advisory_xact_lock first.
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue([]),
   };
   mock.$transaction.mockImplementation(async (arg: unknown) => {
     if (typeof arg === 'function') {
@@ -2088,7 +2088,7 @@ describe('ClassificationService — ENGINE-002 delete collaborators', () => {
   it('takes the per-(tenant,month) advisory lock BEFORE any read, inside the $transaction (ENGINE-022)', async () => {
     const prisma = makePrismaMock();
     const order: string[] = [];
-    prisma.$queryRaw.mockImplementation(() => {
+    prisma.$executeRaw.mockImplementation(() => {
       order.push('lock');
       return Promise.resolve([]);
     });
@@ -2108,7 +2108,7 @@ describe('ClassificationService — ENGINE-002 delete collaborators', () => {
     expect(order[0]).toBe('lock');
     expect(order.indexOf('upsert')).toBeGreaterThan(order.lastIndexOf('read'));
     // The raw SQL is the advisory xact-lock keyed on (hashtext(tenant), yyyymm).
-    const [strings, ...params] = prisma.$queryRaw.mock.calls[0];
+    const [strings, ...params] = prisma.$executeRaw.mock.calls[0];
     expect(strings.join('?')).toContain('pg_advisory_xact_lock');
     expect(params).toEqual([CONDOMINIUM_ID, 202603]);
   });

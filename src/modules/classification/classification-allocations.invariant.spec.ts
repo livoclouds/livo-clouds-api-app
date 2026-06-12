@@ -151,8 +151,8 @@ function makeStatefulPrisma(store: Store) {
     if (Array.isArray(arg)) return Promise.all(arg);
     return undefined;
   });
-  // $queryRaw for the advisory-lock recompute path (ENGINE-022).
-  (mock as { $queryRaw?: jest.Mock }).$queryRaw = jest.fn().mockResolvedValue([]);
+  // $executeRaw for the advisory-lock recompute path (ENGINE-022).
+  (mock as { $executeRaw?: jest.Mock }).$executeRaw = jest.fn().mockResolvedValue(0);
   return mock;
 }
 
