@@ -121,7 +121,9 @@ function makeStatefulPrisma(store: Store) {
     paymentAllocation: {
       deleteMany: jest.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
         const before = store.allocations.length;
-        store.allocations = store.allocations.filter((a) => !matchesTx(where));
+        // Every stored row belongs to TX_ID/BATCH_ID in this harness, so a
+        // matching where-clause clears the store wholesale.
+        if (matchesTx(where)) store.allocations = [];
         return Promise.resolve({ count: before - store.allocations.length });
       }),
       createMany: jest.fn().mockImplementation(({ data }: { data: AllocationRow[] }) => {
