@@ -106,6 +106,12 @@ export interface ClassificationSummary {
   classified: number;
   needsReview: number;
   unmatched: number;
+  // ENGINE-018: rows the engine declined to overwrite because their status
+  // changed mid-run (manual classification/approval during a long re-run).
+  skipped: number;
+  // ENGINE-003: rows excluded from a reclassify reset because they carry a
+  // manual override or are already reconciled. Only set by reclassifyBatch.
+  preservedManual?: number;
 }
 
 /**
@@ -1445,6 +1451,7 @@ export class ClassificationService {
     let classified = 0;
     let needsReview = 0;
     let unmatched = 0;
+    let skipped = 0;
 
     // Reset the progress counter for this run (best-effort — progress writes must
     // never fail classification). The web polls processedCount/transactionCount to
@@ -1522,22 +1529,38 @@ export class ClassificationService {
         } else {
           groups.set(key, { ids: [tx.id], data });
         }
-
-        if (result.classificationStatus === ClassificationStatus.AUTO) {
-          classified++;
-        } else {
-          needsReview++;
-          if (!result.residentId) unmatched++;
-        }
       }
 
-      const updates = Array.from(groups.values()).map(({ ids, data }) =>
-        this.prisma.transaction.updateMany({
-          where: { condominiumId, id: { in: ids } },
-          data,
-        }),
+      // ENGINE-018: the write re-asserts the row is still the engine's to
+      // classify — a manual classification or reconciliation landed during
+      // the run wins, and the row is skipped + reported instead of being
+      // silently overwritten. Counters derive from the write counts (each
+      // group carries one payload), so the summary reflects what was
+      // actually persisted, not what the in-memory loop intended.
+      const groupList = Array.from(groups.values());
+      const results = await this.prisma.$transaction(
+        groupList.map(({ ids, data }) =>
+          this.prisma.transaction.updateMany({
+            where: {
+              condominiumId,
+              id: { in: ids },
+              classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+              reconciliationStatus: ReconciliationStatus.PENDING,
+            },
+            data,
+          }),
+        ),
       );
-      await this.prisma.$transaction(updates);
+      groupList.forEach(({ ids, data }, idx) => {
+        const count = results[idx].count;
+        if (data.classificationStatus === ClassificationStatus.AUTO) {
+          classified += count;
+        } else {
+          needsReview += count;
+          if (data.residentId === null) unmatched += count;
+        }
+        skipped += ids.length - count;
+      });
 
       // Publish progress after each chunk so the web poll sees a smooth advance.
       await this.writeProgress(batchId, Math.min(i + chunk.length, transactions.length));
@@ -1562,7 +1585,7 @@ export class ClassificationService {
       }
     }
 
-    return { total: transactions.length, classified, needsReview, unmatched };
+    return { total: transactions.length, classified, needsReview, unmatched, skipped };
   }
 
   async reclassifyBatch(
@@ -1610,15 +1633,38 @@ export class ClassificationService {
       data: { status: 'PROCESSING' },
     });
 
+    // ENGINE-003: rows a human already settled — manual overrides and
+    // already-reconciled rows — are excluded from the reset so a one-click
+    // reclassify can never destroy manual work. The count is reported back
+    // so the operator sees how much was preserved.
+    const resetScope = {
+      classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+      reconciliationStatus: ReconciliationStatus.PENDING,
+    } as const;
+    const totalInBatch = await this.prisma.transaction.count({
+      where: { condominiumId, importBatchId: batchId },
+    });
+    const resetEligible = await this.prisma.transaction.count({
+      where: { condominiumId, importBatchId: batchId, ...resetScope },
+    });
+    const preservedManual = totalInBatch - resetEligible;
+
     let summary: ClassificationSummary;
     try {
-      // The reset wipes every manual resident link, so the batch's manual
+      // The reset wipes every engine-owned resident link, so the matching
       // splits must go with it — atomically, or a crash between the two
       // writes leaves allocations pointing at unlinked transactions
-      // (ENGINE-006).
+      // (ENGINE-006). Allocations of preserved (manual/reconciled) rows
+      // survive: the delete is predicated on the same reset scope.
       await this.prisma.$transaction([
+        this.prisma.paymentAllocation.deleteMany({
+          where: {
+            condominiumId,
+            transaction: { importBatchId: batchId, condominiumId, ...resetScope },
+          },
+        }),
         this.prisma.transaction.updateMany({
-          where: { condominiumId, importBatchId: batchId },
+          where: { condominiumId, importBatchId: batchId, ...resetScope },
           data: {
             classificationStatus: ClassificationStatus.NEEDS_REVIEW,
             residentId: null,
@@ -1630,12 +1676,6 @@ export class ClassificationService {
             matchedRuleId: null,
             matchedCalendarEventId: null,
             classificationVersion: { increment: 1 },
-          },
-        }),
-        this.prisma.paymentAllocation.deleteMany({
-          where: {
-            condominiumId,
-            transaction: { importBatchId: batchId, condominiumId },
           },
         }),
       ]);
@@ -1656,14 +1696,44 @@ export class ClassificationService {
     // (reapplyToPending is tenant-wide, not batch-scoped — out of its scope.)
     // ENGINE-004 — restore the terminal status so a recovered FAILED/stuck
     // batch becomes COMPLETED again.
+    // ENGINE-003: with preservation, the re-run summary no longer covers the
+    // whole batch — the persisted counts come from the actual DB state so
+    // preserved MANUAL_OVERRIDE/reconciled rows keep counting as classified.
+    const [classifiedInBatch, needsReviewInBatch, unmatchedInBatch] =
+      await Promise.all([
+        this.prisma.transaction.count({
+          where: {
+            condominiumId,
+            importBatchId: batchId,
+            classificationStatus: {
+              in: [ClassificationStatus.AUTO, ClassificationStatus.MANUAL_OVERRIDE],
+            },
+          },
+        }),
+        this.prisma.transaction.count({
+          where: {
+            condominiumId,
+            importBatchId: batchId,
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+          },
+        }),
+        this.prisma.transaction.count({
+          where: {
+            condominiumId,
+            importBatchId: batchId,
+            classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+            residentId: null,
+          },
+        }),
+      ]);
     await this.prisma.importBatch.updateMany({
       where: { id: batchId, condominiumId },
       data: {
         status: 'COMPLETED',
         completedAt: batch.completedAt ?? new Date(),
-        classifiedCount: summary.classified,
-        needsReviewCount: summary.needsReview,
-        unmatchedCount: summary.unmatched,
+        classifiedCount: classifiedInBatch,
+        needsReviewCount: needsReviewInBatch,
+        unmatchedCount: unmatchedInBatch,
         classifiedAt: new Date(),
       },
     });
@@ -1684,14 +1754,16 @@ export class ClassificationService {
             classified: summary.classified,
             needsReview: summary.needsReview,
             unmatched: summary.unmatched,
+            skipped: summary.skipped,
+            preservedManual,
           },
           result: 'SUCCESS',
-          description: `Batch reclassified: ${summary.total} transactions processed`,
+          description: `Batch reclassified: ${summary.total} transactions processed, ${preservedManual} preserved`,
         },
       });
     }
 
-    return summary;
+    return { ...summary, preservedManual };
   }
 
   /**
@@ -1741,6 +1813,7 @@ export class ClassificationService {
     let classified = 0;
     let needsReview = 0;
     let unmatched = 0;
+    let skipped = 0;
 
     const affectedMonths = new Set<string>();
 
@@ -1816,24 +1889,38 @@ export class ClassificationService {
           groups.set(key, { ids: [tx.id], data });
         }
 
-        if (result.classificationStatus === ClassificationStatus.AUTO) {
-          classified++;
-        } else {
-          needsReview++;
-          if (!result.residentId) unmatched++;
-        }
-
         const d = new Date(tx.transactionDate);
         affectedMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
       }
 
-      const updates = Array.from(groups.values()).map(({ ids, data }) =>
-        this.prisma.transaction.updateMany({
-          where: { condominiumId, id: { in: ids } },
-          data,
-        }),
+      // ENGINE-018: re-assert the candidate predicate at write time — a row
+      // manually classified or reconciled while this run was computing is
+      // skipped and reported, never overwritten. Counters come from the
+      // write counts so the summary reflects what actually persisted.
+      const groupList = Array.from(groups.values());
+      const results = await this.prisma.$transaction(
+        groupList.map(({ ids, data }) =>
+          this.prisma.transaction.updateMany({
+            where: {
+              condominiumId,
+              id: { in: ids },
+              classificationStatus: ClassificationStatus.NEEDS_REVIEW,
+              reconciliationStatus: ReconciliationStatus.PENDING,
+            },
+            data,
+          }),
+        ),
       );
-      await this.prisma.$transaction(updates);
+      groupList.forEach(({ ids, data }, idx) => {
+        const count = results[idx].count;
+        if (data.classificationStatus === ClassificationStatus.AUTO) {
+          classified += count;
+        } else {
+          needsReview += count;
+          if (data.residentId === null) unmatched += count;
+        }
+        skipped += ids.length - count;
+      });
     }
 
     // Recompute monthly summaries for every period that had at least one
@@ -1856,14 +1943,15 @@ export class ClassificationService {
             classified,
             needsReview,
             unmatched,
+            skipped,
           },
           result: 'SUCCESS',
-          description: `Reapplied rules to ${transactions.length} pending transactions: ${classified} classified, ${needsReview} still need review`,
+          description: `Reapplied rules to ${transactions.length} pending transactions: ${classified} classified, ${needsReview} still need review, ${skipped} skipped (concurrent edits)`,
         },
       });
     }
 
-    return { total: transactions.length, classified, needsReview, unmatched };
+    return { total: transactions.length, classified, needsReview, unmatched, skipped };
   }
 
   async manualMatch(
@@ -2068,7 +2156,13 @@ export class ClassificationService {
           updatedAt: existingTx.updatedAt,
         },
         data: {
-          ...(dto.unitNumber !== undefined && { unitNumberDetected: dto.unitNumber || null }),
+          // ENGINE-021: the scalar/array pair moves together — a single-unit
+          // re-link must not leave a stale multi-unit array behind (the DB
+          // CHECK constraint now enforces this invariant structurally).
+          ...(dto.unitNumber !== undefined && {
+            unitNumberDetected: dto.unitNumber || null,
+            unitNumbersDetected: dto.unitNumber ? [dto.unitNumber] : [],
+          }),
           ...(dto.paymentConcept !== undefined && { paymentConcept: dto.paymentConcept || null }),
           ...(dto.expenseCategoryId !== undefined && { expenseCategoryId: dto.expenseCategoryId || null }),
           ...(dto.supplierId !== undefined && { supplierId: dto.supplierId || null }),
@@ -2174,6 +2268,10 @@ export class ClassificationService {
           afterState: {
             residentId: residentId !== undefined ? residentId : (existingTx.residentId ?? null),
             unitNumberDetected: dto.unitNumber !== undefined ? (dto.unitNumber || null) : existingTx.unitNumberDetected,
+            // ENGINE-021: array kept in lockstep with the scalar above.
+            ...(dto.unitNumber !== undefined && {
+              unitNumbersDetected: dto.unitNumber ? [dto.unitNumber] : [],
+            }),
             paymentConcept: dto.paymentConcept !== undefined ? (dto.paymentConcept || null) : existingTx.paymentConcept,
             expenseCategoryId: dto.expenseCategoryId !== undefined ? (dto.expenseCategoryId || null) : existingTx.expenseCategoryId,
             supplierId: dto.supplierId !== undefined ? (dto.supplierId || null) : existingTx.supplierId,
@@ -2557,64 +2655,102 @@ export class ClassificationService {
     }
   }
 
+  // ENGINE-020: approve mirrors reopen's guarded pattern — explicit
+  // state-transition check (only PENDING rows can be approved), optimistic
+  // lock on updatedAt, and all side effects (terrace marking, audit log)
+  // inside one transaction. The summary recompute stays post-commit: it is
+  // derived data, recomputable, and serialized by its own advisory lock.
   async approveTransaction(
     condominiumId: string,
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    const tx = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
-      select: {
-        transactionDate: true,
-        reconciliationStatus: true,
-        matchedCalendarEventId: true,
-      },
+    let capturedDate: Date | undefined;
+
+    await this.prisma.$transaction(async (prisma) => {
+      const tx = await prisma.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          transactionDate: true,
+          reconciliationStatus: true,
+          matchedCalendarEventId: true,
+          updatedAt: true,
+        },
+      });
+      if (!tx) throw new NotFoundException('Transaction not found');
+
+      if (tx.reconciliationStatus !== ReconciliationStatus.PENDING) {
+        throw new BadRequestException({
+          code: 'INVALID_STATE_TRANSITION',
+          reason: `Transaction is ${tx.reconciliationStatus} — reopen it before changing its reconciliation outcome.`,
+        });
+      }
+
+      capturedDate = tx.transactionDate;
+      const before = { reconciliationStatus: tx.reconciliationStatus };
+      const now = new Date();
+
+      const result = await prisma.transaction.updateMany({
+        where: {
+          id: transactionId,
+          condominiumId,
+          updatedAt: tx.updatedAt,
+          reconciliationStatus: ReconciliationStatus.PENDING,
+        },
+        data: {
+          reconciliationStatus: ReconciliationStatus.APPROVED,
+          reconciledById: userId,
+          reconciledAt: now,
+        },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      // When a terrace booking was linked, mark it as PAID on approval.
+      if (tx.matchedCalendarEventId) {
+        await this.markTerraceEventPaid(
+          tx.matchedCalendarEventId,
+          transactionId,
+          condominiumId,
+          userId,
+          prisma,
+        );
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_APPROVED',
+          actionCategory: 'RECONCILIATION',
+          module: 'transactions',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: before,
+          afterState: { reconciliationStatus: ReconciliationStatus.APPROVED },
+          result: 'SUCCESS',
+        },
+      });
     });
-    if (!tx) throw new NotFoundException('Transaction not found');
 
-    const before = { reconciliationStatus: tx.reconciliationStatus };
-    const now = new Date();
-
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        reconciliationStatus: ReconciliationStatus.APPROVED,
-        reconciledById: userId,
-        reconciledAt: now,
-      },
-    });
-
-    const d = new Date(tx.transactionDate);
+    const d = new Date(capturedDate!);
     await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
-
-    // When a terrace booking was linked, mark it as PAID on approval.
-    if (tx.matchedCalendarEventId) {
-      await this.markTerraceEventPaid(tx.matchedCalendarEventId, transactionId, condominiumId, userId);
-    }
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_APPROVED',
-        actionCategory: 'RECONCILIATION',
-        module: 'transactions',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: before,
-        afterState: { reconciliationStatus: ReconciliationStatus.APPROVED },
-        result: 'SUCCESS',
-      },
-    });
   }
 
+  // `client` lets the helper join a caller's transaction (ENGINE-019/020);
+  // it defaults to the root client for standalone use.
   private async markTerraceEventPaid(
     calendarEventId: string,
     transactionId: string,
     condominiumId: string,
     userId: string,
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<void> {
-    const ev = await this.prisma.calendarEvent.findFirst({
+    const ev = await client.calendarEvent.findFirst({
       where: { id: calendarEventId, condominiumId, deletedAt: null },
       select: { metadata: true },
     });
@@ -2641,12 +2777,12 @@ export class ClassificationService {
 
     const updatedMetadata = { ...validation.data, paymentStatus: 'PAID' as const };
 
-    await this.prisma.calendarEvent.update({
+    await client.calendarEvent.update({
       where: { id: calendarEventId },
       data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
     });
 
-    await this.prisma.auditLog.create({
+    await client.auditLog.create({
       data: {
         condominiumId,
         userId,
@@ -2668,8 +2804,9 @@ export class ClassificationService {
     transactionId: string,
     condominiumId: string,
     userId: string,
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<void> {
-    const ev = await this.prisma.calendarEvent.findFirst({
+    const ev = await client.calendarEvent.findFirst({
       where: { id: calendarEventId, condominiumId, deletedAt: null },
       select: { metadata: true },
     });
@@ -2696,12 +2833,12 @@ export class ClassificationService {
 
     const updatedMetadata = { ...validation.data, paymentStatus: 'PENDING' as const };
 
-    await this.prisma.calendarEvent.update({
+    await client.calendarEvent.update({
       where: { id: calendarEventId },
       data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
     });
 
-    await this.prisma.auditLog.create({
+    await client.auditLog.create({
       data: {
         condominiumId,
         userId,
@@ -2718,45 +2855,76 @@ export class ClassificationService {
     });
   }
 
+  // ENGINE-020: ignore is guarded exactly like approve — APPROVED→IGNORED
+  // without an intermediate reopen returns INVALID_STATE_TRANSITION, and a
+  // concurrent edit surfaces as STALE_OVERRIDE instead of last-write-wins.
   async ignoreTransaction(
     condominiumId: string,
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    const tx = await this.prisma.transaction.findFirst({
-      where: { id: transactionId, condominiumId },
+    let capturedDate: Date | undefined;
+
+    await this.prisma.$transaction(async (prisma) => {
+      const tx = await prisma.transaction.findFirst({
+        where: { id: transactionId, condominiumId },
+        select: {
+          transactionDate: true,
+          reconciliationStatus: true,
+          updatedAt: true,
+        },
+      });
+      if (!tx) throw new NotFoundException('Transaction not found');
+
+      if (tx.reconciliationStatus !== ReconciliationStatus.PENDING) {
+        throw new BadRequestException({
+          code: 'INVALID_STATE_TRANSITION',
+          reason: `Transaction is ${tx.reconciliationStatus} — reopen it before changing its reconciliation outcome.`,
+        });
+      }
+
+      capturedDate = tx.transactionDate;
+      const before = { reconciliationStatus: tx.reconciliationStatus };
+      const now = new Date();
+
+      const result = await prisma.transaction.updateMany({
+        where: {
+          id: transactionId,
+          condominiumId,
+          updatedAt: tx.updatedAt,
+          reconciliationStatus: ReconciliationStatus.PENDING,
+        },
+        data: {
+          reconciliationStatus: ReconciliationStatus.IGNORED,
+          reconciledById: userId,
+          reconciledAt: now,
+        },
+      });
+      if (result.count === 0) {
+        throw new ConflictException({
+          code: 'STALE_OVERRIDE',
+          reason: 'Transaction was modified by another user. Refresh and try again.',
+        });
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: 'TRANSACTION_IGNORED',
+          actionCategory: 'RECONCILIATION',
+          module: 'transactions',
+          entityType: 'Transaction',
+          entityId: transactionId,
+          beforeState: before,
+          afterState: { reconciliationStatus: ReconciliationStatus.IGNORED },
+          result: 'SUCCESS',
+        },
+      });
     });
-    if (!tx) throw new NotFoundException('Transaction not found');
 
-    const before = { reconciliationStatus: tx.reconciliationStatus };
-    const now = new Date();
-
-    await this.prisma.transaction.update({
-      where: { id: transactionId },
-      data: {
-        reconciliationStatus: ReconciliationStatus.IGNORED,
-        reconciledById: userId,
-        reconciledAt: now,
-      },
-    });
-
-    const d = new Date(tx.transactionDate);
+    const d = new Date(capturedDate!);
     await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TRANSACTION_IGNORED',
-        actionCategory: 'RECONCILIATION',
-        module: 'transactions',
-        entityType: 'Transaction',
-        entityId: transactionId,
-        beforeState: before,
-        afterState: { reconciliationStatus: ReconciliationStatus.IGNORED },
-        result: 'SUCCESS',
-      },
-    });
   }
 
   async reopenTransaction(
@@ -2826,16 +2994,22 @@ export class ClassificationService {
     }
   }
 
+  // ENGINE-019: the bulk write asserts the expected current status (a bulk
+  // approve no longer silently overrides a fresh IGNORE), terrace bookings
+  // are marked PAID on bulk approve (parity with single approve), and every
+  // side effect — terrace marking/revert, audit log — runs inside the same
+  // transaction so a late failure rolls the whole batch back. Rows that
+  // changed status concurrently are skipped and reported, not overwritten.
   async bulkReconcile(
     condominiumId: string,
     ids: string[],
     action: 'approve' | 'ignore' | 'reopen',
     userId: string,
-  ): Promise<{ affected: number }> {
+  ): Promise<{ affected: number; skipped: number; requested: number }> {
     // Verify all IDs belong to this condominium (IDOR protection)
     const existing = await this.prisma.transaction.findMany({
       where: { id: { in: ids }, condominiumId },
-      select: { id: true, transactionDate: true, reconciliationStatus: true, matchedCalendarEventId: true },
+      select: { id: true, transactionDate: true },
     });
 
     if (existing.length !== ids.length) {
@@ -2850,18 +3024,98 @@ export class ClassificationService {
     const newStatus = statusMap[action];
     const now = new Date();
 
-    await this.prisma.$transaction([
-      this.prisma.transaction.updateMany({
-        where: { id: { in: ids }, condominiumId },
+    // approve/ignore only act on PENDING rows; reopen only on settled ones.
+    const statusPrecondition =
+      action === 'reopen'
+        ? { not: ReconciliationStatus.PENDING }
+        : ReconciliationStatus.PENDING;
+
+    const actionMap: Record<string, string> = {
+      approve: 'TRANSACTIONS_BULK_APPROVED',
+      ignore: 'TRANSACTIONS_BULK_IGNORED',
+      reopen: 'TRANSACTIONS_BULK_REOPENED',
+    };
+
+    let affected = 0;
+
+    await this.prisma.$transaction(async (prisma) => {
+      // Re-read eligibility inside the transaction so the terrace side
+      // effects below act on the same row set the guarded write touches.
+      const eligible = await prisma.transaction.findMany({
+        where: { id: { in: ids }, condominiumId, reconciliationStatus: statusPrecondition },
+        select: { id: true, reconciliationStatus: true, matchedCalendarEventId: true },
+      });
+
+      const result = await prisma.transaction.updateMany({
+        where: {
+          id: { in: eligible.map((t) => t.id) },
+          condominiumId,
+          reconciliationStatus: statusPrecondition,
+        },
         data: {
           reconciliationStatus: newStatus,
           reconciledById: action === 'reopen' ? null : userId,
           reconciledAt: action === 'reopen' ? null : now,
         },
-      }),
-    ]);
+      });
+      affected = result.count;
 
-    // Recalculate summaries for all affected months (deduped, sequential)
+      if (action === 'approve') {
+        // Terrace parity with single approve (ENGINE-019): linked bookings
+        // are marked PAID in the same transaction as the approval.
+        for (const t of eligible) {
+          if (t.matchedCalendarEventId) {
+            await this.markTerraceEventPaid(
+              t.matchedCalendarEventId,
+              t.id,
+              condominiumId,
+              userId,
+              prisma,
+            );
+          }
+        }
+      }
+
+      if (action === 'reopen') {
+        for (const t of eligible) {
+          if (
+            t.matchedCalendarEventId &&
+            t.reconciliationStatus === ReconciliationStatus.APPROVED
+          ) {
+            await this.unmarkTerraceEventPaid(
+              t.matchedCalendarEventId,
+              t.id,
+              condominiumId,
+              userId,
+              prisma,
+            );
+          }
+        }
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          condominiumId,
+          userId,
+          action: actionMap[action],
+          actionCategory: 'RECONCILIATION',
+          module: 'transactions',
+          afterState: {
+            ids,
+            newStatus,
+            requested: ids.length,
+            affected,
+            skipped: ids.length - affected,
+          },
+          result: 'SUCCESS',
+          description: `Bulk ${action}: ${affected} of ${ids.length} transactions`,
+        },
+      });
+    });
+
+    // Recalculate summaries for all affected months (deduped, sequential).
+    // Post-commit like the single-row paths: derived data behind its own
+    // advisory lock, recomputable if this step fails.
     await this.recomputeMonths(
       condominiumId,
       existing.map((tx) => {
@@ -2870,36 +3124,6 @@ export class ClassificationService {
       }),
     );
 
-    if (action === 'reopen') {
-      const toRevert = existing.filter(
-        (t) => t.matchedCalendarEventId && t.reconciliationStatus === ReconciliationStatus.APPROVED,
-      );
-      await Promise.all(
-        toRevert.map((t) =>
-          this.unmarkTerraceEventPaid(t.matchedCalendarEventId!, t.id, condominiumId, userId),
-        ),
-      );
-    }
-
-    const actionMap: Record<string, string> = {
-      approve: 'TRANSACTIONS_BULK_APPROVED',
-      ignore: 'TRANSACTIONS_BULK_IGNORED',
-      reopen: 'TRANSACTIONS_BULK_REOPENED',
-    };
-
-    await this.prisma.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: actionMap[action],
-        actionCategory: 'RECONCILIATION',
-        module: 'transactions',
-        afterState: { ids, newStatus, count: ids.length },
-        result: 'SUCCESS',
-        description: `Bulk ${action}: ${ids.length} transactions`,
-      },
-    });
-
-    return { affected: ids.length };
+    return { affected, skipped: ids.length - affected, requested: ids.length };
   }
 }

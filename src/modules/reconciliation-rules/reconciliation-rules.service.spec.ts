@@ -25,6 +25,8 @@ interface PrismaMock {
   };
   transaction: { count: jest.Mock };
   user: { findMany: jest.Mock };
+  expenseCategory: { findFirst: jest.Mock };
+  supplier: { findFirst: jest.Mock };
   $transaction: jest.Mock;
 }
 
@@ -53,6 +55,10 @@ function makePrismaMock(): PrismaMock {
     },
     transaction: { count: jest.fn().mockResolvedValue(0) },
     user: { findMany: jest.fn().mockResolvedValue([]) },
+    // ENGINE-031: outcome-ownership lookups default to "found" so tests that
+    // pass tenant-local ids (or none) are unaffected.
+    expenseCategory: { findFirst: jest.fn().mockResolvedValue({ id: 'cat-1' }) },
+    supplier: { findFirst: jest.fn().mockResolvedValue({ id: 'sup-1' }) },
   } as Omit<PrismaMock, '$transaction'>;
 
   // For interactive transactions (callback form), invoke the callback with
@@ -298,7 +304,10 @@ describe('ReconciliationRulesService', () => {
       await expect(
         service.reorder(CONDOMINIUM_ID, ['a', 'b'], USER_ID),
       ).rejects.toThrow(ConflictException);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      // ENGINE-047: validation now runs INSIDE the write transaction, so the
+      // tx opens, the stale payload is rejected, and no priority is written.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.reconciliationRule.update).not.toHaveBeenCalled();
     });
 
     it('throws ConflictException when payload references a foreign rule', async () => {
@@ -310,7 +319,85 @@ describe('ReconciliationRulesService', () => {
       await expect(
         service.reorder(CONDOMINIUM_ID, ['a', 'foreign'], USER_ID),
       ).rejects.toThrow(ConflictException);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.reconciliationRule.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ENGINE-031 — a rule outcome must not reference another tenant's
+  // supplier/category; foreign ids read as nonexistent (404).
+  describe('outcome ownership (ENGINE-031)', () => {
+    it('create throws 404 SUPPLIER_NOT_FOUND for a foreign supplierId', async () => {
+      prisma.supplier.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.create(
+          CONDOMINIUM_ID,
+          { name: 'New', keywords: ['kw'], supplierId: 'foreign-supplier' },
+          USER_ID,
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.supplier.findFirst).toHaveBeenCalledWith({
+        where: { id: 'foreign-supplier', condominiumId: CONDOMINIUM_ID, deletedAt: null },
+        select: { id: true },
+      });
+      expect(prisma.reconciliationRule.create).not.toHaveBeenCalled();
+    });
+
+    it('create throws 404 EXPENSE_CATEGORY_NOT_FOUND for a foreign expenseCategoryId', async () => {
+      prisma.expenseCategory.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.create(
+          CONDOMINIUM_ID,
+          { name: 'New', keywords: ['kw'], expenseCategoryId: 'foreign-cat' },
+          USER_ID,
+        ),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'EXPENSE_CATEGORY_NOT_FOUND' }),
+      });
+      expect(prisma.reconciliationRule.create).not.toHaveBeenCalled();
+    });
+
+    it('create verifies and persists tenant-local outcome ids', async () => {
+      prisma.reconciliationRule.create.mockResolvedValue(
+        makeRule({ id: 'rule-new', supplierId: 'sup-1', expenseCategoryId: 'cat-1' }),
+      );
+
+      await service.create(
+        CONDOMINIUM_ID,
+        { name: 'New', keywords: ['kw'], supplierId: 'sup-1', expenseCategoryId: 'cat-1' },
+        USER_ID,
+      );
+
+      expect(prisma.expenseCategory.findFirst).toHaveBeenCalledTimes(1);
+      expect(prisma.supplier.findFirst).toHaveBeenCalledTimes(1);
+      expect(prisma.reconciliationRule.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('update throws 404 for a foreign supplierId and does not write', async () => {
+      prisma.reconciliationRule.findFirst.mockResolvedValue(makeRule());
+      prisma.supplier.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.update(
+          CONDOMINIUM_ID,
+          'rule-1',
+          { supplierId: 'foreign-supplier' },
+          USER_ID,
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.reconciliationRule.update).not.toHaveBeenCalled();
+    });
+
+    it('update skips the lookups when the ids are absent or cleared', async () => {
+      prisma.reconciliationRule.findFirst.mockResolvedValue(makeRule());
+      prisma.reconciliationRule.update.mockResolvedValue(makeRule({ name: 'Renamed' }));
+
+      await service.update(CONDOMINIUM_ID, 'rule-1', { name: 'Renamed', supplierId: '' }, USER_ID);
+
+      expect(prisma.expenseCategory.findFirst).not.toHaveBeenCalled();
+      expect(prisma.supplier.findFirst).not.toHaveBeenCalled();
     });
   });
 

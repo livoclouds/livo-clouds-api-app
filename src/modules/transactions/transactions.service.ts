@@ -630,8 +630,10 @@ export class TransactionsService {
     });
     if (!tx) throw new NotFoundException('Transaction not found');
 
+    // ENGINE-056: scope by tenant + entity type, not entityId alone — an
+    // id-reusing entity must never leak another tenant's audit history.
     return this.prisma.auditLog.findMany({
-      where: { entityId: transactionId },
+      where: { entityId: transactionId, condominiumId, entityType: 'Transaction' },
       include: {
         user: {
           select: { id: true, firstName: true, lastName: true, email: true },
