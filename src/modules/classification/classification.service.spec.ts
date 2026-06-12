@@ -16,6 +16,9 @@ import {
   resolveRuleUnit,
   type DbRule,
 } from './classification.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
+import { SummaryRecomputeService } from '../reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../reconciliation/terrace-payment-link.service';
 import { TERRACE_BOOKING_DEFAULTS } from '../calendar/terrace-metadata.validator';
 
 const CONDOMINIUM_ID = 'cond-1';
@@ -140,11 +143,25 @@ function makeService(
     ),
     invalidate: jest.fn(),
   };
+  // ENGINE-008 decomposition: summary/terrace/lifecycle collaborators are
+  // real instances over the same prisma mock, so every behavioral assertion
+  // (call shapes, advisory locks, audit payloads) keeps observing the exact
+  // same writes through the facade.
+  const summaries = new SummaryRecomputeService(prisma as never);
+  const terraceLinks = new TerracePaymentLinkService(prisma as never);
+  const lifecycle = new ReconciliationLifecycleService(
+    prisma as never,
+    summaries,
+    terraceLinks,
+  );
   return new ClassificationService(
     prisma as never,
     rulesService as never,
     events as never,
     settingsCache as never,
+    summaries,
+    terraceLinks,
+    lifecycle,
   );
 }
 

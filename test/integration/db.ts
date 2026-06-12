@@ -28,6 +28,9 @@ import { DashboardService } from '../../src/modules/dashboard/dashboard.service'
 import { ImportsService } from '../../src/modules/imports/imports.service';
 import { ImportsParserService } from '../../src/modules/imports/parser';
 import { ReconciliationRulesService } from '../../src/modules/reconciliation-rules/reconciliation-rules.service';
+import { ReconciliationLifecycleService } from '../../src/modules/reconciliation/reconciliation-lifecycle.service';
+import { SummaryRecomputeService } from '../../src/modules/reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../../src/modules/reconciliation/terrace-payment-link.service';
 import { SettingsCacheService } from '../../src/modules/settings/settings-cache.service';
 import { SettingsService } from '../../src/modules/settings/settings.service';
 import { StorageService } from '../../src/modules/storage/storage.service';
@@ -62,6 +65,9 @@ export async function createPipelineContext(): Promise<PipelineContext> {
       PrismaService,
       SettingsCacheService,
       ReconciliationRulesService,
+      SummaryRecomputeService,
+      TerracePaymentLinkService,
+      ReconciliationLifecycleService,
       ClassificationService,
       DashboardService,
     ],
@@ -170,6 +176,9 @@ export async function createImportsContext(): Promise<ImportsContext> {
       SettingsCacheService,
       SettingsService,
       ReconciliationRulesService,
+      SummaryRecomputeService,
+      TerracePaymentLinkService,
+      ReconciliationLifecycleService,
       ClassificationService,
       AuditService,
       BankProfilesService,

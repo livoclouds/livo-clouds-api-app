@@ -3,10 +3,11 @@ import { ClassificationController } from './classification.controller';
 import { ClassificationService } from './classification.service';
 import { ClassificationMetricsService } from './classification-metrics.service';
 import { ReconciliationRulesModule } from '../reconciliation-rules/reconciliation-rules.module';
+import { ReconciliationModule } from '../reconciliation/reconciliation.module';
 import { SettingsModule } from '../settings/settings.module';
 
 @Module({
-  imports: [forwardRef(() => ReconciliationRulesModule), SettingsModule],
+  imports: [forwardRef(() => ReconciliationRulesModule), ReconciliationModule, SettingsModule],
   controllers: [ClassificationController],
   providers: [ClassificationService, ClassificationMetricsService],
   exports: [ClassificationService],

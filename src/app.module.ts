@@ -49,6 +49,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReconciliationRulesModule } from './modules/reconciliation-rules/reconciliation-rules.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { ExpenseCategoriesModule } from './modules/expense-categories/expense-categories.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { CalendarReclassifyModule } from './modules/calendar/reclassify/calendar-reclassify.module';
@@ -93,6 +94,7 @@ import { SupportModule } from './modules/support/support.module';
     CollectionModule,
     CondominiumsModule,
     ClassificationModule,
+    ReconciliationModule,
     DashboardModule,
     ImportsModule,
     TransactionsModule,

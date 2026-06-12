@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, forwardRef, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MatchSource, ClassificationStatus, RequiresReviewReason, ReconciliationStatus, FlowType, BankDialect, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -12,7 +12,9 @@ import { validateTerraceMetadata } from '../calendar/terrace-metadata.validator'
 import { SettingsCacheService } from '../settings/settings-cache.service';
 import { STALE_PROCESSING_MS } from '../imports/imports.constants';
 import { round2, toCents } from '../../common/utils/money.util';
-import { summaryLockKey, upsertSummaryForMonthCore } from './monthly-summary.util';
+import { SummaryRecomputeService } from '../reconciliation/summary-recompute.service';
+import { TerracePaymentLinkService } from '../reconciliation/terrace-payment-link.service';
+import { ReconciliationLifecycleService } from '../reconciliation/reconciliation-lifecycle.service';
 import {
   buildSystemRulesCatalog,
   normalizeText,
@@ -66,6 +68,9 @@ export class ClassificationService {
     private readonly rulesService: ReconciliationRulesService,
     private readonly events: EventEmitter2,
     private readonly settingsCache: SettingsCacheService,
+    private readonly summaries: SummaryRecomputeService,
+    private readonly terraceLinks: TerracePaymentLinkService,
+    private readonly lifecycle: ReconciliationLifecycleService,
   ) {}
 
 
@@ -1415,373 +1420,59 @@ export class ClassificationService {
     });
   }
 
+  // ENGINE-008 decomposition (Phase 6): summary recompute, terrace payment
+  // links and the reconciliation lifecycle live in ReconciliationModule
+  // services. These delegations preserve the facade's public API for existing
+  // callers (imports.service, calendar-reclassify, integration specs) and the
+  // private entry points classifyBatch/reapplyToPending use internally.
+
   private async upsertMonthlySummaries(
     condominiumId: string,
     batchId: string,
   ): Promise<void> {
-    const periods = await this.prisma.transaction.groupBy({
-      by: ['transactionDate'],
-      where: { condominiumId, importBatchId: batchId },
-    });
+    await this.summaries.upsertMonthlySummaries(condominiumId, batchId);
+  }
 
-    const uniqueMonths = new Set<string>();
-    for (const { transactionDate } of periods) {
-      const d = new Date(transactionDate);
-      uniqueMonths.add(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`);
-    }
-
-    await this.recomputeMonths(condominiumId, uniqueMonths);
+  private async recomputeMonths(
+    condominiumId: string,
+    monthKeys: Iterable<string>,
+  ): Promise<void> {
+    await this.summaries.recomputeMonths(condominiumId, monthKeys);
   }
 
   // ENGINE-002 — public recompute for callers that delete transactions and
   // must rebuild the official monthly numbers afterwards (imports remove()).
-  // The month list is captured by the caller BEFORE deleting, because the
-  // batch-scoped variant derives its months from rows that no longer exist.
   async recomputeSummariesForMonths(
     condominiumId: string,
     months: Array<{ year: number; month: number }>,
   ): Promise<void> {
-    await this.recomputeMonths(
-      condominiumId,
-      months.map(({ year, month }) => `${year}-${month}`),
-    );
+    await this.summaries.recomputeSummariesForMonths(condominiumId, months);
   }
 
   // ENGINE-002 — revert terrace bookings marked PAID by transactions of the
-  // given batch. Called by imports remove() before hard-deleting the rows so
-  // a booking never stays PAID with its proof transaction gone.
+  // given batch. Called by imports remove() before hard-deleting the rows.
   async revertTerraceLinksForBatch(
     condominiumId: string,
     batchId: string,
     userId: string,
   ): Promise<void> {
-    const linked = await this.prisma.transaction.findMany({
-      where: {
-        condominiumId,
-        importBatchId: batchId,
-        matchedCalendarEventId: { not: null },
-      },
-      select: { id: true, matchedCalendarEventId: true },
-    });
-    for (const tx of linked) {
-      if (!tx.matchedCalendarEventId) continue;
-      await this.unmarkTerraceEventPaid(
-        tx.matchedCalendarEventId,
-        tx.id,
-        condominiumId,
-        userId,
-      );
-    }
+    await this.terraceLinks.revertTerraceLinksForBatch(condominiumId, batchId, userId);
   }
 
-  private async upsertSummaryForMonth(
-    condominiumId: string,
-    year: number,
-    month: number,
-  ): Promise<void> {
-    // ENGINE-022 — the six reads + upsert run inside one transaction,
-    // serialized per (tenant, month) by a Postgres advisory xact-lock
-    // (first advisory-lock use in this codebase). $transaction alone is
-    // READ COMMITTED — each statement takes its own snapshot — so without
-    // the lock two concurrent recomputes could persist internally
-    // inconsistent counts (pending+approved+ignored ≠ transactionCount).
-    // pg_advisory_xact_lock(int4, int4): key1 = hashtext(condominiumId),
-    // key2 = year*100+month; auto-released at commit/rollback.
-    await this.prisma.$transaction(async (tx) => {
-      // ::int4 cast — Prisma binds JS numbers as bigint and the two-arg lock
-      // only exists as (int4, int4). $executeRaw, not $queryRaw: the lock
-      // returns void, which Prisma's result deserializer rejects.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${condominiumId}), ${summaryLockKey(year, month)}::int4)`;
-      await upsertSummaryForMonthCore(tx, condominiumId, year, month);
-    });
-  }
-
-  /**
-   * Coalesced month recompute (ENGINE-039): dedupes the month keys and runs
-   * the recomputes SEQUENTIALLY — a request touches 1-13 months at most, and
-   * a parallel fan-out would only queue on the advisory lock while exhausting
-   * the connection pool.
-   */
-  private async recomputeMonths(
-    condominiumId: string,
-    monthKeys: Iterable<string>,
-  ): Promise<void> {
-    for (const key of new Set(monthKeys)) {
-      const [year, month] = key.split('-').map(Number);
-      await this.upsertSummaryForMonth(condominiumId, year, month);
-    }
-  }
-
-  // ENGINE-020: approve mirrors reopen's guarded pattern — explicit
-  // state-transition check (only PENDING rows can be approved), optimistic
-  // lock on updatedAt, and all side effects (terrace marking, audit log)
-  // inside one transaction. The summary recompute stays post-commit: it is
-  // derived data, recomputable, and serialized by its own advisory lock.
   async approveTransaction(
     condominiumId: string,
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    let capturedDate: Date | undefined;
-
-    await this.prisma.$transaction(async (prisma) => {
-      const tx = await prisma.transaction.findFirst({
-        where: { id: transactionId, condominiumId },
-        select: {
-          transactionDate: true,
-          reconciliationStatus: true,
-          matchedCalendarEventId: true,
-          updatedAt: true,
-        },
-      });
-      if (!tx) throw new NotFoundException('Transaction not found');
-
-      if (tx.reconciliationStatus !== ReconciliationStatus.PENDING) {
-        throw new BadRequestException({
-          code: 'INVALID_STATE_TRANSITION',
-          reason: `Transaction is ${tx.reconciliationStatus} — reopen it before changing its reconciliation outcome.`,
-        });
-      }
-
-      capturedDate = tx.transactionDate;
-      const before = { reconciliationStatus: tx.reconciliationStatus };
-      const now = new Date();
-
-      const result = await prisma.transaction.updateMany({
-        where: {
-          id: transactionId,
-          condominiumId,
-          updatedAt: tx.updatedAt,
-          reconciliationStatus: ReconciliationStatus.PENDING,
-        },
-        data: {
-          reconciliationStatus: ReconciliationStatus.APPROVED,
-          reconciledById: userId,
-          reconciledAt: now,
-        },
-      });
-      if (result.count === 0) {
-        throw new ConflictException({
-          code: 'STALE_OVERRIDE',
-          reason: 'Transaction was modified by another user. Refresh and try again.',
-        });
-      }
-
-      // When a terrace booking was linked, mark it as PAID on approval.
-      if (tx.matchedCalendarEventId) {
-        await this.markTerraceEventPaid(
-          tx.matchedCalendarEventId,
-          transactionId,
-          condominiumId,
-          userId,
-          prisma,
-        );
-      }
-
-      await prisma.auditLog.create({
-        data: {
-          condominiumId,
-          userId,
-          action: 'TRANSACTION_APPROVED',
-          actionCategory: 'RECONCILIATION',
-          module: 'transactions',
-          entityType: 'Transaction',
-          entityId: transactionId,
-          beforeState: before,
-          afterState: { reconciliationStatus: ReconciliationStatus.APPROVED },
-          result: 'SUCCESS',
-        },
-      });
-    });
-
-    const d = new Date(capturedDate!);
-    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
+    await this.lifecycle.approveTransaction(condominiumId, transactionId, userId);
   }
 
-  // `client` lets the helper join a caller's transaction (ENGINE-019/020);
-  // it defaults to the root client for standalone use.
-  private async markTerraceEventPaid(
-    calendarEventId: string,
-    transactionId: string,
-    condominiumId: string,
-    userId: string,
-    client: Prisma.TransactionClient = this.prisma,
-  ): Promise<void> {
-    const ev = await client.calendarEvent.findFirst({
-      where: { id: calendarEventId, condominiumId, deletedAt: null },
-      select: { metadata: true },
-    });
-    if (!ev) {
-      this.logger.warn(
-        `markTerraceEventPaid: event ${calendarEventId} not found or deleted — skipping payment status update`,
-      );
-      return;
-    }
-
-    const validation = validateTerraceMetadata(ev.metadata);
-    if (!validation.valid) {
-      this.logger.warn(
-        `markTerraceEventPaid: corrupt metadata on event ${calendarEventId} — ${validation.error}`,
-      );
-      return;
-    }
-    if (validation.data.paymentStatus === 'PAID') {
-      this.logger.debug(
-        `markTerraceEventPaid: event ${calendarEventId} already PAID — skipping`,
-      );
-      return;
-    }
-
-    const updatedMetadata = { ...validation.data, paymentStatus: 'PAID' as const };
-
-    await client.calendarEvent.update({
-      where: { id: calendarEventId },
-      data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
-    });
-
-    await client.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TERRACE_BOOKING_MARKED_PAID',
-        actionCategory: 'RECONCILIATION',
-        module: 'calendar',
-        entityType: 'CalendarEvent',
-        entityId: calendarEventId,
-        beforeState: { paymentStatus: validation.data.paymentStatus },
-        afterState: { paymentStatus: 'PAID', linkedTransactionId: transactionId },
-        result: 'SUCCESS',
-        description: `Terrace booking payment confirmed via transaction ${transactionId}`,
-      },
-    });
-  }
-
-  private async unmarkTerraceEventPaid(
-    calendarEventId: string,
-    transactionId: string,
-    condominiumId: string,
-    userId: string,
-    client: Prisma.TransactionClient = this.prisma,
-  ): Promise<void> {
-    const ev = await client.calendarEvent.findFirst({
-      where: { id: calendarEventId, condominiumId, deletedAt: null },
-      select: { metadata: true },
-    });
-    if (!ev) {
-      this.logger.warn(
-        `unmarkTerraceEventPaid: event ${calendarEventId} not found or deleted — skipping revert`,
-      );
-      return;
-    }
-
-    const validation = validateTerraceMetadata(ev.metadata);
-    if (!validation.valid) {
-      this.logger.warn(
-        `unmarkTerraceEventPaid: corrupt metadata on event ${calendarEventId} — ${validation.error}`,
-      );
-      return;
-    }
-    if (validation.data.paymentStatus === 'PENDING') {
-      this.logger.debug(
-        `unmarkTerraceEventPaid: event ${calendarEventId} already PENDING — skipping`,
-      );
-      return;
-    }
-
-    const updatedMetadata = { ...validation.data, paymentStatus: 'PENDING' as const };
-
-    await client.calendarEvent.update({
-      where: { id: calendarEventId },
-      data: { metadata: updatedMetadata as unknown as Prisma.InputJsonValue },
-    });
-
-    await client.auditLog.create({
-      data: {
-        condominiumId,
-        userId,
-        action: 'TERRACE_BOOKING_PAYMENT_REVERTED',
-        actionCategory: 'RECONCILIATION',
-        module: 'calendar',
-        entityType: 'CalendarEvent',
-        entityId: calendarEventId,
-        beforeState: { paymentStatus: validation.data.paymentStatus },
-        afterState: { paymentStatus: 'PENDING', linkedTransactionId: transactionId },
-        result: 'SUCCESS',
-        description: `Terrace booking payment reverted via transaction ${transactionId} reopen`,
-      },
-    });
-  }
-
-  // ENGINE-020: ignore is guarded exactly like approve — APPROVED→IGNORED
-  // without an intermediate reopen returns INVALID_STATE_TRANSITION, and a
-  // concurrent edit surfaces as STALE_OVERRIDE instead of last-write-wins.
   async ignoreTransaction(
     condominiumId: string,
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    let capturedDate: Date | undefined;
-
-    await this.prisma.$transaction(async (prisma) => {
-      const tx = await prisma.transaction.findFirst({
-        where: { id: transactionId, condominiumId },
-        select: {
-          transactionDate: true,
-          reconciliationStatus: true,
-          updatedAt: true,
-        },
-      });
-      if (!tx) throw new NotFoundException('Transaction not found');
-
-      if (tx.reconciliationStatus !== ReconciliationStatus.PENDING) {
-        throw new BadRequestException({
-          code: 'INVALID_STATE_TRANSITION',
-          reason: `Transaction is ${tx.reconciliationStatus} — reopen it before changing its reconciliation outcome.`,
-        });
-      }
-
-      capturedDate = tx.transactionDate;
-      const before = { reconciliationStatus: tx.reconciliationStatus };
-      const now = new Date();
-
-      const result = await prisma.transaction.updateMany({
-        where: {
-          id: transactionId,
-          condominiumId,
-          updatedAt: tx.updatedAt,
-          reconciliationStatus: ReconciliationStatus.PENDING,
-        },
-        data: {
-          reconciliationStatus: ReconciliationStatus.IGNORED,
-          reconciledById: userId,
-          reconciledAt: now,
-        },
-      });
-      if (result.count === 0) {
-        throw new ConflictException({
-          code: 'STALE_OVERRIDE',
-          reason: 'Transaction was modified by another user. Refresh and try again.',
-        });
-      }
-
-      await prisma.auditLog.create({
-        data: {
-          condominiumId,
-          userId,
-          action: 'TRANSACTION_IGNORED',
-          actionCategory: 'RECONCILIATION',
-          module: 'transactions',
-          entityType: 'Transaction',
-          entityId: transactionId,
-          beforeState: before,
-          afterState: { reconciliationStatus: ReconciliationStatus.IGNORED },
-          result: 'SUCCESS',
-        },
-      });
-    });
-
-    const d = new Date(capturedDate!);
-    await this.upsertSummaryForMonth(condominiumId, d.getUTCFullYear(), d.getUTCMonth() + 1);
+    await this.lifecycle.ignoreTransaction(condominiumId, transactionId, userId);
   }
 
   async reopenTransaction(
@@ -1789,198 +1480,15 @@ export class ClassificationService {
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    let capturedDate: Date | undefined;
-    let capturedCalendarEventId: string | null | undefined;
-
-    await this.prisma.$transaction(async (prisma) => {
-      const tx = await prisma.transaction.findFirst({
-        where: { id: transactionId, condominiumId },
-      });
-      if (!tx) throw new NotFoundException('Transaction not found');
-
-      if (tx.reconciliationStatus === ReconciliationStatus.PENDING) {
-        throw new BadRequestException({
-          code: 'INVALID_STATE_TRANSITION',
-          reason: 'Transaction is already PENDING and cannot be reopened.',
-        });
-      }
-
-      capturedDate = tx.transactionDate;
-      capturedCalendarEventId = tx.matchedCalendarEventId;
-      const before = { reconciliationStatus: tx.reconciliationStatus };
-
-      const result = await prisma.transaction.updateMany({
-        where: { id: transactionId, condominiumId, updatedAt: tx.updatedAt },
-        data: {
-          reconciliationStatus: ReconciliationStatus.PENDING,
-          reconciledById: null,
-          reconciledAt: null,
-        },
-      });
-
-      if (result.count === 0) {
-        throw new ConflictException({
-          code: 'STALE_OVERRIDE',
-          reason: 'Transaction was modified by another user. Refresh and try again.',
-        });
-      }
-
-      await prisma.auditLog.create({
-        data: {
-          condominiumId,
-          userId,
-          action: 'TRANSACTION_REOPENED',
-          actionCategory: 'RECONCILIATION',
-          module: 'transactions',
-          entityType: 'Transaction',
-          entityId: transactionId,
-          beforeState: before,
-          afterState: { reconciliationStatus: ReconciliationStatus.PENDING },
-          result: 'SUCCESS',
-        },
-      });
-    });
-
-    const d = new Date(capturedDate!);
-    await this.recomputeMonths(condominiumId, [
-      `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`,
-    ]);
-
-    if (capturedCalendarEventId) {
-      await this.unmarkTerraceEventPaid(capturedCalendarEventId, transactionId, condominiumId, userId);
-    }
+    await this.lifecycle.reopenTransaction(condominiumId, transactionId, userId);
   }
 
-  // ENGINE-019: the bulk write asserts the expected current status (a bulk
-  // approve no longer silently overrides a fresh IGNORE), terrace bookings
-  // are marked PAID on bulk approve (parity with single approve), and every
-  // side effect — terrace marking/revert, audit log — runs inside the same
-  // transaction so a late failure rolls the whole batch back. Rows that
-  // changed status concurrently are skipped and reported, not overwritten.
   async bulkReconcile(
     condominiumId: string,
     ids: string[],
     action: 'approve' | 'ignore' | 'reopen',
     userId: string,
   ): Promise<{ affected: number; skipped: number; requested: number }> {
-    // Verify all IDs belong to this condominium (IDOR protection)
-    const existing = await this.prisma.transaction.findMany({
-      where: { id: { in: ids }, condominiumId },
-      select: { id: true, transactionDate: true },
-    });
-
-    if (existing.length !== ids.length) {
-      throw new ForbiddenException('One or more transactions do not belong to this condominium');
-    }
-
-    const statusMap: Record<string, ReconciliationStatus> = {
-      approve: ReconciliationStatus.APPROVED,
-      ignore: ReconciliationStatus.IGNORED,
-      reopen: ReconciliationStatus.PENDING,
-    };
-    const newStatus = statusMap[action];
-    const now = new Date();
-
-    // approve/ignore only act on PENDING rows; reopen only on settled ones.
-    const statusPrecondition =
-      action === 'reopen'
-        ? { not: ReconciliationStatus.PENDING }
-        : ReconciliationStatus.PENDING;
-
-    const actionMap: Record<string, string> = {
-      approve: 'TRANSACTIONS_BULK_APPROVED',
-      ignore: 'TRANSACTIONS_BULK_IGNORED',
-      reopen: 'TRANSACTIONS_BULK_REOPENED',
-    };
-
-    let affected = 0;
-
-    await this.prisma.$transaction(async (prisma) => {
-      // Re-read eligibility inside the transaction so the terrace side
-      // effects below act on the same row set the guarded write touches.
-      const eligible = await prisma.transaction.findMany({
-        where: { id: { in: ids }, condominiumId, reconciliationStatus: statusPrecondition },
-        select: { id: true, reconciliationStatus: true, matchedCalendarEventId: true },
-      });
-
-      const result = await prisma.transaction.updateMany({
-        where: {
-          id: { in: eligible.map((t) => t.id) },
-          condominiumId,
-          reconciliationStatus: statusPrecondition,
-        },
-        data: {
-          reconciliationStatus: newStatus,
-          reconciledById: action === 'reopen' ? null : userId,
-          reconciledAt: action === 'reopen' ? null : now,
-        },
-      });
-      affected = result.count;
-
-      if (action === 'approve') {
-        // Terrace parity with single approve (ENGINE-019): linked bookings
-        // are marked PAID in the same transaction as the approval.
-        for (const t of eligible) {
-          if (t.matchedCalendarEventId) {
-            await this.markTerraceEventPaid(
-              t.matchedCalendarEventId,
-              t.id,
-              condominiumId,
-              userId,
-              prisma,
-            );
-          }
-        }
-      }
-
-      if (action === 'reopen') {
-        for (const t of eligible) {
-          if (
-            t.matchedCalendarEventId &&
-            t.reconciliationStatus === ReconciliationStatus.APPROVED
-          ) {
-            await this.unmarkTerraceEventPaid(
-              t.matchedCalendarEventId,
-              t.id,
-              condominiumId,
-              userId,
-              prisma,
-            );
-          }
-        }
-      }
-
-      await prisma.auditLog.create({
-        data: {
-          condominiumId,
-          userId,
-          action: actionMap[action],
-          actionCategory: 'RECONCILIATION',
-          module: 'transactions',
-          afterState: {
-            ids,
-            newStatus,
-            requested: ids.length,
-            affected,
-            skipped: ids.length - affected,
-          },
-          result: 'SUCCESS',
-          description: `Bulk ${action}: ${affected} of ${ids.length} transactions`,
-        },
-      });
-    });
-
-    // Recalculate summaries for all affected months (deduped, sequential).
-    // Post-commit like the single-row paths: derived data behind its own
-    // advisory lock, recomputable if this step fails.
-    await this.recomputeMonths(
-      condominiumId,
-      existing.map((tx) => {
-        const d = new Date(tx.transactionDate);
-        return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
-      }),
-    );
-
-    return { affected, skipped: ids.length - affected, requested: ids.length };
+    return this.lifecycle.bulkReconcile(condominiumId, ids, action, userId);
   }
 }
