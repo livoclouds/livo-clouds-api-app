@@ -23,6 +23,7 @@ import type { ImportBatch } from '@prisma/client';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { AuditService } from '../../src/modules/audit/audit.service';
 import { BankProfilesService } from '../../src/modules/bank-profiles/bank-profiles.service';
+import { CalendarService } from '../../src/modules/calendar/calendar.service';
 import { ClassificationService } from '../../src/modules/classification/classification.service';
 import { BatchClassificationService } from '../../src/modules/classification/batch-classification.service';
 import { ManualClassificationService } from '../../src/modules/classification/manual-classification.service';
@@ -54,6 +55,10 @@ export interface PipelineContext {
   prisma: PrismaService;
   classification: ClassificationService;
   dashboard: DashboardService;
+  /** Calendar safety net (CAL-007): real CalendarService against the test DB. */
+  calendar: CalendarService;
+  /** Calendar safety net (CAL-007/CAL-022): approve/reopen lifecycle entrypoint. */
+  reconciliation: ReconciliationLifecycleService;
 }
 
 /** Boots the minimal NestJS context and connects PrismaService to the test DB. */
@@ -74,6 +79,10 @@ export async function createPipelineContext(): Promise<PipelineContext> {
       ManualClassificationService,
       ClassificationService,
       DashboardService,
+      // Calendar safety net (CAL-007): CalendarService + its AuditService
+      // dependency, exercised against the same real Postgres.
+      AuditService,
+      CalendarService,
     ],
   }).compile();
 
@@ -85,6 +94,8 @@ export async function createPipelineContext(): Promise<PipelineContext> {
     prisma: moduleRef.get(PrismaService),
     classification: moduleRef.get(ClassificationService),
     dashboard: moduleRef.get(DashboardService),
+    calendar: moduleRef.get(CalendarService),
+    reconciliation: moduleRef.get(ReconciliationLifecycleService),
   };
 }
 
@@ -247,6 +258,7 @@ export async function resetDb(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
     `TRUNCATE TABLE
        "audit_logs",
+       "calendar_events",
        "transactions",
        "financial_monthly_summaries",
        "reconciliation_rules",
