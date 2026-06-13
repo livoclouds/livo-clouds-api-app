@@ -84,15 +84,35 @@ const MIN_SIGNAL_FOR_MATCH = 1;
 
 const normalizeStr = normalizeTerraceKeyword;
 
+// CAL-036: short keywords (≤4 normalized chars) are matched on word boundaries
+// rather than as raw substrings, so a 3-char stem like "pad" no longer fires on
+// "padel"/"padre"/"empadronado". Longer keywords keep substring matching so
+// multi-word phrases ("renta terraza") and inflections still match. Keywords are
+// admin-supplied and bounded in length; the escaped `\b…\b` pattern has no nested
+// quantifiers, so there is no ReDoS surface.
+const SHORT_KEYWORD_MAX_LENGTH = 4;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function keywordMatches(normalizedDescription: string, keyword: string): boolean {
+  if (!keyword) return false;
+  if (keyword.length > SHORT_KEYWORD_MAX_LENGTH) {
+    return normalizedDescription.includes(keyword);
+  }
+  return new RegExp(`\\b${escapeRegExp(keyword)}\\b`).test(normalizedDescription);
+}
+
 function hasTerraceKeyword(
   normalizedDescription: string,
   candidateKeywords: string[] = [],
   globalKeywords: string[] = [],
 ): boolean {
   return (
-    TERRACE_KEYWORDS.some((kw) => normalizedDescription.includes(kw)) ||
-    globalKeywords.some((kw) => normalizedDescription.includes(kw)) ||
-    candidateKeywords.some((kw) => normalizedDescription.includes(kw))
+    TERRACE_KEYWORDS.some((kw) => keywordMatches(normalizedDescription, kw)) ||
+    globalKeywords.some((kw) => keywordMatches(normalizedDescription, kw)) ||
+    candidateKeywords.some((kw) => keywordMatches(normalizedDescription, kw))
   );
 }
 

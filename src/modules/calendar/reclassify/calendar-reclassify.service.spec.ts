@@ -3,12 +3,16 @@ import type { CalendarTerraceChangedPayload } from '../events/calendar-terrace-c
 
 const CONDOMINIUM_ID = 'cond-1';
 const EVENT_ID = 'evt-1';
+const ACTOR_ID = 'user-1';
 
 interface PrismaMock {
   transaction: { findMany: jest.Mock };
 }
 interface ClassificationMock {
   reclassifyBatch: jest.Mock;
+}
+interface AuditMock {
+  log: jest.Mock;
 }
 
 function makePrismaMock(rows: Array<{ importBatchId: string }> = []): PrismaMock {
@@ -17,9 +21,16 @@ function makePrismaMock(rows: Array<{ importBatchId: string }> = []): PrismaMock
 function makeClassificationMock(): ClassificationMock {
   return { reclassifyBatch: jest.fn().mockResolvedValue({ total: 0, classified: 0, needsReview: 0, unmatched: 0 }) };
 }
+function makeAuditMock(): AuditMock {
+  return { log: jest.fn().mockResolvedValue(undefined) };
+}
 
-function makeService(prisma: PrismaMock, classification: ClassificationMock): CalendarReclassifyService {
-  return new CalendarReclassifyService(prisma as never, classification as never);
+function makeService(
+  prisma: PrismaMock,
+  classification: ClassificationMock,
+  audit: AuditMock = makeAuditMock(),
+): CalendarReclassifyService {
+  return new CalendarReclassifyService(prisma as never, classification as never, audit as never);
 }
 
 function payload(overrides: Partial<CalendarTerraceChangedPayload> = {}): CalendarTerraceChangedPayload {
@@ -30,6 +41,7 @@ function payload(overrides: Partial<CalendarTerraceChangedPayload> = {}): Calend
     windowStart: new Date('2026-05-15T00:00:00Z'),
     windowEnd: new Date('2026-06-15T00:00:00Z'),
     reason: 'create',
+    actorUserId: ACTOR_ID,
     ...overrides,
   };
 }
@@ -90,21 +102,59 @@ describe('CalendarReclassifyService.run', () => {
     expect(classification.reclassifyBatch).toHaveBeenCalledTimes(2);
   });
 
-  it('skips a batch already marked in-flight (best-effort dedupe)', async () => {
+  it('requeues a batch already in-flight instead of dropping it (CAL-033)', async () => {
     const prisma = makePrismaMock([
       { importBatchId: 'batch-A' },
       { importBatchId: 'batch-B' },
     ]);
     const classification = makeClassificationMock();
     const service = makeService(prisma, classification);
+    // Don't run real timers — assert the requeue was scheduled, not dropped.
+    const scheduleSpy = jest
+      .spyOn(service as unknown as { scheduleRequeue: () => void }, 'scheduleRequeue')
+      .mockImplementation(() => undefined);
 
     // Pre-seed the in-flight set: same key the service computes.
     (service as unknown as { inFlight: Set<string> }).inFlight.add(`${CONDOMINIUM_ID}:batch-A`);
 
     await service.run(payload());
 
+    // batch-B still runs immediately…
     expect(classification.reclassifyBatch).toHaveBeenCalledTimes(1);
     expect(classification.reclassifyBatch).toHaveBeenCalledWith(CONDOMINIUM_ID, 'batch-B', null);
+    // …and batch-A is requeued (attempt 1), not silently skipped.
+    expect(scheduleSpy).toHaveBeenCalledTimes(1);
+    expect(scheduleSpy).toHaveBeenCalledWith(expect.anything(), ['batch-A'], 1);
+  });
+
+  it('writes a system-attributed audit row for the engine-triggered run (CAL-039)', async () => {
+    const prisma = makePrismaMock([{ importBatchId: 'batch-A' }]);
+    const classification = makeClassificationMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, classification, audit);
+
+    await service.run(payload({ reason: 'update:metadata', action: 'update' }));
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    const row = audit.log.mock.calls[0][0];
+    expect(row.userId).toBe(ACTOR_ID);
+    expect(row.action).toBe('CALENDAR_AUTO_RECLASSIFY');
+    expect(row.module).toBe('calendar');
+    expect(row.entityId).toBe(EVENT_ID);
+    expect(row.afterState.triggeredBy).toBe('system-reclassify');
+    expect(row.afterState.succeeded).toBe(1);
+  });
+
+  it('skips the audit row when no FK-safe actor is present', async () => {
+    const prisma = makePrismaMock([{ importBatchId: 'batch-A' }]);
+    const classification = makeClassificationMock();
+    const audit = makeAuditMock();
+    const service = makeService(prisma, classification, audit);
+
+    await service.run(payload({ actorUserId: null }));
+
+    expect(classification.reclassifyBatch).toHaveBeenCalledTimes(1);
+    expect(audit.log).not.toHaveBeenCalled();
   });
 
 });

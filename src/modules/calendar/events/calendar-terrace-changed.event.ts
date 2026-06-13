@@ -7,4 +7,10 @@ export interface CalendarTerraceChangedPayload {
   windowStart: Date;
   windowEnd: Date;
   reason: string;
+  // CAL-039: the user whose calendar write triggered this re-match. The engine
+  // reclassify runs outside any HTTP request, so audit_logs.userId (a required
+  // FK to users) is attributed to this actor with `triggeredBy:'system-reclassify'`
+  // in afterState. Optional so non-user-driven emitters degrade to an un-audited
+  // run rather than an FK failure.
+  actorUserId?: string | null;
 }
