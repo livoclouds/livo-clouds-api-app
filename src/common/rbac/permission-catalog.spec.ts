@@ -72,7 +72,7 @@ describe('permission-catalog', () => {
       expect(admin).not.toContain('files.delete');
     });
 
-    it('calendar visibility tiers (Phase 4): auditor sees council, resident/guard do not — CAL-001', () => {
+    it('calendar visibility tiers (Phase 4): auditor + supervisor see council, resident/guard do not — CAL-001 / CAL-067', () => {
       const auditor = presetForRole('READ_ONLY');
       const admin = presetForRole('TENANT_ADMIN');
       const resident = presetForRole('RESIDENT');
@@ -85,8 +85,12 @@ describe('permission-catalog', () => {
       // Administrator: full visibility (inherits both tiers from ALL_TENANT).
       expect(admin).toContain('calendar.viewCouncil');
       expect(admin).toContain('calendar.viewPrivate');
-      // Resident / guard / supervisor: PUBLIC only — no view tiers granted.
-      for (const preset of [resident, guard, supervisor]) {
+      // Supervisor (CAL-067): oversight role sees the council tier — at least
+      // parity with the auditor it oversees — but not residents' PRIVATE events.
+      expect(supervisor).toContain('calendar.viewCouncil');
+      expect(supervisor).not.toContain('calendar.viewPrivate');
+      // Resident / guard: PUBLIC only — no view tiers granted.
+      for (const preset of [resident, guard]) {
         expect(preset).not.toContain('calendar.viewCouncil');
         expect(preset).not.toContain('calendar.viewPrivate');
       }

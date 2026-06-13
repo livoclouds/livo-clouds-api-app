@@ -5,6 +5,7 @@ import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CondominiumAccessGuard } from '../../common/guards/condominium-access.guard';
+import { RbacService } from '../../common/rbac/rbac.service';
 import { JwtPayload } from '../../common/types';
 import { UpdateFeesSettingsDto } from './dto/update-fees-settings.dto';
 import { UpdateGeneralSettingsDto } from './dto/update-general-settings.dto';
@@ -16,12 +17,24 @@ import { LogoUploadFile, SettingsService } from './settings.service';
 @Controller('condominiums/:condominiumSlug/settings')
 @UseGuards(CondominiumAccessGuard)
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly rbac: RbacService,
+  ) {}
 
+  // CAL-053: GET /settings stays membership-accessible (the web app reads general /
+  // branding / fee settings here app-wide), but the terrace pricing fields are
+  // redacted for callers without settings.read / settings.update — so a RESIDENT or
+  // GUARD can no longer read terrace pricing one endpoint over and bypass the
+  // calendar module's own redactTerraceFinancials. Permissions resolve live per
+  // request (the JWT carries only a stale role), mirroring CalendarController.
   @Get()
   @ApiOperation({ summary: 'Get condominium settings' })
-  findOne(@Request() req: { condominiumId: string }) {
-    return this.settingsService.findOne(req.condominiumId);
+  async findOne(
+    @Request() req: { condominiumId: string; user: JwtPayload },
+  ) {
+    const perms = await this.rbac.getEffectivePermissions(req.user.sub);
+    return this.settingsService.findOne(req.condominiumId, perms);
   }
 
   @Patch('profile')

@@ -202,6 +202,12 @@ const ADMIN_PERMS = ALL_TENANT.filter(
 // management, no condominium creation.
 const SUPERVISOR_PERMS = [
   ...READ('tenant'),
+  // Calendar oversight (CAL-067): viewCouncil tier so the supervisor sees PUBLIC +
+  // COUNCIL_ONLY governance events — at least parity with the READ_ONLY auditor it
+  // oversees. NOT viewPrivate: oversight does not extend to residents' PRIVATE
+  // personal bookings. (viewCouncil's action is 'viewCouncil', so the READ() sweep
+  // above does not grant it — it must be listed explicitly.)
+  'calendar.viewCouncil',
   // Dossier: standard + restricted (NOT legal-confidential, NOT manage).
   'residents.dossier.view',
   'residents.dossier.viewRestricted',

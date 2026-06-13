@@ -64,6 +64,37 @@ function matchesDeclaredMime(buf: Buffer, mime: string): boolean {
   return false;
 }
 
+// CAL-053: terrace pricing config exposed by GET /settings. These are the same
+// amounts the calendar module redacts on terrace events (redactTerraceFinancials);
+// leaving them readable here let any condominium member bypass that redaction one
+// endpoint over. Fee amounts (ordinary/extraordinary/late) are intentionally NOT
+// redacted — residents legitimately need to see their own dues.
+const REDACTED_SETTINGS_FINANCIAL_FIELDS = [
+  'terraceRentalAmount',
+  'terraceSecurityDepositAmount',
+] as const;
+
+/** A caller may read terrace pricing only with settings.read or settings.update. */
+function canViewSettingsFinancials(perms?: ReadonlySet<string>): boolean {
+  return perms ? perms.has('settings.read') || perms.has('settings.update') : false;
+}
+
+/**
+ * Null out terrace pricing fields for callers without settings read/update.
+ * Fail-closed: an absent permission set redacts (no real caller omits it).
+ */
+function redactSettingsFinancials<T extends Record<string, unknown>>(
+  settings: T,
+  perms?: ReadonlySet<string>,
+): T {
+  if (canViewSettingsFinancials(perms)) return settings;
+  const safe: Record<string, unknown> = { ...settings };
+  for (const field of REDACTED_SETTINGS_FINANCIAL_FIELDS) {
+    if (field in safe) safe[field] = null;
+  }
+  return safe as T;
+}
+
 @Injectable()
 export class SettingsService {
   private readonly logger = new Logger(SettingsService.name);
@@ -74,7 +105,9 @@ export class SettingsService {
     private settingsCache: SettingsCacheService,
   ) {}
 
-  async findOne(condominiumId: string) {
+  // CAL-053: `perms` is the caller's effective permission set (resolved live by the
+  // controller). Terrace pricing is redacted unless it holds settings.read/update.
+  async findOne(condominiumId: string, perms?: ReadonlySet<string>) {
     // Phase 6 (A5): served from the tenant-scoped TTL cache. The raw row is
     // cached; the presigned logo URL below is always signed fresh on read.
     const settings = await this.settingsCache.getSettings(condominiumId);
@@ -96,7 +129,8 @@ export class SettingsService {
       );
     }
 
-    return { ...rest, logoUrl, name: condominium.name, primaryColor: condominium.primaryColor, slug: condominium.slug };
+    const body = { ...rest, logoUrl, name: condominium.name, primaryColor: condominium.primaryColor, slug: condominium.slug };
+    return redactSettingsFinancials(body, perms);
   }
 
   async updateProfile(condominiumId: string, dto: UpdateProfileDto) {
