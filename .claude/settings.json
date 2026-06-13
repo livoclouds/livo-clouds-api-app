@@ -3,6 +3,17 @@
     "bgIsolation": "worktree"
   },
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/skills/clean-architecture-guardian/hooks/detect-architecture-intent.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|MultiEdit|Write",
@@ -10,6 +21,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/skills/api-endpoint-guardian/hooks/track-endpoints.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/skills/clean-architecture-guardian/hooks/track-architecture.sh",
             "timeout": 5
           }
         ]
@@ -21,6 +37,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/skills/api-endpoint-guardian/hooks/check-endpoints.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/skills/clean-architecture-guardian/hooks/check-architecture.sh",
             "timeout": 10
           }
         ]
