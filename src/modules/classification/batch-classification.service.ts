@@ -36,6 +36,17 @@ import { classifyTransaction } from './engine/transaction-classifier';
  */
 const CANDIDATE_PAGE_SIZE = 500;
 
+/**
+ * Classify/persist chunk size. Each chunk is one atomic `$transaction`
+ * (REV-017) AND one progress checkpoint — `processedCount` only advances at
+ * chunk boundaries, so this constant also governs how finely the post-import
+ * progress bar moves while the web client polls. Kept small so a typical bank
+ * statement (hundreds of rows) yields many progress steps instead of one or
+ * two coarse jumps; the extra per-chunk BEGIN/COMMIT overhead is negligible at
+ * this scale and the classification CPU is identical.
+ */
+const CLASSIFY_CHUNK_SIZE = 50;
+
 @Injectable()
 export class BatchClassificationService {
   private readonly logger = new Logger(BatchClassificationService.name);
@@ -267,9 +278,8 @@ export class BatchClassificationService {
     // drive a real per-transaction progress bar during the "classifying" phase.
     await this.writeProgress(batchId, 0);
 
-    const CHUNK = 200;
-    for (let i = 0; i < transactions.length; i += CHUNK) {
-      const chunk = transactions.slice(i, i + CHUNK);
+    for (let i = 0; i < transactions.length; i += CLASSIFY_CHUNK_SIZE) {
+      const chunk = transactions.slice(i, i + CLASSIFY_CHUNK_SIZE);
       // Single timestamp per chunk so auto-matched rows with identical
       // payloads can collapse into the same updateMany group. The roadmap
       // (Phase 3 validation) explicitly excludes matchedAt from the
