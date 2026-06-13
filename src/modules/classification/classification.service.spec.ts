@@ -930,7 +930,9 @@ describe('ClassificationService.classifyBatch — REV-017 chunk atomicity', () =
     const prisma = makePrismaMock();
     const service = makeService(prisma);
 
-    // 250 transactions → two chunks of 200 + 50 = two $transaction invocations.
+    // 250 transactions → five chunks of 50, one $transaction per chunk. The run
+    // aborts on the second chunk's forced failure, so $transaction is invoked
+    // exactly twice (chunk 1 commits, chunk 2 throws, chunks 3-5 never run).
     const txs = Array.from({ length: 250 }, (_, i) => ({
       id: `tx-${i}`,
       description: 'CARGO ' + i,
@@ -1078,7 +1080,8 @@ describe('ClassificationService.classifyBatch — progress counter', () => {
     const prisma = makePrismaMock();
     const service = makeService(prisma);
 
-    // 450 transactions → 3 chunks of 200/200/50.
+    // 450 transactions → 9 chunks of 50 (finer chunking gives the post-import
+    // progress bar many steps instead of one or two coarse jumps).
     const txs = Array.from({ length: 450 }, (_v, i) => ({
       id: `tx-${i}`,
       description: 'pago generico',
@@ -1097,7 +1100,7 @@ describe('ClassificationService.classifyBatch — progress counter', () => {
     // First write is the reset, last reaches the total, monotonically non-decreasing.
     expect(processed[0]).toBe(0);
     expect(processed[processed.length - 1]).toBe(450);
-    expect(processed).toEqual([0, 200, 400, 450]);
+    expect(processed).toEqual([0, 50, 100, 150, 200, 250, 300, 350, 400, 450]);
     prisma.importBatch.update.mock.calls.forEach((args) => {
       expect(args[0].where).toEqual({ id: BATCH_ID });
     });
