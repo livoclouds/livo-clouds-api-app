@@ -195,8 +195,17 @@ and `prisma/seed.ts`.**
 
 ## Git & Version Control Rules
 
-**Commits and pushes are NEVER performed automatically — no exceptions.**
-After completing any implementation, refactor, fix, or documentation update — no matter how small — do not run `git add`, `git commit`, or `git push` unless the user explicitly requests it in that same message or a follow-up message. A prior commit instruction in the same session does NOT carry over to subsequent changes. Each commit requires its own fresh, explicit instruction. When in doubt: make the code changes, tell the user what changed, and wait.
+**Commits and pushes are never performed automatically for ad-hoc work.**
+After completing any implementation, refactor, fix, or documentation update — no matter how small — do not run `git add`, `git commit`, or `git push` on your own initiative. A prior commit instruction in the same session does NOT carry over to subsequent ad-hoc changes. When in doubt: make the code changes, tell the user what changed, and wait.
+
+**Sanctioned exception — the `agent-git-finalize` skill.** Shipping completed
+agent/background work through `agent-git-finalize` (whether the user invokes it
+or its Stop-hook nudges it on unfinalized work) **is** an explicit instruction to
+commit → push → PR → merge per its config. That flow is the one approved path
+that may commit/push without a separate per-commit prompt; it carries its own
+gates (sensitive-file guard, CI/regression gating, post-merge truth-check). This
+exception covers *only* `agent-git-finalize` — every other commit/push still
+requires a fresh, explicit user instruction.
 
 **Never add Claude as a co-author.**
 When the user explicitly asks to commit, the commit message must never include any `Co-Authored-By` trailer or any other attribution to Claude, an AI, or any automated tool. The commit must appear as solely authored by the git user configured in the repository.

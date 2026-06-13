@@ -75,12 +75,6 @@
       "Read(~/Code/github/livoclouds/livo-clouds-web-app/**)",
       "Read(~/code/github/livoclouds/livo-clouds-web-app/**)"
     ],
-    "ask": [
-      "Bash(git commit)",
-      "Bash(git commit *)",
-      "Bash(git push)",
-      "Bash(git push *)"
-    ],
     "deny": [
       "Bash(PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=*)",
       "Bash(PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=* *)"

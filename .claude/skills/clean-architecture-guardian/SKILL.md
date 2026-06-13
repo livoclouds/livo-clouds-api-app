@@ -95,21 +95,7 @@ not block on it, but you review it whenever this skill runs.
 
 ## Skills KB reporting
 
-This skill participates in the local **Skills Knowledge Base** (`~/.claude/skills/_shared/skill-kb/`).
-If during a run you hit an **unrecoverable failure** (no retry / safe-continue path) or
-discover a **valuable, generalizable** limitation, missing validation, opportunity, or
-improvement, record it — but ONLY when it passes the gate (never log normal/successful
-runs; a run with zero findings is normal). Check first so you don't re-record or
-re-fix something already handled:
-
-```bash
-bash ~/.claude/skills/_shared/skill-kb/lookup-finding.sh \
-  --skill clean-architecture-guardian --type <type> --title "<canonical problem statement>"
-bash ~/.claude/skills/_shared/skill-kb/report-finding.sh \
-  --skill clean-architecture-guardian --type <type> --title "<canonical problem statement>" \
-  --severity <low|medium|high|critical> --evidence "<path:line>" --note "<short why>"
-```
-
-`<type>` ∈ `issue · unrecoverable-failure · limitation · opportunity · improvement`.
-Full gate, categories, and resolve/regression rules:
-`~/.claude/skills/_shared/skill-kb/CONTRACT.md`.
+Only on an **unrecoverable failure** or a **valuable, generalizable** finding
+(never on normal/successful runs), check-then-record via
+`~/.claude/skills/_shared/skill-kb/{lookup,report}-finding.sh --skill <name>`.
+Full gate, types, and resolve rules: `~/.claude/skills/_shared/skill-kb/CONTRACT.md`.
