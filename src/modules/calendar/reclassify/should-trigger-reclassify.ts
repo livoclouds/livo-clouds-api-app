@@ -13,6 +13,26 @@ import type { CalendarTerraceChangedPayload } from '../events/calendar-terrace-c
 const TERRACE_DATE_WINDOW_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// CAL-034: the matcher (terrace-booking-matcher.ts) compares against
+// `transactionDate` on UTC-day-inclusive bounds, while bank transactions are
+// stored at UTC midnight. If the trigger window used exact event timestamps,
+// a transaction on the boundary day could fall outside `findAffectedBatches`
+// even though the matcher would consider it — so a boundary-day batch would be
+// silently missed by auto-reclassify. Snapping windowStart down to the start of
+// its UTC day and windowEnd up to the end of its UTC day makes the batch query a
+// guaranteed superset of the matcher's candidate window.
+function startOfUtcDay(d: Date): Date {
+  const out = new Date(d.getTime());
+  out.setUTCHours(0, 0, 0, 0);
+  return out;
+}
+
+function endOfUtcDay(d: Date): Date {
+  const out = new Date(d.getTime());
+  out.setUTCHours(23, 59, 59, 999);
+  return out;
+}
+
 export interface TerraceTriggerSnapshot {
   eventType: EventType;
   status: EventStatus;
@@ -56,8 +76,8 @@ function isLiveTerrace(snap: TerraceTriggerSnapshot): boolean {
 
 function windowFromStart(startDate: Date): { windowStart: Date; windowEnd: Date } {
   return {
-    windowStart: new Date(startDate.getTime() - TERRACE_DATE_WINDOW_DAYS * DAY_MS),
-    windowEnd: new Date(startDate.getTime()),
+    windowStart: startOfUtcDay(new Date(startDate.getTime() - TERRACE_DATE_WINDOW_DAYS * DAY_MS)),
+    windowEnd: endOfUtcDay(startDate),
   };
 }
 
@@ -65,8 +85,8 @@ function unionWindow(a: Date, b: Date): { windowStart: Date; windowEnd: Date } {
   const earliest = a.getTime() < b.getTime() ? a : b;
   const latest = a.getTime() > b.getTime() ? a : b;
   return {
-    windowStart: new Date(earliest.getTime() - TERRACE_DATE_WINDOW_DAYS * DAY_MS),
-    windowEnd: new Date(latest.getTime()),
+    windowStart: startOfUtcDay(new Date(earliest.getTime() - TERRACE_DATE_WINDOW_DAYS * DAY_MS)),
+    windowEnd: endOfUtcDay(latest),
   };
 }
 

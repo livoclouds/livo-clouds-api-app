@@ -129,9 +129,12 @@ export class CalendarService {
   private emitTerraceChange(
     trigger: TriggerCore | null,
     action: CalendarTerraceChangedPayload['action'],
+    actorUserId: string,
   ): void {
     if (!trigger) return;
-    const payload: CalendarTerraceChangedPayload = { ...trigger, action };
+    // CAL-039: carry the triggering user so the async reclassify run can write
+    // an FK-safe audit row attributed to them.
+    const payload: CalendarTerraceChangedPayload = { ...trigger, action, actorUserId };
     this.events.emit(CALENDAR_TERRACE_CHANGED, payload);
   }
 
@@ -481,6 +484,7 @@ export class CalendarService {
     this.emitTerraceChange(
       shouldTriggerReclassifyOnCreate(condominiumId, toTerraceTriggerSnapshot(event), event.id),
       'create',
+      userId,
     );
 
     this.emitNotification(CALENDAR_EVENT_CREATED_EVENT, {
@@ -712,6 +716,7 @@ export class CalendarService {
         id,
       ),
       'update',
+      userId,
     );
 
     // A terrace booking that transitions into CONFIRMED is a booking
@@ -778,6 +783,7 @@ export class CalendarService {
     this.emitTerraceChange(
       shouldTriggerReclassifyOnDelete(condominiumId, toTerraceTriggerSnapshot(existing), id),
       'delete',
+      userId,
     );
 
     this.emitNotification(CALENDAR_EVENT_CANCELLED_EVENT, {

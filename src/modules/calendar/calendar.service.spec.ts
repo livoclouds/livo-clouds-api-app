@@ -6,6 +6,18 @@ const CONDOMINIUM_ID = 'cond-1';
 const EVENT_ID = 'evt-1';
 const USER_ID = 'user-42';
 
+// CAL-034: reclassify windows are snapped to UTC-day bounds.
+function startOfUtcDay(d: Date): number {
+  const out = new Date(d.getTime());
+  out.setUTCHours(0, 0, 0, 0);
+  return out.getTime();
+}
+function endOfUtcDay(d: Date): number {
+  const out = new Date(d.getTime());
+  out.setUTCHours(23, 59, 59, 999);
+  return out.getTime();
+}
+
 // Phase 4: visibility derives from effective permissions, not the role claim.
 const PERMS_MANAGE: ReadonlySet<string> = new Set(['calendar.read', 'calendar.manage']);
 const PERMS_COUNCIL: ReadonlySet<string> = new Set(['calendar.read', 'calendar.viewCouncil']);
@@ -1079,10 +1091,11 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
     expect(payload.action).toBe('create');
     expect(payload.condominiumId).toBe(CONDOMINIUM_ID);
     const day = 24 * 60 * 60 * 1000;
+    // CAL-034: window snapped to UTC-day bounds (start-of-day .. end-of-day).
     expect(payload.windowStart.getTime()).toBe(
-      (created.startDate as Date).getTime() - 30 * day,
+      startOfUtcDay(new Date((created.startDate as Date).getTime() - 30 * day)),
     );
-    expect(payload.windowEnd.getTime()).toBe((created.startDate as Date).getTime());
+    expect(payload.windowEnd.getTime()).toBe(endOfUtcDay(created.startDate as Date));
   });
 
   it('does NOT emit on create for non-terrace events', async () => {
@@ -1151,11 +1164,12 @@ describe('CalendarService — Phase 5E auto-reclassify trigger', () => {
 
     expect(events.emit).toHaveBeenCalledTimes(1);
     const day = 24 * 60 * 60 * 1000;
+    // CAL-034: window snapped to UTC-day bounds (start-of-day .. end-of-day).
     expect(events.emit.mock.calls[0][1].windowStart.getTime()).toBe(
-      (before.startDate as Date).getTime() - 30 * day,
+      startOfUtcDay(new Date((before.startDate as Date).getTime() - 30 * day)),
     );
     expect(events.emit.mock.calls[0][1].windowEnd.getTime()).toBe(
-      (after.startDate as Date).getTime(),
+      endOfUtcDay(after.startDate as Date),
     );
   });
 
