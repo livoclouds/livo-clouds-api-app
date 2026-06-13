@@ -277,6 +277,13 @@ export class AuthService {
   async refresh(token: string, ctx?: AuthContext) {
     const startMs = Date.now();
 
+    // How long after a legitimate rotation a replay of the now-revoked token is
+    // treated as a benign concurrent-rotation race (cookie-update lag / a burst
+    // of parallel requests — guaranteed right after an inactivity-lock unlock,
+    // where the access token is always expired) instead of token theft. Short
+    // and narrow on purpose: see the rotation-grace branch below.
+    const ROTATION_GRACE_MS = 10_000;
+
     // Fetch without revokedAt filter so we can distinguish reuse from never-issued (LOG-011).
     const stored = await this.prisma.refreshToken.findFirst({
       where: { token },
@@ -301,8 +308,98 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
-    // Reuse detection: token exists but was already rotated — potential token theft (LOG-011).
+    const user = stored.user;
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: (user.roleRef?.key as UserRole) ?? UserRole.READ_ONLY,
+      condominiumId: user.condominiumId,
+      condominiumSlug: user.condominium?.slug ?? null,
+    };
+
+    // Shared response builder for both the normal-rotation and the rotation-grace
+    // paths, so the two can never drift in shape (UI prefs, RBAC context, etc.).
+    const buildResult = (accessToken: string, refreshToken: string) => ({
+      accessToken,
+      refreshToken,
+      sessionDuration: user.sessionDuration,
+      inactivityLockMinutes: user.inactivityLockMinutes,
+      // Re-seed UI preferences on rotation so a change made on another device
+      // (server is the source of truth) propagates to this session on next refresh.
+      uiPreferences: {
+        locale: user.uiPreference?.locale ?? null,
+        themeMode: user.uiPreference?.themeMode ?? UiThemeMode.SYSTEM,
+        primaryColor: user.uiPreference?.primaryColor ?? null,
+      },
+      condominiumDefaultLocale: user.condominium?.settings?.defaultLocale ?? null,
+      condominiumPrimaryColor: user.condominium?.primaryColor ?? null,
+      // Re-issue RBAC context on rotation so permission/role changes take effect
+      // on the next refresh without forcing a full re-login.
+      roleKey: user.roleRef?.key ?? null,
+      roleName: user.roleRef?.name ?? null,
+      permissions: resolveEffectivePermissions(user.roleRef, {
+        overrides: user.permissionOverrides as string[] | null,
+      }),
+    });
+
+    // Already-revoked token: either a benign concurrent-rotation replay
+    // (rotation grace) or genuine reuse/theft (LOG-011).
     if (stored.revokedAt !== null) {
+      // Rotation grace: the token was revoked by a legitimate rotation moments
+      // ago and its successor is still live. This is the cookie-update-lag /
+      // parallel-request burst the inactivity-lock unlock guarantees, NOT theft.
+      // Serve a fresh access token bound to the SUCCESSOR session (the lock is
+      // read from that row by sid) and return the successor's refresh token
+      // unchanged — the grace replay does NOT itself rotate, so it cannot be
+      // chained to keep a stolen token alive. The double-use is still audited.
+      const rotatedRecently =
+        !!stored.rotatedAt &&
+        Date.now() - stored.rotatedAt.getTime() <= ROTATION_GRACE_MS;
+      if (rotatedRecently && stored.replacedById) {
+        const successor = await this.prisma.refreshToken.findUnique({
+          where: { id: stored.replacedById },
+        });
+        if (
+          successor &&
+          successor.revokedAt === null &&
+          successor.expiresAt > new Date()
+        ) {
+          const accessToken = this.jwtService.sign({
+            ...payload,
+            sid: successor.id,
+          });
+          try {
+            await this.auditService.log({
+              userId: user.id,
+              condominiumId: user.condominiumId ?? undefined,
+              action: 'AUTH_REFRESH_ROTATION_GRACE',
+              actionCategory: 'AUTH',
+              module: 'auth',
+              result: 'WARNING',
+              description:
+                'Refresh token replayed within rotation grace; served successor session without rotation',
+              ipAddress: ctx?.ipAddress,
+              userAgent: ctx?.userAgent,
+            });
+          } catch {
+            // Audit failure must not block the grace response
+          }
+          this.logger.warn(
+            JSON.stringify({
+              event: 'auth.refresh.rotation_grace',
+              userId: user.id,
+              requestId: ctx?.requestId,
+              ip: ctx?.ipAddress,
+            }),
+          );
+          return buildResult(accessToken, successor.token);
+        }
+      }
+
+      // Reuse detection: a stale/unknown revoked token (no recent rotation, or
+      // its successor is gone) — potential token theft (LOG-011). Revoke the
+      // whole family and reject.
       await this.prisma.refreshToken.updateMany({
         where: { userId: stored.userId, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -335,21 +432,6 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { revokedAt: new Date() },
-    });
-
-    const user = stored.user;
-
-    const payload: JwtPayload = {
-      sub: user.id,
-      email: user.email,
-      role: (user.roleRef?.key as UserRole) ?? UserRole.READ_ONLY,
-      condominiumId: user.condominiumId,
-      condominiumSlug: user.condominium?.slug ?? null,
-    };
-
     // Carry the inactivity lock across rotation: a session that was explicitly
     // locked, or had been idle past the user's threshold, hands that lock to the
     // new session. This closes the bypass where simply letting the access token
@@ -362,7 +444,12 @@ export class AuthService {
       (stored.lastActivityAt !== null &&
         idleMs > user.inactivityLockMinutes * 60_000);
 
-    const { accessToken, refreshToken } = await this.generateTokens(
+    // Mint the successor FIRST, then revoke the predecessor stamping the rotation
+    // linkage (rotatedAt + replacedById → successor). Creating before revoking
+    // guarantees we never mark a token rotated without a committed successor, and
+    // never leave the user tokenless mid-rotation; it also makes the grace branch
+    // above able to resolve the replay to a live successor.
+    const { accessToken, refreshToken, sessionId } = await this.generateTokens(
       payload,
       wasLocked
         ? {
@@ -371,6 +458,15 @@ export class AuthService {
           }
         : undefined,
     );
+
+    await this.prisma.refreshToken.update({
+      where: { id: stored.id },
+      data: {
+        revokedAt: new Date(),
+        rotatedAt: new Date(),
+        replacedById: sessionId,
+      },
+    });
 
     try {
       await this.auditService.log({
@@ -396,28 +492,7 @@ export class AuthService {
       ip: ctx?.ipAddress,
     }));
 
-    return {
-      accessToken,
-      refreshToken,
-      sessionDuration: user.sessionDuration,
-      inactivityLockMinutes: user.inactivityLockMinutes,
-      // Re-seed UI preferences on rotation so a change made on another device
-      // (server is the source of truth) propagates to this session on next refresh.
-      uiPreferences: {
-        locale: user.uiPreference?.locale ?? null,
-        themeMode: user.uiPreference?.themeMode ?? UiThemeMode.SYSTEM,
-        primaryColor: user.uiPreference?.primaryColor ?? null,
-      },
-      condominiumDefaultLocale: user.condominium?.settings?.defaultLocale ?? null,
-      condominiumPrimaryColor: user.condominium?.primaryColor ?? null,
-      // Re-issue RBAC context on rotation so permission/role changes take effect
-      // on the next refresh without forcing a full re-login.
-      roleKey: user.roleRef?.key ?? null,
-      roleName: user.roleRef?.name ?? null,
-      permissions: resolveEffectivePermissions(user.roleRef, {
-        overrides: user.permissionOverrides as string[] | null,
-      }),
-    };
+    return buildResult(accessToken, refreshToken);
   }
 
   async logout(token: string, ctx?: AuthContext) {
@@ -1246,6 +1321,6 @@ export class AuthService {
       },
     });
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, sessionId };
   }
 }

@@ -480,6 +480,123 @@ describe('AuthService', () => {
         accessToken: expect.any(String),
       });
     });
+
+    it('stamps rotatedAt + replacedById on the predecessor during a legitimate rotation', async () => {
+      prisma.refreshToken.findFirst.mockResolvedValue(validStoredToken());
+
+      await service.refresh('valid-refresh-token');
+
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'token-uuid-1' },
+          data: expect.objectContaining({
+            revokedAt: expect.any(Date),
+            rotatedAt: expect.any(Date),
+            replacedById: expect.any(String),
+          }),
+        }),
+      );
+    });
+
+    // Rotation grace — the benign concurrent-rotation race that previously
+    // tripped reuse-detection and broke the inactivity-lock unlock (a locked
+    // session always has an expired access token, so the unlock + every other
+    // request on the page refresh the same token at once).
+    describe('rotation grace', () => {
+      const SUCCESSOR_ID = 'successor-uuid';
+      function gracedToken(overrides: Record<string, unknown> = {}) {
+        return revokedStoredToken({
+          rotatedAt: new Date(), // just rotated → within the 10s grace
+          replacedById: SUCCESSOR_ID,
+          ...overrides,
+        });
+      }
+      function liveSuccessor(overrides: Record<string, unknown> = {}) {
+        return {
+          id: SUCCESSOR_ID,
+          token: 'successor-refresh-token',
+          revokedAt: null,
+          expiresAt: new Date(Date.now() + 7 * 86_400_000),
+          ...overrides,
+        };
+      }
+
+      it('serves the successor session WITHOUT revoking the token family', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(gracedToken());
+        prisma.refreshToken.findUnique.mockResolvedValue(liveSuccessor());
+
+        const result = await service.refresh('rotated-token');
+
+        expect(result).toMatchObject({ refreshToken: 'successor-refresh-token' });
+        expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('binds the fresh access token to the successor sid', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(gracedToken());
+        prisma.refreshToken.findUnique.mockResolvedValue(liveSuccessor());
+
+        await service.refresh('rotated-token');
+
+        expect(jwt.sign).toHaveBeenCalledWith(
+          expect.objectContaining({ sid: SUCCESSOR_ID }),
+        );
+      });
+
+      it('writes an AUTH_REFRESH_ROTATION_GRACE (WARNING) audit on a grace hit', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(gracedToken());
+        prisma.refreshToken.findUnique.mockResolvedValue(liveSuccessor());
+
+        await service.refresh('rotated-token');
+
+        expect(audit.log).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'AUTH_REFRESH_ROTATION_GRACE',
+            result: 'WARNING',
+          }),
+        );
+        expect(audit.log).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'AUTH_REFRESH_REUSE_DETECTED' }),
+        );
+      });
+
+      it('falls back to family revoke when the replay is OUTSIDE the grace window', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(
+          gracedToken({ rotatedAt: new Date(Date.now() - 60_000) }),
+        );
+
+        await expect(service.refresh('rotated-token')).rejects.toThrow(
+          UnauthorizedException,
+        );
+        expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ userId: USER_ID, revokedAt: null }),
+          }),
+        );
+        // No successor lookup — the grace short-circuits before it.
+        expect(prisma.refreshToken.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('falls back to family revoke when the successor is already revoked (dead descendant)', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(gracedToken());
+        prisma.refreshToken.findUnique.mockResolvedValue(
+          liveSuccessor({ revokedAt: new Date() }),
+        );
+
+        await expect(service.refresh('rotated-token')).rejects.toThrow(
+          UnauthorizedException,
+        );
+        expect(prisma.refreshToken.updateMany).toHaveBeenCalled();
+      });
+
+      it('treats a legacy revoked token with no rotation linkage as reuse (fail-closed)', async () => {
+        prisma.refreshToken.findFirst.mockResolvedValue(revokedStoredToken());
+
+        await expect(service.refresh('rotated-token')).rejects.toThrow(
+          UnauthorizedException,
+        );
+        expect(prisma.refreshToken.updateMany).toHaveBeenCalled();
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -1063,6 +1180,27 @@ describe('AuthService', () => {
       );
     });
 
+    it('clears the screen lock (lockedAt:null) and refreshes activity on unlock', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(
+        activeSession({ lockedAt: new Date() }),
+      );
+      bcryptCompare.mockResolvedValue(true);
+
+      await service.unlock(USER_ID, SID, PASSWORD);
+
+      // The successor session is genuinely unlocked — no stale lockedAt that a
+      // post-unlock heartbeat / getSessionState would read back as locked.
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({
+            lockedAt: null,
+            lastActivityAt: expect.any(Date),
+          }),
+        }),
+      );
+    });
+
     it('increments failedUnlockAttempts and returns attemptsLeft on wrong password', async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(
         activeSession({ failedUnlockAttempts: 1 }),
@@ -1189,6 +1327,38 @@ describe('AuthService', () => {
 
       const result = await service.getSessionState(SID);
       expect(result).toEqual({ locked: true });
+    });
+
+    it('getSessionState reports locked:false after unlock cleared lockedAt with fresh activity', async () => {
+      // Post-unlock convergence: lockedAt is null and lastActivityAt is fresh,
+      // so the very next probe must NOT re-lock (this is what the web overlay
+      // re-reads after unlocking — a stale locked:true here drove the loop).
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lastActivityAt: new Date(),
+        lockedAt: null,
+        revokedAt: null,
+        user: { inactivityLockMinutes: 15 },
+      });
+
+      const result = await service.getSessionState(SID);
+      expect(result).toEqual({ locked: false });
+    });
+
+    it('heartbeat returns locked:false and refreshes activity when not locked', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        lockedAt: null,
+        revokedAt: null,
+      });
+
+      const result = await service.heartbeat(SID);
+
+      expect(result).toEqual({ locked: false });
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: SID },
+          data: expect.objectContaining({ lastActivityAt: expect.any(Date) }),
+        }),
+      );
     });
   });
 });
