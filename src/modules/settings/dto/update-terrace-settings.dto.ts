@@ -10,11 +10,17 @@ import {
   Matches,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import { normalizeTerraceKeywordList } from '../../classification/terrace-keywords.util';
 
 const MAX_TERRACE_GLOBAL_KEYWORDS = 20;
 const MAX_TERRACE_GLOBAL_KEYWORD_LENGTH = 100;
+// CAL-036: a 1–2 char keyword fires its substring signal on nearly every
+// description, flooding the review queue with ambiguity noise. Require a
+// meaningful stem; the matcher additionally word-boundary-matches short
+// (≤4 char) keywords so they only fire on whole words.
+const MIN_TERRACE_GLOBAL_KEYWORD_LENGTH = 3;
 
 export class UpdateTerraceSettingsDto {
   @ApiPropertyOptional()
@@ -65,6 +71,10 @@ export class UpdateTerraceSettingsDto {
   @IsArray()
   @ArrayMaxSize(MAX_TERRACE_GLOBAL_KEYWORDS)
   @IsString({ each: true })
+  @MinLength(MIN_TERRACE_GLOBAL_KEYWORD_LENGTH, {
+    each: true,
+    message: `each terrace keyword must be at least ${MIN_TERRACE_GLOBAL_KEYWORD_LENGTH} characters`,
+  })
   @MaxLength(MAX_TERRACE_GLOBAL_KEYWORD_LENGTH, { each: true })
   terraceGlobalKeywords?: string[];
 }

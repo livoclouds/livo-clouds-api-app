@@ -305,6 +305,55 @@ describe('matchTerraceBooking', () => {
     expect(result).toBeNull();
   });
 
+  // ── CAL-036 — short keywords match on word boundaries, not substrings ──────
+
+  describe('short-keyword word-boundary matching (CAL-036)', () => {
+    it('does NOT fire a short (≤4 char) keyword on a mere substring', () => {
+      // "pad" appears inside "padron" but is not a whole word → no keyword signal,
+      // and with no resident/unit signal the booking should not match at all.
+      const result = matchTerraceBooking(
+        input({
+          description: 'pago padron anual',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['pad'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).toBeNull();
+    });
+
+    it('fires a short keyword when it appears as a whole word', () => {
+      const result = matchTerraceBooking(
+        input({
+          description: 'renta pad junio',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['pad'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+    });
+
+    it('still substring-matches longer (>4 char) keywords for inflections', () => {
+      // "kiosko" (6 chars, not in the hardcoded list) must still match its plural
+      // "kioskos" as a substring — only short keywords gain the boundary guard.
+      const result = matchTerraceBooking(
+        input({
+          description: 'pago kioskos del mes',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['kiosko'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+    });
+  });
+
   // ── Phase 5F — Tenant-level global keywords ────────────────────────────────
 
   describe('global keywords (Phase 5F / KI-004)', () => {

@@ -15,6 +15,19 @@ const CONDOMINIUM_ID = 'cond-1';
 const EVENT_ID = 'evt-1';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// CAL-034: windows are snapped to UTC-day bounds so the batch query is a
+// superset of the matcher's UTC-day-inclusive candidate window.
+function startOfUtcDay(d: Date): number {
+  const out = new Date(d.getTime());
+  out.setUTCHours(0, 0, 0, 0);
+  return out.getTime();
+}
+function endOfUtcDay(d: Date): number {
+  const out = new Date(d.getTime());
+  out.setUTCHours(23, 59, 59, 999);
+  return out.getTime();
+}
+
 function metadata(overrides: Partial<TerraceBookingMetadata> = {}): TerraceBookingMetadata {
   return { ...TERRACE_BOOKING_DEFAULTS, ...overrides };
 }
@@ -32,15 +45,26 @@ function snapshot(overrides: Partial<TerraceTriggerSnapshot> = {}): TerraceTrigg
 }
 
 describe('shouldTriggerReclassifyOnCreate', () => {
-  it('emits when a live TERRACE_BOOKING is created with a 30-day window ending at startDate', () => {
+  it('emits when a live TERRACE_BOOKING is created with a day-normalized 30-day window', () => {
     const after = snapshot();
     const trigger = shouldTriggerReclassifyOnCreate(CONDOMINIUM_ID, after, EVENT_ID);
     expect(trigger).not.toBeNull();
     expect(trigger!.condominiumId).toBe(CONDOMINIUM_ID);
     expect(trigger!.triggeringEventId).toBe(EVENT_ID);
-    expect(trigger!.windowEnd.getTime()).toBe(after.startDate.getTime());
-    expect(trigger!.windowStart.getTime()).toBe(after.startDate.getTime() - 30 * DAY_MS);
+    expect(trigger!.windowEnd.getTime()).toBe(endOfUtcDay(after.startDate));
+    expect(trigger!.windowStart.getTime()).toBe(
+      startOfUtcDay(new Date(after.startDate.getTime() - 30 * DAY_MS)),
+    );
     expect(trigger!.reason).toBe('create');
+  });
+
+  it('snaps the window to UTC-day bounds so boundary-day batches are not missed (CAL-034)', () => {
+    // startDate at 10:00 UTC → window must end at 23:59:59.999 of that day and
+    // start at 00:00:00.000 of the day 30 days earlier.
+    const after = snapshot({ startDate: new Date('2026-06-15T10:00:00Z') });
+    const trigger = shouldTriggerReclassifyOnCreate(CONDOMINIUM_ID, after, EVENT_ID);
+    expect(trigger!.windowEnd.toISOString()).toBe('2026-06-15T23:59:59.999Z');
+    expect(trigger!.windowStart.toISOString()).toBe('2026-05-16T00:00:00.000Z');
   });
 
   it('does not emit for a non-terrace event', () => {
@@ -60,7 +84,9 @@ describe('shouldTriggerReclassifyOnDelete', () => {
     const trigger = shouldTriggerReclassifyOnDelete(CONDOMINIUM_ID, before, EVENT_ID);
     expect(trigger).not.toBeNull();
     expect(trigger!.reason).toBe('delete');
-    expect(trigger!.windowStart.getTime()).toBe(before.startDate.getTime() - 30 * DAY_MS);
+    expect(trigger!.windowStart.getTime()).toBe(
+      startOfUtcDay(new Date(before.startDate.getTime() - 30 * DAY_MS)),
+    );
   });
 
   it('does not emit when the deleted event was already CANCELLED', () => {
@@ -86,7 +112,7 @@ describe('shouldTriggerReclassifyOnUpdate', () => {
     const after = snapshot({ eventType: EventType.TERRACE_BOOKING });
     const trigger = shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID);
     expect(trigger).not.toBeNull();
-    expect(trigger!.windowEnd.getTime()).toBe(after.startDate.getTime());
+    expect(trigger!.windowEnd.getTime()).toBe(endOfUtcDay(after.startDate));
     expect(trigger!.reason).toBe('update:flipToTerrace');
   });
 
@@ -111,8 +137,10 @@ describe('shouldTriggerReclassifyOnUpdate', () => {
     const after = snapshot({ startDate: new Date('2026-07-01T10:00:00Z') });
     const trigger = shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID);
     expect(trigger).not.toBeNull();
-    expect(trigger!.windowStart.getTime()).toBe(before.startDate.getTime() - 30 * DAY_MS);
-    expect(trigger!.windowEnd.getTime()).toBe(after.startDate.getTime());
+    expect(trigger!.windowStart.getTime()).toBe(
+      startOfUtcDay(new Date(before.startDate.getTime() - 30 * DAY_MS)),
+    );
+    expect(trigger!.windowEnd.getTime()).toBe(endOfUtcDay(after.startDate));
   });
 
   it('emits when residentId changes', () => {
