@@ -95,3 +95,61 @@ describe('SettingsService cache invalidation', () => {
     );
   });
 });
+
+/**
+ * CAL-053: GET /settings no longer leaks terrace pricing to members who lack
+ * settings.read/update. The endpoint stays accessible (general/branding/fee fields
+ * load for everyone), but the terrace amounts are nulled for non-privileged roles —
+ * closing the bypass of the calendar module's own redactTerraceFinancials.
+ */
+describe('SettingsService.findOne terrace-pricing redaction', () => {
+  const CONDO = 'cond-1';
+
+  function setup() {
+    const cache = {
+      getSettings: jest.fn().mockResolvedValue({
+        logoUrl: null,
+        ordinaryFeeAmount: '1200.00',
+        terraceRentalAmount: '1500.00',
+        terraceSecurityDepositAmount: '1000.00',
+        condominium: { name: 'Coto Alameda', primaryColor: '#123456', slug: 'coto' },
+      }),
+      invalidate: jest.fn(),
+    };
+    const storage = { getPresignedUrl: jest.fn() };
+    const service = new SettingsService({} as never, storage as never, cache as never);
+    return { service };
+  }
+
+  it('returns terrace amounts when the caller holds settings.read', async () => {
+    const { service } = setup();
+    const res = await service.findOne(CONDO, new Set(['settings.read']));
+    expect(res.terraceRentalAmount).toBe('1500.00');
+    expect(res.terraceSecurityDepositAmount).toBe('1000.00');
+  });
+
+  it('returns terrace amounts when the caller holds settings.update', async () => {
+    const { service } = setup();
+    const res = await service.findOne(CONDO, new Set(['settings.update']));
+    expect(res.terraceRentalAmount).toBe('1500.00');
+    expect(res.terraceSecurityDepositAmount).toBe('1000.00');
+  });
+
+  it('redacts terrace amounts for a RESIDENT-like set (calendar.read only)', async () => {
+    const { service } = setup();
+    const res = await service.findOne(CONDO, new Set(['calendar.read', 'notifications.read']));
+    expect(res.terraceRentalAmount).toBeNull();
+    expect(res.terraceSecurityDepositAmount).toBeNull();
+    // Non-financial + fee fields stay intact — residents still see their dues + branding.
+    expect(res.ordinaryFeeAmount).toBe('1200.00');
+    expect(res.name).toBe('Coto Alameda');
+    expect(res.primaryColor).toBe('#123456');
+  });
+
+  it('fails closed: redacts when no permission set is provided', async () => {
+    const { service } = setup();
+    const res = await service.findOne(CONDO);
+    expect(res.terraceRentalAmount).toBeNull();
+    expect(res.terraceSecurityDepositAmount).toBeNull();
+  });
+});
