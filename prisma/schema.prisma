@@ -647,6 +647,20 @@ model RefreshToken {
   lockedAt             DateTime?
   failedUnlockAttempts Int       @default(0)
 
+  // Rotation-grace linkage. When a token is revoked specifically by a
+  // legitimate refresh rotation, rotatedAt is stamped and replacedById points
+  // at the successor row minted in the same call. This lets refresh() tell a
+  // benign concurrent-rotation replay (cookie-update lag / parallel-request
+  // burst — common right after an inactivity-lock unlock, where the access
+  // token is always expired) apart from real token theft: a token revoked by
+  // rotation within a short grace window whose successor is still live is
+  // served the successor session instead of triggering the family-wide revoke.
+  // Tokens revoked by logout/lockout leave rotatedAt null → theft path.
+  rotatedAt    DateTime?
+  replacedById String?       @unique
+  replacedBy   RefreshToken? @relation("TokenRotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  predecessor  RefreshToken? @relation("TokenRotation")
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
