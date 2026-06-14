@@ -163,6 +163,24 @@ export class CalendarReclassifyService {
       this.logger.warn(
         `Auto-reclassify gave up requeue after ${MAX_REQUEUE_ATTEMPTS} attempts — event=${payload.triggeringEventId} batches=${requeuedBatches.length}`,
       );
+      // CAL-073 — a permanently-contended batch means a terrace edit's re-match is
+      // silently never applied. A warn log alone is invisible outside the log
+      // stream; raise an alertable Sentry signal so a stuck batch is triaged.
+      // (Event-handler context — outside any HTTP request — so the Sentry
+      // exception filter never sees it. No-op until SENTRY_DSN is set.)
+      Sentry.captureMessage(
+        `Auto-reclassify gave up requeue after ${MAX_REQUEUE_ATTEMPTS} attempts`,
+        {
+          level: 'warning',
+          tags: { condominiumId: payload.condominiumId },
+          extra: {
+            stage: 'calendar-auto-reclassify',
+            triggeringEventId: payload.triggeringEventId,
+            batches: requeuedBatches.length,
+            attempts: MAX_REQUEUE_ATTEMPTS,
+          },
+        },
+      );
     }
 
     return { succeeded, failed, requeued: requeuedBatches.length };
@@ -191,11 +209,19 @@ export class CalendarReclassifyService {
     payload: CalendarTerraceChangedPayload,
     result: ReclassifyRunResult,
   ): Promise<void> {
-    if (!payload.actorUserId) return; // no FK-safe actor → skip rather than FK-fail
+    // CAL-074 — prefer a system-actor fallback over dropping the trail. When no
+    // actor rode in on the payload, attribute the row to the triggering event's
+    // creator (FK-safe — audit_logs.userId is a required FK, so a literal 'system'
+    // string would FK-fail). Mirrors the maintenance cron's createdById
+    // attribution; `triggeredBy:'system-reclassify'` already marks the real actor.
+    // Only an unresolvable event (e.g. hard-deleted) leaves the run un-audited.
+    const actorUserId =
+      payload.actorUserId ?? (await this.resolveFallbackActor(payload));
+    if (!actorUserId) return;
     try {
       await this.audit.log({
         condominiumId: payload.condominiumId,
-        userId: payload.actorUserId,
+        userId: actorUserId,
         action: 'CALENDAR_AUTO_RECLASSIFY',
         actionCategory: 'UPDATE',
         module: 'calendar',
@@ -219,6 +245,29 @@ export class CalendarReclassifyService {
       this.logger.error(
         `Auto-reclassify audit write failed — event=${payload.triggeringEventId}: ${String(err)}`,
       );
+    }
+  }
+
+  /**
+   * CAL-074 — resolve a FK-safe fallback actor for an actor-less reclassify run:
+   * the triggering event's creator. Returns null only when the event (and thus
+   * its creator) can't be resolved, in which case the run stays un-audited rather
+   * than FK-failing. A lookup error degrades the same way (never fails the run).
+   */
+  private async resolveFallbackActor(
+    payload: CalendarTerraceChangedPayload,
+  ): Promise<string | null> {
+    try {
+      const event = await this.prisma.calendarEvent.findUnique({
+        where: { id: payload.triggeringEventId },
+        select: { createdById: true },
+      });
+      return event?.createdById ?? null;
+    } catch (err) {
+      this.logger.error(
+        `Auto-reclassify fallback-actor lookup failed — event=${payload.triggeringEventId}: ${String(err)}`,
+      );
+      return null;
     }
   }
 
