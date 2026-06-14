@@ -148,6 +148,80 @@ describe('CalendarMaintenanceCron — Pass 2: soft-delete retention purge', () =
     const where = prisma.calendarEvent.findMany.mock.calls[1][0].where;
     expect(where.matchedTransactions).toEqual({ none: {} });
   });
+
+  // CAL-069 — purge-pass edge cases beyond the happy path.
+
+  it('does not audit when the conditional delete is a no-op (row already changed underneath)', async () => {
+    const prisma = makePrisma();
+    const audit = makeAudit();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([]) // Pass 1
+      .mockResolvedValueOnce([
+        { id: 'evt-old', condominiumId: 'cond-1', createdById: 'user-1', updatedById: 'user-2' },
+      ]);
+    // The row no longer matches the deletedAt+cutoff guard at delete time.
+    prisma.calendarEvent.deleteMany.mockResolvedValue({ count: 0 });
+
+    const result = await makeCron(prisma, audit, makeEvents()).sweep(NOW);
+
+    expect(result.softDeletedPurged).toBe(0);
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('purges multiple eligible rows in a single pass and audits each', async () => {
+    const prisma = makePrisma();
+    const audit = makeAudit();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([]) // Pass 1
+      .mockResolvedValueOnce([
+        { id: 'evt-a', condominiumId: 'cond-1', createdById: 'user-1', updatedById: 'user-2' },
+        { id: 'evt-b', condominiumId: 'cond-1', createdById: 'user-3', updatedById: 'user-4' },
+      ]);
+
+    const result = await makeCron(prisma, audit, makeEvents()).sweep(NOW);
+
+    expect(result.softDeletedPurged).toBe(2);
+    expect(prisma.calendarEvent.deleteMany).toHaveBeenCalledTimes(2);
+    expect(audit.log).toHaveBeenCalledTimes(2);
+    expect(audit.log.mock.calls.map((c) => c[0].entityId).sort()).toEqual(['evt-a', 'evt-b']);
+  });
+
+  it('attributes the purge audit to createdById when updatedById is null (CAL-069 fallback)', async () => {
+    const prisma = makePrisma();
+    const audit = makeAudit();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([]) // Pass 1
+      .mockResolvedValueOnce([
+        { id: 'evt-old', condominiumId: 'cond-1', createdById: 'creator-9', updatedById: null },
+      ]);
+
+    await makeCron(prisma, audit, makeEvents()).sweep(NOW);
+
+    const row = audit.log.mock.calls[0][0];
+    expect(row.action).toBe('CALENDAR_EVENT_PURGED');
+    expect(row.userId).toBe('creator-9'); // updatedById ?? createdById
+  });
+
+  it('continues purging the remaining rows after one row throws', async () => {
+    const prisma = makePrisma();
+    const audit = makeAudit();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([]) // Pass 1
+      .mockResolvedValueOnce([
+        { id: 'evt-bad', condominiumId: 'cond-1', createdById: 'user-1', updatedById: null },
+        { id: 'evt-good', condominiumId: 'cond-1', createdById: 'user-1', updatedById: null },
+      ]);
+    prisma.calendarEvent.deleteMany
+      .mockRejectedValueOnce(new Error('row boom')) // evt-bad
+      .mockResolvedValueOnce({ count: 1 }); // evt-good
+
+    const result = await makeCron(prisma, audit, makeEvents()).sweep(NOW);
+
+    // The bad row is swallowed; the good row still purges and audits.
+    expect(result.softDeletedPurged).toBe(1);
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log.mock.calls[0][0].entityId).toBe('evt-good');
+  });
 });
 
 describe('CalendarMaintenanceCron — scheduledSweep leadership lock (CAL-059)', () => {

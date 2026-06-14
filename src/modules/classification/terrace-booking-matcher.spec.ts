@@ -352,6 +352,36 @@ describe('matchTerraceBooking', () => {
       expect(result).not.toBeNull();
       expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
     });
+
+    // CAL-079 — exercise the boundary exactly at SHORT_KEYWORD_MAX_LENGTH (4): a
+    // 4-char keyword must still be word-boundary-matched, never substring-matched.
+    it('does NOT fire a 4-char keyword embedded in a longer word', () => {
+      // "casa" (exactly 4 chars) is inside "casanova" but is not a whole word.
+      const result = matchTerraceBooking(
+        input({
+          description: 'pago casanova mayo',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['casa'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).toBeNull();
+    });
+
+    it('fires a 4-char keyword when it appears as a whole word', () => {
+      const result = matchTerraceBooking(
+        input({
+          description: 'renta casa club',
+          detectedResidentId: null,
+          detectedUnitNumber: null,
+          globalKeywords: ['casa'],
+        }),
+        [candidate({ customKeywords: [] })],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.classificationStatus).toBe('NEEDS_REVIEW');
+    });
   });
 
   // ── Phase 5F — Tenant-level global keywords ────────────────────────────────
