@@ -107,6 +107,11 @@ function metadataMatchingFieldsChanged(
   if (before === null || after === null) return true;
   if (before.terraceRentalAmount !== after.terraceRentalAmount) return true;
   if (before.paymentStatus !== after.paymentStatus) return true;
+  // CAL-058 — the matcher (terrace-booking-matcher.ts) also scores on the
+  // security deposit (amount + status), so a deposit-only edit must re-match;
+  // otherwise a deposit-sized payment keeps mis-routing until an unrelated edit.
+  if (before.securityDepositAmount !== after.securityDepositAmount) return true;
+  if (before.securityDepositStatus !== after.securityDepositStatus) return true;
   if (normalizedKeywordSet(before.customKeywords) !== normalizedKeywordSet(after.customKeywords)) {
     return true;
   }
