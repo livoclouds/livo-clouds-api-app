@@ -173,6 +173,49 @@ describe('shouldTriggerReclassifyOnUpdate', () => {
     expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).not.toBeNull();
   });
 
+  // CAL-078 — the keyword-set diff (normalizedKeywordSet) is case- and
+  // trim-insensitive, so cosmetic-only edits must not re-trigger a re-match.
+
+  it('does not emit when customKeywords differ only in case', () => {
+    const before = snapshot({ metadata: metadata({ customKeywords: ['OWNER'] }) });
+    const after = snapshot({ metadata: metadata({ customKeywords: ['owner'] }) });
+    expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).toBeNull();
+  });
+
+  it('does not emit when customKeywords differ only in leading/trailing whitespace', () => {
+    const before = snapshot({ metadata: metadata({ customKeywords: ['  owner '] }) });
+    const after = snapshot({ metadata: metadata({ customKeywords: ['owner'] }) });
+    expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).toBeNull();
+  });
+
+  it('does not emit when nothing matching-relevant changes (metadata identical, other fields equal)', () => {
+    // Exercises metadataMatchingFieldsChanged returning false alongside every
+    // other diff being false → the no-trigger early return.
+    const before = snapshot();
+    const after = snapshot();
+    expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).toBeNull();
+  });
+
+  // CAL-078 — the `before===null XOR after===null` branch of
+  // metadataMatchingFieldsChanged: terrace metadata appearing or disappearing
+  // (with all other fields equal) is a matching-relevant change and must emit.
+
+  it('emits when terrace metadata appears (null → set) with all other fields equal', () => {
+    const before = snapshot({ metadata: null });
+    const after = snapshot({ metadata: metadata() });
+    const trigger = shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID);
+    expect(trigger).not.toBeNull();
+    expect(trigger!.reason).toBe('update:metadata');
+  });
+
+  it('emits when terrace metadata disappears (set → null) with all other fields equal', () => {
+    const before = snapshot({ metadata: metadata() });
+    const after = snapshot({ metadata: null });
+    const trigger = shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID);
+    expect(trigger).not.toBeNull();
+    expect(trigger!.reason).toBe('update:metadata');
+  });
+
   it('emits when securityDepositAmount changes — the matcher scores on it (CAL-058)', () => {
     const before = snapshot({ metadata: metadata({ securityDepositAmount: 500 }) });
     const after = snapshot({ metadata: metadata({ securityDepositAmount: 1000 }) });
