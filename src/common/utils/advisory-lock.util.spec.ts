@@ -11,9 +11,7 @@ interface TxMock {
  */
 function makePrisma(locked: boolean) {
   const tx: TxMock = { $queryRaw: jest.fn().mockResolvedValue([{ locked }]) };
-  const $transaction = jest.fn(
-    async (fn: (t: TxMock) => Promise<unknown>, _opts?: unknown) => fn(tx),
-  );
+  const $transaction = jest.fn(async (fn: (t: TxMock) => Promise<unknown>) => fn(tx));
   return { prisma: { $transaction } as never, tx, $transaction };
 }
 
@@ -61,7 +59,9 @@ describe('withTryAdvisoryXactLock', () => {
 
     const sql = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
     expect(sql.sql).toContain('pg_try_advisory_xact_lock');
-    expect($transaction.mock.calls[0][1]).toEqual({ timeout: 60_000 });
+    // The options arg is captured by jest regardless of the mock's declared
+    // arity — cast past the 1-param callback tuple type to read it.
+    expect(($transaction.mock.calls[0] as unknown[])[1]).toEqual({ timeout: 60_000 });
   });
 
   it('propagates a throw from fn (lock auto-released on rollback)', async () => {
