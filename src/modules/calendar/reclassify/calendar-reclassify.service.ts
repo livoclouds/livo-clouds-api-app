@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { ClassificationStatus, Prisma, ReconciliationStatus } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { withTryAdvisoryXactLock } from '../../../common/utils/advisory-lock.util';
 import { AuditService } from '../../audit/audit.service';
 import { ClassificationService } from '../../classification/classification.service';
 import {
@@ -14,6 +16,12 @@ import {
 // never silently skipped. Bounded so a permanently-contended key can't loop.
 const REQUEUE_DELAY_MS = 250;
 const MAX_REQUEUE_ATTEMPTS = 3;
+
+// CAL-059: the per-batch reclassify runs while a cross-replica advisory lock is
+// held open (idle-in-transaction). A batch re-run can take a while, so the
+// interactive-transaction timeout must comfortably exceed it — well above
+// Prisma's 5s default.
+const RECLASSIFY_LOCK_TIMEOUT_MS = 120_000;
 
 // CAL-039: engine reclassify runs outside any HTTP request. audit_logs.userId is
 // a required FK to users, so a literal 'system' actor would FK-fail; the row is
@@ -109,7 +117,22 @@ export class CalendarReclassifyService {
       }
       this.inFlight.add(key);
       try {
-        await this.classification.reclassifyBatch(payload.condominiumId, batchId, null);
+        // CAL-059 — cross-replica guard: hold a Postgres advisory lock on
+        // (tenant, batch) for the re-run. If another replica already holds it,
+        // requeue (same as the in-memory contention path) rather than
+        // double-running the engine. The in-memory inFlight Set above is the
+        // cheap same-instance fast-path; this is the multi-instance backstop.
+        const outcome = await withTryAdvisoryXactLock(
+          this.prisma,
+          Prisma.sql`hashtext(${payload.condominiumId})`,
+          Prisma.sql`hashtext(${batchId})`,
+          () => this.classification.reclassifyBatch(payload.condominiumId, batchId, null),
+          { timeoutMs: RECLASSIFY_LOCK_TIMEOUT_MS },
+        );
+        if (!outcome.acquired) {
+          requeuedBatches.push(batchId);
+          continue;
+        }
         succeeded++;
       } catch (err) {
         failed++;
@@ -205,6 +228,14 @@ export class CalendarReclassifyService {
         condominiumId: payload.condominiumId,
         flowType: 'INCOME',
         transactionDate: { gte: payload.windowStart, lte: payload.windowEnd },
+        // CAL-072 — narrow to the rows a re-run can actually change. reclassify
+        // only mutates PENDING, non-manual-override transactions (its
+        // `resetScope`), so a batch whose in-window INCOME rows are all settled
+        // (APPROVED/IGNORED) or manually overridden cannot change and must not be
+        // requeued. This is a strict subset of what the terrace matcher could
+        // touch, so no valid re-match is dropped — it only drops dead batches.
+        classificationStatus: { not: ClassificationStatus.MANUAL_OVERRIDE },
+        reconciliationStatus: ReconciliationStatus.PENDING,
       },
       select: { importBatchId: true },
       distinct: ['importBatchId'],

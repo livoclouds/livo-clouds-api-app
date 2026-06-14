@@ -173,6 +173,18 @@ describe('shouldTriggerReclassifyOnUpdate', () => {
     expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).not.toBeNull();
   });
 
+  it('emits when securityDepositAmount changes — the matcher scores on it (CAL-058)', () => {
+    const before = snapshot({ metadata: metadata({ securityDepositAmount: 500 }) });
+    const after = snapshot({ metadata: metadata({ securityDepositAmount: 1000 }) });
+    expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).not.toBeNull();
+  });
+
+  it('emits when securityDepositStatus changes — re-opens deposit candidacy (CAL-058)', () => {
+    const before = snapshot({ metadata: metadata({ securityDepositStatus: 'PENDING' }) });
+    const after = snapshot({ metadata: metadata({ securityDepositStatus: 'RECEIVED' }) });
+    expect(shouldTriggerReclassifyOnUpdate(CONDOMINIUM_ID, before, after, EVENT_ID)).not.toBeNull();
+  });
+
   it('does not emit for non-material-only changes (notes, post-event, deposit)', () => {
     const before = snapshot({
       metadata: metadata({

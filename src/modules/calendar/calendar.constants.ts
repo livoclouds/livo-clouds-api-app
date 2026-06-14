@@ -19,3 +19,20 @@ export const STALE_PENDING_GRACE_MS = 0;
  * reclaim storage.
  */
 export const SOFT_DELETE_RETENTION_MS = 90 * DAY_MS;
+
+/**
+ * Cross-replica leadership lock for the daily maintenance sweep (CAL-059). A
+ * single global Postgres advisory lock: per scheduled tick only one replica
+ * acquires it and runs the sweep; the rest step aside. The two keys are hashed
+ * in SQL (`hashtext`) into the `pg_try_advisory_xact_lock(int4, int4)` pair.
+ */
+export const CALENDAR_MAINTENANCE_LOCK_NAMESPACE = 'calendar-maintenance';
+export const CALENDAR_MAINTENANCE_LOCK_KEY = 'sweep';
+
+/**
+ * The lock is held for the sweep's full duration (idle-in-transaction while the
+ * sweep writes on other pooled connections), so the interactive-transaction
+ * timeout must exceed a worst-case multi-tenant sweep — well above Prisma's 5s
+ * default. 10 min is generous headroom for a nightly job.
+ */
+export const CALENDAR_MAINTENANCE_LOCK_TIMEOUT_MS = 10 * 60 * 1000;

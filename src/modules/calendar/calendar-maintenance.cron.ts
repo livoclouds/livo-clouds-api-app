@@ -1,10 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
-import { EventStatus, EventType } from '@prisma/client';
+import { EventStatus, EventType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { withTryAdvisoryXactLock } from '../../common/utils/advisory-lock.util';
 import { AuditService } from '../audit/audit.service';
-import { SOFT_DELETE_RETENTION_MS, STALE_PENDING_GRACE_MS } from './calendar.constants';
+import {
+  CALENDAR_MAINTENANCE_LOCK_KEY,
+  CALENDAR_MAINTENANCE_LOCK_NAMESPACE,
+  CALENDAR_MAINTENANCE_LOCK_TIMEOUT_MS,
+  SOFT_DELETE_RETENTION_MS,
+  STALE_PENDING_GRACE_MS,
+} from './calendar.constants';
 import {
   CALENDAR_TERRACE_CHANGED,
   type CalendarTerraceChangedPayload,
@@ -33,14 +40,19 @@ export interface CalendarMaintenanceSweepResult {
  *     the slot. Such bookings are auto-CANCELLED and a re-match is triggered so
  *     reconciliation drops them as candidates. (The tenant-configurable hold
  *     window for *future* PENDING bookings is a deferred follow-up — see backlog.)
- *  2. **Soft-delete retention purge** — leaf events soft-deleted longer than
- *     `SOFT_DELETE_RETENTION_MS` are hard-deleted to reclaim storage. Only
- *     childless events are purged so a Cascade FK (CAL-023) can never take a
- *     live child down with a removed parent.
+ *  2. **Soft-delete retention purge** — events soft-deleted longer than
+ *     `SOFT_DELETE_RETENTION_MS` are hard-deleted to reclaim storage. Two guards
+ *     keep the delete safe: a parent with any LIVE child is skipped so a Cascade
+ *     FK (CAL-023) can't take a live child down with it (CAL-071 — soft-deleted
+ *     children no longer block the parent); and a booking still referenced by a
+ *     matched transaction is skipped because that FK is RESTRICT, so deleting it
+ *     would throw and re-error every sweep (CAL-057).
  *
- * Every system action is audited via the FK-safe attribution pattern. A failed
- * run is logged and swallowed so the scheduler stays healthy; one bad row never
- * aborts the rest of the sweep.
+ * The scheduled entry point holds a single global advisory lock so that, on a
+ * horizontally-scaled deployment, only one replica runs the sweep per tick
+ * (CAL-059). Every system action is audited via the FK-safe attribution
+ * pattern. A failed run is logged and swallowed so the scheduler stays healthy;
+ * one bad row never aborts the rest of the sweep.
  */
 @Injectable()
 export class CalendarMaintenanceCron {
@@ -58,7 +70,21 @@ export class CalendarMaintenanceCron {
   })
   async scheduledSweep(): Promise<void> {
     try {
-      await this.sweep();
+      // CAL-059 — leadership: only the replica that wins the advisory lock runs
+      // the sweep; the rest step aside (no duplicate audit rows / engine load).
+      // The lock is held for the sweep's duration and auto-releases at txn end.
+      const outcome = await withTryAdvisoryXactLock(
+        this.prisma,
+        Prisma.sql`hashtext(${CALENDAR_MAINTENANCE_LOCK_NAMESPACE})`,
+        Prisma.sql`hashtext(${CALENDAR_MAINTENANCE_LOCK_KEY})`,
+        () => this.sweep(),
+        { timeoutMs: CALENDAR_MAINTENANCE_LOCK_TIMEOUT_MS },
+      );
+      if (!outcome.acquired) {
+        this.logger.log(
+          'calendar-maintenance: another replica holds the maintenance lock — skipping this tick',
+        );
+      }
     } catch (err) {
       this.logger.error(`calendar-maintenance: sweep failed: ${String(err)}`);
     }
@@ -143,10 +169,18 @@ export class CalendarMaintenanceCron {
     const purgeable = await this.prisma.calendarEvent.findMany({
       where: {
         deletedAt: { not: null, lt: cutoff },
-        // Childless only — a Cascade FK (CAL-023) means purging a recurring
-        // parent could take live children with it. Leave parents for a future
-        // recurrence-aware purge.
-        childEvents: { none: {} },
+        // CAL-071 — only a LIVE child blocks the purge: a Cascade FK (CAL-023)
+        // could take a live child down with a removed parent, but children that
+        // are themselves soft-deleted carry no such risk and must not pin the
+        // parent for an extra cycle. (Occurrences of a recurring event are
+        // virtual — expanded in findAll, never persisted — so this guard
+        // protects client-supplied parentEventId links, not recurrence.)
+        childEvents: { none: { deletedAt: null } },
+        // CAL-057 — Transaction.matchedCalendarEvent has no onDelete (RESTRICT),
+        // so hard-deleting a cancelled booking a transaction still references
+        // throws P2003 and re-errors every nightly sweep. Never purge a
+        // financially-referenced row; it stays soft-deleted while the link lives.
+        matchedTransactions: { none: {} },
       },
       select: { id: true, condominiumId: true, createdById: true, updatedById: true },
     });
