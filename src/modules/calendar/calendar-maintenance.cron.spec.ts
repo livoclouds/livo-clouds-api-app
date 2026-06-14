@@ -1,7 +1,15 @@
+import * as Sentry from '@sentry/nestjs';
 import { EventStatus, EventType } from '@prisma/client';
 import { CalendarMaintenanceCron } from './calendar-maintenance.cron';
 
+// CAL-060: assert the cron now raises alertable Sentry signals (it had none).
+jest.mock('@sentry/nestjs');
+
 const NOW = new Date('2026-06-15T05:00:00Z');
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 interface PrismaMock {
   calendarEvent: {
@@ -175,5 +183,75 @@ describe('CalendarMaintenanceCron — scheduledSweep leadership lock (CAL-059)',
     jest.spyOn(cron, 'sweep').mockRejectedValue(new Error('boom'));
 
     await expect(cron.scheduledSweep()).resolves.toBeUndefined();
+  });
+});
+
+describe('CalendarMaintenanceCron — observability (CAL-060)', () => {
+  it('emits a machine-parseable metric line with the sweep counts', async () => {
+    const prisma = makePrisma();
+    const cron = makeCron(prisma, makeAudit(), makeEvents());
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([staleBooking()]) // Pass 1 → 1 expired
+      .mockResolvedValueOnce([]); // Pass 2 → 0 purged
+    const logSpy = jest.spyOn(
+      (cron as unknown as { logger: { log: (m: string) => void } }).logger,
+      'log',
+    );
+
+    await cron.sweep(NOW);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      'metric calendar_maintenance_sweep pendingExpired=1 softDeletedPurged=0',
+    );
+  });
+
+  it('captures a top-level sweep failure to Sentry', async () => {
+    const prisma = makePrisma();
+    const cron = makeCron(prisma, makeAudit(), makeEvents());
+    const err = new Error('boom');
+    jest.spyOn(cron, 'sweep').mockRejectedValue(err);
+
+    await cron.scheduledSweep();
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    const [captured, options] = (Sentry.captureException as jest.Mock).mock.calls[0];
+    expect(captured).toBe(err);
+    expect(options.extra.phase).toBe('sweep');
+  });
+
+  it('captures a per-row expiry failure to Sentry and continues the sweep', async () => {
+    const prisma = makePrisma();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([staleBooking()])
+      .mockResolvedValueOnce([]);
+    prisma.calendarEvent.updateMany.mockRejectedValue(new Error('row boom'));
+    const cron = makeCron(prisma, makeAudit(), makeEvents());
+
+    const result = await cron.sweep(NOW);
+
+    expect(result.pendingExpired).toBe(0); // failure swallowed
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    const options = (Sentry.captureException as jest.Mock).mock.calls[0][1];
+    expect(options.tags.eventId).toBe('evt-stale');
+    expect(options.extra.pass).toBe('expire-pending');
+  });
+
+  it('captures a per-row purge failure to Sentry and continues the sweep', async () => {
+    const prisma = makePrisma();
+    prisma.calendarEvent.findMany
+      .mockResolvedValueOnce([]) // Pass 1
+      .mockResolvedValueOnce([
+        { id: 'evt-old', condominiumId: 'cond-1', createdById: 'user-1', updatedById: null },
+      ]);
+    prisma.calendarEvent.deleteMany.mockRejectedValue(new Error('purge boom'));
+    const cron = makeCron(prisma, makeAudit(), makeEvents());
+
+    const result = await cron.sweep(NOW);
+
+    expect(result.softDeletedPurged).toBe(0);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    const options = (Sentry.captureException as jest.Mock).mock.calls[0][1];
+    expect(options.tags.eventId).toBe('evt-old');
+    expect(options.extra.pass).toBe('purge-soft-deleted');
   });
 });

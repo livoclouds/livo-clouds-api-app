@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import { EventStatus, EventType, Prisma } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { withTryAdvisoryXactLock } from '../../common/utils/advisory-lock.util';
 import { AuditService } from '../audit/audit.service';
@@ -87,6 +88,14 @@ export class CalendarMaintenanceCron {
       }
     } catch (err) {
       this.logger.error(`calendar-maintenance: sweep failed: ${String(err)}`);
+      // CAL-060 — the cron runs outside any HTTP request, so the Sentry
+      // exception filter never sees a sweep failure. Capture it explicitly so a
+      // nightly sweep that fails every run raises an alertable signal instead of
+      // dying silently in logs (parity with the reclassify service). No-op until
+      // SENTRY_DSN is set.
+      Sentry.captureException(err, {
+        extra: { stage: 'calendar-maintenance', phase: 'sweep' },
+      });
     }
   }
 
@@ -96,6 +105,13 @@ export class CalendarMaintenanceCron {
 
     this.logger.log(
       `calendar-maintenance: sweep complete — pendingExpired=${pendingExpired} softDeletedPurged=${softDeletedPurged}`,
+    );
+    // CAL-060 — machine-parseable metric line with stable key=value dimensions
+    // so the sweep counts are dashboardable/alertable (mirrors the reclassify
+    // service's `succeeded=/failed=/requeued=` structured line). Kept separate
+    // from the human log above so log-based metrics can match on a stable prefix.
+    this.logger.log(
+      `metric calendar_maintenance_sweep pendingExpired=${pendingExpired} softDeletedPurged=${softDeletedPurged}`,
     );
     return { pendingExpired, softDeletedPurged };
   }
@@ -158,6 +174,12 @@ export class CalendarMaintenanceCron {
         this.logger.error(
           `calendar-maintenance: expiry failed for event=${event.id}: ${String(err)}`,
         );
+        // CAL-060 — one bad row is swallowed so the sweep continues; capture it
+        // for triage so a row that fails every night isn't invisible.
+        Sentry.captureException(err, {
+          tags: { condominiumId: event.condominiumId, eventId: event.id },
+          extra: { stage: 'calendar-maintenance', pass: 'expire-pending' },
+        });
       }
     }
     return expired;
@@ -211,6 +233,12 @@ export class CalendarMaintenanceCron {
         this.logger.error(
           `calendar-maintenance: purge failed for event=${event.id}: ${String(err)}`,
         );
+        // CAL-060 — capture per-row purge failures (e.g. an unexpected FK) so a
+        // row that re-errors every sweep surfaces an alertable signal.
+        Sentry.captureException(err, {
+          tags: { condominiumId: event.condominiumId, eventId: event.id },
+          extra: { stage: 'calendar-maintenance', pass: 'purge-soft-deleted' },
+        });
       }
     }
     return purged;
