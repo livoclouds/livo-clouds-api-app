@@ -499,6 +499,11 @@ model CondominiumSettings {
   terraceDefaultStartTime      String   @default("10:00")
   terraceDefaultEndTime        String   @default("11:00")
   terraceGlobalKeywords        String[] @default([])
+  // Auto-release window (in hours, from createdAt) for unpaid PENDING terrace
+  // bookings — including future-dated slots reserved and never paid (CAL-064).
+  // 0 = disabled (opt-in): the maintenance cron then only expires bookings whose
+  // event date has already passed, exactly as before this column existed.
+  pendingHoldWindowHours       Int      @default(0)
 
   condominium Condominium @relation(fields: [condominiumId], references: [id], onDelete: Cascade)
 

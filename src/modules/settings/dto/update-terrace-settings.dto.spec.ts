@@ -26,3 +26,33 @@ describe('UpdateTerraceSettingsDto — terraceGlobalKeywords min length (CAL-036
     expect(failures).toContain('minLength');
   });
 });
+
+describe('UpdateTerraceSettingsDto — pendingHoldWindowHours (CAL-064)', () => {
+  async function validateHold(value: unknown): Promise<string[]> {
+    const dto = plainToInstance(UpdateTerraceSettingsDto, { pendingHoldWindowHours: value });
+    const errors = await validate(dto);
+    return errors.flatMap((e) =>
+      e.property === 'pendingHoldWindowHours' ? Object.keys(e.constraints ?? {}) : [],
+    );
+  }
+
+  it('accepts 0 (disabled)', async () => {
+    expect(await validateHold(0)).toEqual([]);
+  });
+
+  it('accepts a positive whole-hour window', async () => {
+    expect(await validateHold(48)).toEqual([]);
+  });
+
+  it('rejects a negative window', async () => {
+    expect(await validateHold(-1)).toContain('min');
+  });
+
+  it('rejects a window beyond the 8760-hour (365-day) cap', async () => {
+    expect(await validateHold(8761)).toContain('max');
+  });
+
+  it('rejects a non-integer window', async () => {
+    expect(await validateHold(12.5)).toContain('isInt');
+  });
+});

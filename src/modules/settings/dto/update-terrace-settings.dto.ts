@@ -4,10 +4,12 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -21,6 +23,8 @@ const MAX_TERRACE_GLOBAL_KEYWORD_LENGTH = 100;
 // meaningful stem; the matcher additionally word-boundary-matches short
 // (≤4 char) keywords so they only fire on whole words.
 const MIN_TERRACE_GLOBAL_KEYWORD_LENGTH = 3;
+// CAL-064: ceiling for the PENDING auto-release window — 365 days in hours.
+const MAX_PENDING_HOLD_WINDOW_HOURS = 8760;
 
 export class UpdateTerraceSettingsDto {
   @ApiPropertyOptional()
@@ -77,4 +81,18 @@ export class UpdateTerraceSettingsDto {
   })
   @MaxLength(MAX_TERRACE_GLOBAL_KEYWORD_LENGTH, { each: true })
   terraceGlobalKeywords?: string[];
+
+  /**
+   * CAL-064 — auto-release window (in whole hours, measured from the booking's
+   * createdAt) for unpaid PENDING terrace bookings, including future-dated slots
+   * reserved weeks out and never paid. 0 = disabled (opt-in): the maintenance cron
+   * then only expires bookings whose event date has already passed. Capped at 8760
+   * (365 days) so a typo can't hold a slot for years.
+   */
+  @ApiPropertyOptional({ example: 48, minimum: 0, maximum: 8760 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_PENDING_HOLD_WINDOW_HOURS)
+  pendingHoldWindowHours?: number;
 }

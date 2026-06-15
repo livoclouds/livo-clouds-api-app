@@ -191,6 +191,65 @@ describeIntegration('calendar maintenance + reclassify (integration)', () => {
     emitSpy.mockRestore();
   });
 
+  it('auto-releases a FUTURE PENDING booking held unpaid past the tenant hold window (CAL-064)', async () => {
+    // Tenant opts in to a 48-hour hold window.
+    await ctx.prisma.condominiumSettings.update({
+      where: { condominiumId: tenant.condominiumId },
+      data: { pendingHoldWindowHours: 48 },
+    });
+    // A future-dated slot (startDate after NOW) created 72h ago and never paid —
+    // the past-date branch would never touch it; only the hold window releases it.
+    const booking = await ctx.prisma.calendarEvent.create({
+      data: {
+        condominiumId: tenant.condominiumId,
+        createdById: tenant.userId,
+        title: 'Future unpaid terrace',
+        eventType: EventType.TERRACE_BOOKING,
+        status: EventStatus.PENDING,
+        createdAt: new Date(NOW.getTime() - 72 * 60 * 60 * 1000), // 72h ago > 48h
+        startDate: new Date('2026-07-05T18:00:00.000Z'), // after NOW
+        endDate: new Date('2026-07-05T22:00:00.000Z'),
+        metadata: terraceMetadata(),
+      },
+    });
+    const emitSpy = jest.spyOn(ctx.emitter, 'emit').mockReturnValue(true);
+
+    const result = await ctx.cron.sweep(NOW);
+
+    expect(result.pendingExpired).toBe(1);
+    const row = await ctx.prisma.calendarEvent.findUniqueOrThrow({ where: { id: booking.id } });
+    expect(row.status).toBe(EventStatus.CANCELLED);
+    const audit = await ctx.prisma.auditLog.findFirst({
+      where: { entityId: booking.id, action: 'CALENDAR_EVENT_EXPIRED' },
+    });
+    expect(audit).not.toBeNull();
+    expect((audit!.afterState as { reason?: string }).reason).toBe('hold-window-exceeded');
+    emitSpy.mockRestore();
+  });
+
+  it('keeps a FUTURE PENDING booking when the tenant hold window is disabled (default 0)', async () => {
+    // Settings row created by seedTenant defaults pendingHoldWindowHours = 0.
+    const booking = await ctx.prisma.calendarEvent.create({
+      data: {
+        condominiumId: tenant.condominiumId,
+        createdById: tenant.userId,
+        title: 'Future unpaid terrace, window off',
+        eventType: EventType.TERRACE_BOOKING,
+        status: EventStatus.PENDING,
+        createdAt: new Date(NOW.getTime() - 365 * 24 * 60 * 60 * 1000), // a year ago
+        startDate: new Date('2026-07-05T18:00:00.000Z'), // after NOW
+        endDate: new Date('2026-07-05T22:00:00.000Z'),
+        metadata: terraceMetadata(),
+      },
+    });
+
+    const result = await ctx.cron.sweep(NOW);
+
+    expect(result.pendingExpired).toBe(0);
+    const row = await ctx.prisma.calendarEvent.findUniqueOrThrow({ where: { id: booking.id } });
+    expect(row.status).toBe(EventStatus.PENDING);
+  });
+
   // ── Pass 2: soft-delete retention purge ──────────────────────────────────────
 
   it('hard-deletes a childless event soft-deleted past the retention window and audits it', async () => {

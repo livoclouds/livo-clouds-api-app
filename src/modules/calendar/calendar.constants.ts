@@ -1,6 +1,8 @@
-// Calendar maintenance windows (CAL-043). Kept as plain constants — the
-// tenant-configurable PENDING hold window for *future* bookings is an explicit
-// follow-up (see audit backlog), so the cron only acts on unambiguous cases.
+// Calendar maintenance windows (CAL-043). Kept as plain constants. The
+// tenant-configurable PENDING hold window for *future* bookings (CAL-064) is NOT a
+// constant — it lives per-tenant on `CondominiumSettings.pendingHoldWindowHours`
+// and the cron reads it per row; the constant below only governs the always-on
+// past-date expiry branch.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -9,6 +11,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * (PENDING) booking is auto-expired. A booking whose event date has already
  * passed and was never confirmed/paid is releasing nothing useful — it only
  * keeps holding the slot. 0 = expire as soon as the event date is in the past.
+ *
+ * This governs only the past-date branch. The release of a *future* unpaid slot is
+ * tenant-driven via `CondominiumSettings.pendingHoldWindowHours` (CAL-064), read by
+ * the maintenance cron — not by this constant.
  */
 export const STALE_PENDING_GRACE_MS = 0;
 
