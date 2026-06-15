@@ -277,6 +277,113 @@ describe('CalendarService — Phase 5A recurrence', () => {
     expect(recurringArgs.where.recurrenceRule).toEqual({ not: null });
   });
 
+  // CAL-040: the recurring-parent read is DB-bounded by the denormalized,
+  // indexed recurrenceEndsAt column (NULL = open/legacy → kept; else ≥ fromDate),
+  // so the scan no longer grows over a tenant's lifetime.
+  it('bounds the recurring-parent read by recurrenceEndsAt (CAL-040)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    prisma.calendarEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    await service.findAll(CONDOMINIUM_ID, listQuery() as never);
+
+    const recurringArgs = prisma.calendarEvent.findMany.mock.calls[1][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(recurringArgs.where.OR).toEqual([
+      { recurrenceEndsAt: null },
+      { recurrenceEndsAt: { gte: new Date(FROM) } },
+    ]);
+    // The existing upper bound on startDate is preserved alongside the new bound.
+    expect(recurringArgs.where.startDate).toEqual({ lt: new Date(TO) });
+  });
+
+  it('denormalizes recurrenceEndsAt on create from the rule (CAL-040)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent());
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'Weekly standup',
+      eventType: EventType.GENERAL,
+      startDate: '2026-06-01T18:00:00.000Z',
+      endDate: '2026-06-01T20:00:00.000Z',
+      recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+    } as never);
+
+    const args = prisma.calendarEvent.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // Last of 4 weekly occurrences starts 06-22T18:00, +2h duration.
+    expect(args.data.recurrenceEndsAt).toEqual(new Date('2026-06-22T20:00:00.000Z'));
+  });
+
+  it('leaves recurrenceEndsAt null for a non-recurring create (CAL-040)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    prisma.calendarEvent.create.mockResolvedValueOnce(baseEvent());
+
+    await service.create(CONDOMINIUM_ID, USER_ID, {
+      title: 'One-off',
+      eventType: EventType.GENERAL,
+      startDate: '2026-06-01T18:00:00.000Z',
+      endDate: '2026-06-01T20:00:00.000Z',
+    } as never);
+
+    const args = prisma.calendarEvent.create.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.recurrenceEndsAt).toBeNull();
+  });
+
+  it('recomputes recurrenceEndsAt when an update adds a recurrence rule (CAL-040)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(baseEvent())
+      .mockResolvedValueOnce(baseEvent());
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      startDate: '2026-06-01T18:00:00.000Z',
+      endDate: '2026-06-01T20:00:00.000Z',
+      recurrenceRule: 'FREQ=WEEKLY;COUNT=2',
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // Last of 2 weekly occurrences starts 06-08T18:00, +2h duration.
+    expect(args.data.recurrenceEndsAt).toEqual(new Date('2026-06-08T20:00:00.000Z'));
+  });
+
+  it('clears recurrenceEndsAt when an update removes the recurrence rule (CAL-040)', async () => {
+    const prisma = makePrismaMock();
+    const service = makeService(prisma, makeAuditMock());
+
+    prisma.calendarEvent.findFirst
+      .mockResolvedValueOnce(
+        baseEvent({
+          recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+          recurrenceEndsAt: new Date('2026-06-22T20:00:00.000Z'),
+        }),
+      )
+      .mockResolvedValueOnce(baseEvent());
+
+    await service.update(CONDOMINIUM_ID, USER_ID, EVENT_ID, {
+      recurrenceRule: null,
+    } as never);
+
+    const args = prisma.calendarEvent.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(args.data.recurrenceRule).toBeNull();
+    expect(args.data.recurrenceEndsAt).toBeNull();
+  });
+
   it('rejects create when eventType is TERRACE_BOOKING and recurrenceRule is set', async () => {
     const prisma = makePrismaMock();
     const audit = makeAuditMock();
