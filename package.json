@@ -38,6 +38,7 @@
     "prisma:seed": "ts-node prisma/seed.ts",
     "prisma:reconcile-system-roles": "ts-node prisma/reconcile-system-roles.ts",
     "prisma:recompute-summaries": "ts-node -r dotenv/config prisma/recompute-monthly-summaries.ts",
+    "prisma:backfill-recurrence-ends": "ts-node -r dotenv/config prisma/backfill-recurrence-ends-at.ts",
     "prisma:studio": "prisma studio",
     "prisma:reset": "prisma migrate reset"
   },

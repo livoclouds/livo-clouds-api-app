@@ -1585,6 +1585,10 @@ model CalendarEvent {
   notes          String?
   metadata       Json?
   recurrenceRule String?
+  // CAL-040: denormalized end instant of the series' last occurrence (derived
+  // from the RRULE UNTIL/COUNT on write; NULL = open-ended/legacy). Indexed so
+  // the recurring-parent read can be DB-bounded instead of scanning every parent.
+  recurrenceEndsAt DateTime?
   parentEventId  String?
   timezone       String?
   visibility     CalendarEventVisibility @default(PUBLIC)
@@ -1604,6 +1608,8 @@ model CalendarEvent {
   @@index([condominiumId, startDate, endDate])
   @@index([condominiumId, eventType])
   @@index([condominiumId, parentEventId])
+  // CAL-040: bound the recurring-parent scan by (tenant, series-end).
+  @@index([condominiumId, recurrenceEndsAt])
   @@index([deletedAt])
   @@map("calendar_events")
 }

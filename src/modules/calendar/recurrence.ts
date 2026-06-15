@@ -114,6 +114,56 @@ export interface ExpandedOccurrence<T extends ExpandableEvent> {
  * `duration` before `fromDate` so a multi-day occurrence that began before the
  * window but still overlaps it is not dropped.
  */
+/**
+ * CAL-040: compute the **end instant of the last occurrence** of a recurring
+ * series, so it can be denormalized into the indexed `recurrenceEndsAt` column
+ * and the recurring-parent read can be bounded at the DB level (instead of
+ * scanning every recurring parent over a tenant's lifetime).
+ *
+ * Returns `null` for an unparseable or truly unbounded rule (validation rejects
+ * those on write, so a NULL here means "treat as open / never expires" — the
+ * read keeps such rows rather than risk dropping a live series).
+ *
+ * Precondition — the caller must have already run `validateRecurrenceRule`
+ * (the service does, via `assertRecurrenceAllowed`, on every write; the backfill
+ * only sees rules that passed it). That bounds every rule to ≤
+ * MAX_OCCURRENCES_PER_EVENT occurrences, so the COUNT `rule.all()` and the UNTIL
+ * `rule.before(until, true)` both stay cheap. An adversarial unbounded span
+ * (e.g. `FREQ=DAILY;UNTIL=99991231T235959Z`) is rejected upstream and never
+ * reaches here — do NOT call this on un-validated input.
+ */
+export function computeRecurrenceEnd(
+  rrule: string,
+  startDate: Date,
+  endDate: Date,
+): Date | null {
+  let rule: RRule;
+  try {
+    rule = buildRule(rrule, startDate);
+  } catch {
+    return null;
+  }
+
+  const { until, count } = rule.options;
+
+  let lastStart: Date | null = null;
+  if (count != null) {
+    // COUNT is validated ≤ MAX_OCCURRENCES_PER_EVENT, so this is bounded.
+    const all = rule.all();
+    lastStart = all.length > 0 ? all[all.length - 1] : null;
+  } else if (until != null) {
+    // Last occurrence on/before UNTIL, computed without expanding the full span.
+    lastStart = rule.before(until, true);
+  } else {
+    // Truly unbounded (rejected on write) → leave open.
+    return null;
+  }
+
+  if (lastStart == null) return null;
+  const duration = Math.max(endDate.getTime() - startDate.getTime(), 0);
+  return new Date(lastStart.getTime() + duration);
+}
+
 export function expandRecurrence<T extends ExpandableEvent>(
   event: T,
   fromDate: Date,

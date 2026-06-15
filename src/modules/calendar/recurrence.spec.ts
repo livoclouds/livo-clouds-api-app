@@ -1,6 +1,7 @@
 import {
   MAX_OCCURRENCES_PER_EVENT,
   RecurrenceValidationError,
+  computeRecurrenceEnd,
   expandRecurrence,
   validateRecurrenceRule,
 } from './recurrence';
@@ -230,5 +231,42 @@ describe('expandRecurrence', () => {
     // The ended 06-01 occurrence is excluded; only the overlapping 06-02 one remains.
     expect(result).toHaveLength(1);
     expect(result[0].occurrenceStart.toISOString()).toBe('2026-06-02T10:00:00.000Z');
+  });
+});
+
+describe('computeRecurrenceEnd (CAL-040)', () => {
+  const END = new Date(START.getTime() + ONE_HOUR); // 1-hour event
+
+  it('returns the last-occurrence end for a COUNT rule', () => {
+    // Weekly × 4 from 06-01 → last occurrence starts 06-22, ends +1h.
+    const end = computeRecurrenceEnd('FREQ=WEEKLY;COUNT=4', START, END);
+    expect(end?.toISOString()).toBe('2026-06-22T11:00:00.000Z');
+  });
+
+  it('returns the last-occurrence end for an UNTIL rule', () => {
+    // Daily until 06-07 23:59:59 → last occurrence 06-07T10:00, ends +1h.
+    const end = computeRecurrenceEnd('FREQ=DAILY;UNTIL=20260607T235959Z', START, END);
+    expect(end?.toISOString()).toBe('2026-06-07T11:00:00.000Z');
+  });
+
+  it('adds the full multi-day duration to the last occurrence start', () => {
+    const longEnd = new Date(START.getTime() + 3 * 24 * ONE_HOUR); // 3-day event
+    const end = computeRecurrenceEnd('FREQ=WEEKLY;COUNT=2', START, longEnd);
+    // Last start 06-08T10:00 + 3 days → 06-11T10:00.
+    expect(end?.toISOString()).toBe('2026-06-11T10:00:00.000Z');
+  });
+
+  it('returns null for an unbounded rule (treated as open / never expires)', () => {
+    expect(computeRecurrenceEnd('FREQ=WEEKLY', START, END)).toBeNull();
+  });
+
+  it('stays cheap on a validated, bounded UNTIL rule', () => {
+    // computeRecurrenceEnd is only ever called on rules that already passed
+    // validateRecurrenceRule (≤ MAX_OCCURRENCES_PER_EVENT). A bounded UNTIL span
+    // resolves its last occurrence without a heavy scan.
+    const t0 = Date.now();
+    const end = computeRecurrenceEnd('FREQ=DAILY;UNTIL=20270601T235959Z', START, END);
+    expect(Date.now() - t0).toBeLessThan(200);
+    expect(end?.toISOString()).toBe('2027-06-01T11:00:00.000Z');
   });
 });

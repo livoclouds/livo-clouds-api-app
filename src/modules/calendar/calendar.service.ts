@@ -22,6 +22,7 @@ import {
 import {
   MAX_TOTAL_OCCURRENCES,
   RecurrenceValidationError,
+  computeRecurrenceEnd,
   expandRecurrence,
   validateRecurrenceRule,
 } from './recurrence';
@@ -94,6 +95,19 @@ function redactTerraceFinancials<T extends { eventType?: unknown; metadata?: unk
     if (!REDACTED_TERRACE_FIELDS.has(k)) safe[k] = v;
   }
   return { ...event, metadata: safe };
+}
+
+/**
+ * CAL-040: the denormalized recurrence-end for a row — NULL for a non-recurring
+ * (or cleared) event, otherwise the last-occurrence end derived from the rule.
+ */
+function recurrenceEndFor(
+  recurrenceRule: string | null | undefined,
+  startDate: Date,
+  endDate: Date,
+): Date | null {
+  if (recurrenceRule == null || recurrenceRule.length === 0) return null;
+  return computeRecurrenceEnd(recurrenceRule, startDate, endDate);
 }
 
 function assertRecurrenceAllowed(
@@ -241,18 +255,20 @@ export class CalendarService {
       AND: [{ startDate: { lt: toDate } }, { endDate: { gt: fromDate } }],
     };
 
-    // A1 (Phase 4): the recurring-parent read is intentionally left unbounded.
-    // A series' end lives inside the RRULE string (UNTIL/COUNT), not in a queryable
-    // column, so it has only an upper bound on startDate. Applying `take` (ordered by
-    // startDate asc) could silently drop a still-active series whose first occurrence
-    // is old but which recurs into the requested range — producing missing occurrences.
-    // A lower bound on startDate is unsafe for the same reason. Bounding this at the DB
-    // level requires a denormalized, indexed recurrence-end column (deferred; tracked
-    // as a follow-up). The in-memory MAX_TOTAL_OCCURRENCES guard below caps the blow-up.
+    // CAL-040: the recurring-parent read is now DB-bounded by the denormalized,
+    // indexed `recurrenceEndsAt` column (the end instant of a series' last
+    // occurrence, derived from UNTIL/COUNT on write; NULL = open-ended). A series
+    // can only produce an occurrence overlapping [fromDate, toDate] if it has not
+    // already ended before the window, so we keep rows whose recurrenceEndsAt is
+    // NULL (open, or legacy/un-backfilled — never drop) or ≥ fromDate. Combined
+    // with the existing `startDate < toDate` upper bound, the scan no longer grows
+    // unbounded over a tenant's lifetime. The MAX_TOTAL_OCCURRENCES guard below
+    // still caps the in-memory expansion.
     const recurringWhere: Record<string, unknown> = {
       ...baseFilter,
       recurrenceRule: { not: null },
       startDate: { lt: toDate },
+      OR: [{ recurrenceEndsAt: null }, { recurrenceEndsAt: { gte: fromDate } }],
     };
 
     const page = query.page ?? 1;
@@ -458,6 +474,9 @@ export class CalendarService {
         residentId: dto.residentId,
         notes: dto.notes,
         recurrenceRule: dto.recurrenceRule ?? null,
+        // CAL-040: denormalize the series' end so the recurring-parent read can be
+        // DB-bounded instead of scanning every recurring parent.
+        recurrenceEndsAt: recurrenceEndFor(dto.recurrenceRule, start, end),
         parentEventId: dto.parentEventId ?? null,
         timezone: dto.timezone ?? null,
         visibility: (dto.visibility as CalendarEventVisibility | undefined) ?? CalendarEventVisibility.PUBLIC,
@@ -602,6 +621,16 @@ export class CalendarService {
         : dto.recurrenceRule;
     }
     if (dto.parentEventId !== undefined) data.parentEventId = dto.parentEventId;
+    // CAL-040: keep recurrenceEndsAt in sync with the effective rule + window on
+    // every update (the rule, startDate or endDate may all have changed). Recompute
+    // from the effective values; a non-recurring/cleared event resolves to NULL.
+    {
+      const normalizedRecurrence =
+        effectiveRecurrence == null || effectiveRecurrence.length === 0
+          ? null
+          : effectiveRecurrence;
+      data.recurrenceEndsAt = recurrenceEndFor(normalizedRecurrence, start, end);
+    }
     if (dto.visibility !== undefined) {
       data.visibility = dto.visibility as CalendarEventVisibility;
     }
