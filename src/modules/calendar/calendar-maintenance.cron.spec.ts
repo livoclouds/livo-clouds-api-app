@@ -26,6 +26,9 @@ interface AuditMock {
 interface EventsMock {
   emit: jest.Mock;
 }
+interface SettingsCacheMock {
+  getSettings: jest.Mock;
+}
 
 function makePrisma(): PrismaMock {
   return {
@@ -46,9 +49,29 @@ function makeAudit(): AuditMock {
 function makeEvents(): EventsMock {
   return { emit: jest.fn() };
 }
+// CAL-064 — getSettings returns null (no settings row → hold window disabled) by
+// default, so the past-date tests behave exactly as before. Pass an hours value to
+// exercise the tenant-configured future-slot release.
+function makeSettingsCache(holdHours: number | null = null): SettingsCacheMock {
+  return {
+    getSettings: jest
+      .fn()
+      .mockResolvedValue(holdHours === null ? null : { pendingHoldWindowHours: holdHours }),
+  };
+}
 
-function makeCron(prisma: PrismaMock, audit: AuditMock, events: EventsMock): CalendarMaintenanceCron {
-  return new CalendarMaintenanceCron(prisma as never, audit as never, events as never);
+function makeCron(
+  prisma: PrismaMock,
+  audit: AuditMock,
+  events: EventsMock,
+  settings: SettingsCacheMock = makeSettingsCache(),
+): CalendarMaintenanceCron {
+  return new CalendarMaintenanceCron(
+    prisma as never,
+    audit as never,
+    events as never,
+    settings as never,
+  );
 }
 
 function staleBooking(overrides: Record<string, unknown> = {}) {
@@ -56,6 +79,7 @@ function staleBooking(overrides: Record<string, unknown> = {}) {
     id: 'evt-stale',
     condominiumId: 'cond-1',
     createdById: 'user-1',
+    createdAt: new Date('2026-06-09T18:00:00Z'), // well before NOW
     startDate: new Date('2026-06-10T18:00:00Z'), // before NOW
     residentId: 'res-1',
     unitNumber: '101',
@@ -70,12 +94,13 @@ describe('CalendarMaintenanceCron — Pass 1: stale PENDING expiry', () => {
     const prisma = makePrisma();
     const audit = makeAudit();
     const events = makeEvents();
+    const settings = makeSettingsCache();
     // Pass 1 returns the stale booking; Pass 2 finds nothing.
     prisma.calendarEvent.findMany
       .mockResolvedValueOnce([staleBooking()])
       .mockResolvedValueOnce([]);
 
-    const result = await makeCron(prisma, audit, events).sweep(NOW);
+    const result = await makeCron(prisma, audit, events, settings).sweep(NOW);
 
     expect(result.pendingExpired).toBe(1);
     expect(prisma.calendarEvent.updateMany).toHaveBeenCalledWith({
@@ -86,6 +111,9 @@ describe('CalendarMaintenanceCron — Pass 1: stale PENDING expiry', () => {
     expect(row.userId).toBe('user-1');
     expect(row.action).toBe('CALENDAR_EVENT_EXPIRED');
     expect(row.afterState.triggeredBy).toBe('system-calendar-maintenance');
+    expect(row.afterState.reason).toBe('event-date-passed');
+    // A past-date booking is released without consulting tenant settings (CAL-064).
+    expect(settings.getSettings).not.toHaveBeenCalled();
     // A re-match is triggered so reconciliation drops the cancelled candidate.
     expect(events.emit).toHaveBeenCalledTimes(1);
   });
@@ -106,14 +134,95 @@ describe('CalendarMaintenanceCron — Pass 1: stale PENDING expiry', () => {
     expect(events.emit).not.toHaveBeenCalled();
   });
 
-  it('queries only past-start PENDING terrace bookings that are not soft-deleted', async () => {
+  it('queries every live PENDING terrace booking (no startDate filter — the hold window is decided per row)', async () => {
     const prisma = makePrisma();
     await makeCron(prisma, makeAudit(), makeEvents()).sweep(NOW);
     const where = prisma.calendarEvent.findMany.mock.calls[0][0].where;
     expect(where.eventType).toBe(EventType.TERRACE_BOOKING);
     expect(where.status).toBe(EventStatus.PENDING);
     expect(where.deletedAt).toBeNull();
-    expect(where.startDate.lt).toBeInstanceOf(Date);
+    // CAL-064 — past-date and future-hold-window rows are both candidates, so the
+    // SQL no longer narrows by startDate; the per-row reason decides the release.
+    expect(where.startDate).toBeUndefined();
+  });
+
+  // CAL-064 — tenant-configurable hold window auto-releases unpaid FUTURE slots.
+  describe('future-slot hold window (CAL-064)', () => {
+    const futureStart = new Date('2026-07-01T18:00:00Z'); // after NOW
+
+    it('does not release a future PENDING booking when the hold window is disabled (default 0)', async () => {
+      const prisma = makePrisma();
+      const audit = makeAudit();
+      const events = makeEvents();
+      const settings = makeSettingsCache(null); // no settings row → disabled
+      prisma.calendarEvent.findMany
+        .mockResolvedValueOnce([
+          staleBooking({
+            id: 'evt-future',
+            startDate: futureStart,
+            createdAt: new Date('2026-01-01T00:00:00Z'), // old, but window disabled
+          }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      const result = await makeCron(prisma, audit, events, settings).sweep(NOW);
+
+      expect(result.pendingExpired).toBe(0);
+      expect(settings.getSettings).toHaveBeenCalledWith('cond-1');
+      expect(prisma.calendarEvent.updateMany).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+      expect(events.emit).not.toHaveBeenCalled();
+    });
+
+    it('releases a future PENDING booking held unpaid past the tenant hold window', async () => {
+      const prisma = makePrisma();
+      const audit = makeAudit();
+      const events = makeEvents();
+      const settings = makeSettingsCache(48);
+      prisma.calendarEvent.findMany
+        .mockResolvedValueOnce([
+          staleBooking({
+            id: 'evt-future',
+            startDate: futureStart,
+            createdAt: new Date(NOW.getTime() - 49 * 60 * 60 * 1000), // 49h ago > 48h
+          }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      const result = await makeCron(prisma, audit, events, settings).sweep(NOW);
+
+      expect(result.pendingExpired).toBe(1);
+      expect(prisma.calendarEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'evt-future', status: EventStatus.PENDING, deletedAt: null },
+        data: { status: EventStatus.CANCELLED },
+      });
+      const row = audit.log.mock.calls[0][0];
+      expect(row.afterState.reason).toBe('hold-window-exceeded');
+      expect(row.afterState.triggeredBy).toBe('system-calendar-maintenance');
+      expect(events.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a future PENDING booking still within the tenant hold window', async () => {
+      const prisma = makePrisma();
+      const audit = makeAudit();
+      const events = makeEvents();
+      const settings = makeSettingsCache(48);
+      prisma.calendarEvent.findMany
+        .mockResolvedValueOnce([
+          staleBooking({
+            id: 'evt-future',
+            startDate: futureStart,
+            createdAt: new Date(NOW.getTime() - 47 * 60 * 60 * 1000), // 47h ago < 48h
+          }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      const result = await makeCron(prisma, audit, events, settings).sweep(NOW);
+
+      expect(result.pendingExpired).toBe(0);
+      expect(prisma.calendarEvent.updateMany).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
   });
 });
 

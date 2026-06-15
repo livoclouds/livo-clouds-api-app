@@ -53,6 +53,18 @@ describe('SettingsService cache invalidation', () => {
     expect(cache.invalidate).toHaveBeenCalledWith(CONDO);
   });
 
+  // CAL-064 — the tenant PENDING hold window persists through updateTerrace.
+  it('updateTerrace persists pendingHoldWindowHours', async () => {
+    const { service, prisma } = setup();
+    await service.updateTerrace(CONDO, { pendingHoldWindowHours: 48 } as never);
+    expect(prisma.condominiumSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ pendingHoldWindowHours: 48 }),
+        update: expect.objectContaining({ pendingHoldWindowHours: 48 }),
+      }),
+    );
+  });
+
   it('updateProfile invalidates the cache (writes condominium row findOne returns)', async () => {
     const { service, cache } = setup();
     await service.updateProfile(CONDO, {} as never);

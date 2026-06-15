@@ -6,6 +6,7 @@ import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { withTryAdvisoryXactLock } from '../../common/utils/advisory-lock.util';
 import { AuditService } from '../audit/audit.service';
+import { SettingsCacheService } from '../settings/settings-cache.service';
 import {
   CALENDAR_MAINTENANCE_LOCK_KEY,
   CALENDAR_MAINTENANCE_LOCK_NAMESPACE,
@@ -28,6 +29,13 @@ import {
 // marking the real actor (CAL-039 pattern, mirrors imports-maintenance.cron.ts).
 const SYSTEM_TRIGGER = 'system-calendar-maintenance';
 
+const HOUR_MS = 60 * 60 * 1000;
+
+// CAL-064 — why a PENDING terrace booking was auto-released, recorded in the audit
+// trail so an operator can tell a past-date expiry apart from a tenant-configured
+// hold-window release.
+type ExpiryReason = 'event-date-passed' | 'hold-window-exceeded';
+
 export interface CalendarMaintenanceSweepResult {
   pendingExpired: number;
   softDeletedPurged: number;
@@ -36,11 +44,14 @@ export interface CalendarMaintenanceSweepResult {
 /**
  * CAL-043 — calendar maintenance cron. Two idempotent passes daily:
  *
- *  1. **Stale-PENDING expiry** — a terrace booking that is still PENDING after
- *     its event date has passed was never confirmed/paid; it only keeps holding
- *     the slot. Such bookings are auto-CANCELLED and a re-match is triggered so
- *     reconciliation drops them as candidates. (The tenant-configurable hold
- *     window for *future* PENDING bookings is a deferred follow-up — see backlog.)
+ *  1. **Stale-PENDING expiry** — a terrace booking that is still PENDING is
+ *     auto-CANCELLED, and a re-match is triggered so reconciliation drops it as a
+ *     candidate, when EITHER (a) its event date has passed (never confirmed/paid —
+ *     it only keeps holding the slot), OR (b) CAL-064: the tenant configured a
+ *     `pendingHoldWindowHours` > 0 and the booking has been held, unpaid, past that
+ *     window measured from `createdAt` — this releases a *future* slot reserved
+ *     weeks out and never paid. With the default `pendingHoldWindowHours = 0` only
+ *     the past-date branch fires, identical to the pre-CAL-064 behaviour.
  *  2. **Soft-delete retention purge** — events soft-deleted longer than
  *     `SOFT_DELETE_RETENTION_MS` are hard-deleted to reclaim storage. Two guards
  *     keep the delete safe: a parent with any LIVE child is skipped so a Cascade
@@ -63,6 +74,10 @@ export class CalendarMaintenanceCron {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    // CAL-064 — read per-tenant settings (the PENDING hold window) without an
+    // extra DB round-trip per row; the cache is keyed by condominiumId and shared
+    // with the settings page / classification.
+    private readonly settingsCache: SettingsCacheService,
   ) {}
 
   @Cron('0 5 * * *', {
@@ -116,20 +131,26 @@ export class CalendarMaintenanceCron {
     return { pendingExpired, softDeletedPurged };
   }
 
-  // --- Pass 1: expire PENDING terrace bookings whose event date has passed ---
+  // --- Pass 1: expire stale PENDING terrace bookings ---
+  // A booking is released when its event date has passed (always on, grace=0) OR,
+  // per CAL-064, when the tenant configured a hold window and the booking has been
+  // held unpaid past it (measured from createdAt). Because the hold window is
+  // per-tenant, we can't express the createdAt cutoff in one SQL predicate; instead
+  // we load every live PENDING terrace booking (a naturally small set — only unpaid
+  // holds) and decide per row against the tenant's cached settings.
   private async expireStalePending(now: Date): Promise<number> {
-    const cutoff = new Date(now.getTime() - STALE_PENDING_GRACE_MS);
+    const pastDateCutoff = new Date(now.getTime() - STALE_PENDING_GRACE_MS);
     const stale = await this.prisma.calendarEvent.findMany({
       where: {
         eventType: EventType.TERRACE_BOOKING,
         status: EventStatus.PENDING,
         deletedAt: null,
-        startDate: { lt: cutoff },
       },
       select: {
         id: true,
         condominiumId: true,
         createdById: true,
+        createdAt: true,
         startDate: true,
         residentId: true,
         unitNumber: true,
@@ -141,6 +162,9 @@ export class CalendarMaintenanceCron {
     let expired = 0;
     for (const event of stale) {
       try {
+        const reason = await this.resolveExpiryReason(event, now, pastDateCutoff);
+        if (!reason) continue;
+
         // Conditional update — never clobber a booking a user just confirmed.
         const result = await this.prisma.calendarEvent.updateMany({
           where: { id: event.id, status: EventStatus.PENDING, deletedAt: null },
@@ -158,9 +182,12 @@ export class CalendarMaintenanceCron {
           entityId: event.id,
           result: 'WARNING',
           description:
-            'Stale PENDING terrace booking auto-cancelled by maintenance (event date passed, never confirmed)',
+            reason === 'event-date-passed'
+              ? 'Stale PENDING terrace booking auto-cancelled by maintenance (event date passed, never confirmed)'
+              : 'Unpaid PENDING terrace booking auto-released by maintenance (tenant hold window exceeded)',
           afterState: {
             triggeredBy: SYSTEM_TRIGGER,
+            reason,
             previousStatus: EventStatus.PENDING,
             status: EventStatus.CANCELLED,
             startDate: event.startDate,
@@ -242,6 +269,30 @@ export class CalendarMaintenanceCron {
       }
     }
     return purged;
+  }
+
+  /**
+   * CAL-064 — decide whether (and why) a live PENDING terrace booking should be
+   * released. The past-date branch is unconditional (mirrors the pre-CAL-064
+   * behaviour, grace = `STALE_PENDING_GRACE_MS`). The hold-window branch fires only
+   * when the tenant set `pendingHoldWindowHours > 0` and the booking's `createdAt`
+   * is older than that window — releasing a future slot held unpaid. Returns `null`
+   * when the booking should stay PENDING. Settings come from the tenant-scoped cache
+   * (a row created without a settings record falls back to disabled).
+   */
+  private async resolveExpiryReason(
+    event: { condominiumId: string; createdAt: Date; startDate: Date },
+    now: Date,
+    pastDateCutoff: Date,
+  ): Promise<ExpiryReason | null> {
+    if (event.startDate < pastDateCutoff) return 'event-date-passed';
+
+    const settings = await this.settingsCache.getSettings(event.condominiumId);
+    const holdHours = settings?.pendingHoldWindowHours ?? 0;
+    if (holdHours > 0 && event.createdAt.getTime() < now.getTime() - holdHours * HOUR_MS) {
+      return 'hold-window-exceeded';
+    }
+    return null;
   }
 
   private emitExpiryReclassify(event: {
